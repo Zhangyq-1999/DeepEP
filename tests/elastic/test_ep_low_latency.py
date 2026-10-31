@@ -229,6 +229,8 @@ def make_parser():
     parser.add_argument("--ll-timer-mode", choices=("observe", "drain"), default="observe")
     parser.add_argument("--ll-timer-frequency-hz", type=float, default=1_000_000_000, help="GetSystemCycle frequency; default 1GHz (ticks/1000 us)")
     parser.add_argument("--dispatch-only", action="store_true")
+    parser.add_argument("--combine-variant", choices=("baseline", "optimized"),
+                        help="Require the corresponding compiled Combine variant; does not change the installed kernel")
     parser.add_argument("--repeat-combine", type=int, default=2)
     parser.add_argument("--correctness-repeats", type=int, default=3, help="Fresh routes on the same Buffer; outside profiling")
     parser.add_argument("--use-1g-huge-pages", type=int, choices=(0, 1), default=0, help="LL defaults to 0; explicit 1 is MTE-only")
@@ -354,6 +356,7 @@ def write_reports(directory, report):
             perf = result[operation]
             identity=result.get('comparison') or {}
             base = {"case_id": result["case_id"], **result["config"], "route": result["route"], "operation": operation,
+                    "combine_variant": "optimized" if identity.get("combine_small_batch") else "baseline",
                     **{key:identity.get(key) for key in ('implementation','transport','logical_group','active_aiv','core_protocol','source_revision')}}
             summaries.append(
                 {
@@ -1252,6 +1255,7 @@ def worker(local_rank, args):
                       "roce_qps_per_peer": getattr(native, "low_latency_roce_qps_per_peer", None),
                       "logical_group": compiled_group(native,world),
                       "implementation": implementation,
+                      "combine_small_batch": bool(getattr(native, "low_latency_combine_small_batch", False)),
                       "combine_host_protocol": getattr(deep_ep.ElasticBuffer, "ll_combine_host_protocol", 0),
                       "core_protocol": native.low_latency_core_protocol,
                       "stage_timer": bool(getattr(native, "low_latency_stage_timer_enabled", False)),
@@ -1268,6 +1272,8 @@ def worker(local_rank, args):
         trace_call(args, "capability.all_gather", dist.all_gather_object, capabilities, capability)
         if any(item != capabilities[0] for item in capabilities):
             raise RuntimeError("LL AIV/group/protocol/timer build differs across ranks")
+        if args.combine_variant is not None and capability["combine_small_batch"] != (args.combine_variant == "optimized"):
+            raise RuntimeError("Installed Combine variant differs from --combine-variant; rebuild and install the selected wheel")
         if capability['implementation'] not in ('ndr-hns1825','configurable-groups'):
             raise RuntimeError('Rebuild the wheel with the shared experiment implementation identity')
         requested_impl=os.environ.get('DEEPEP_LL_EXPECT_IMPLEMENTATION')

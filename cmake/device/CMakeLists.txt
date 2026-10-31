@@ -55,6 +55,11 @@ endif()
 add_library(deepep_kernels SHARED $<TARGET_OBJECTS:${_ll_variant}>)
 
 add_library(deepep_kernel_options INTERFACE)
+if(DEEPEP_LL_COMBINE_SMALL_BATCH)
+    # Keep the Dispatch translation units identical in the A/B builds.
+    set_property(SOURCE "${DEEPEP_SOURCE_DIR}/csrc/kernels/combine/low_latency.cpp"
+        APPEND PROPERTY COMPILE_DEFINITIONS DEEPEP_LL_COMBINE_SMALL_BATCH=1)
+endif()
 if(DEEPEP_LL_COUNT_HISTOGRAM)
     target_compile_definitions(deepep_kernel_options INTERFACE DEEPEP_LL_COUNT_HISTOGRAM=1)
 endif()

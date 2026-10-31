@@ -163,6 +163,7 @@ def test_bad_shape_rejected_before_any_preparation(tokens, monkeypatch):
 @pytest.mark.parametrize("fault", [None, "timer", "source", "sdk", "firmware", "library", "branch", "protocol", "qps", "reference", "reference_metadata", "group", "histogram"])
 def test_installed_check_rejects_stale_or_mixed_builds(tmp_path, monkeypatch, mode, nodes, histogram, fault):
     monkeypatch.setenv('DEEPEP_LL_COUNT_HISTOGRAM', 'ON' if histogram else 'OFF')
+    monkeypatch.setenv('DEEPEP_LL_COMBINE_SMALL_BATCH', 'OFF')
     root = tmp_path / "project"
     root.mkdir()
     (root / "dependencies.lock.json").write_text('{"shmem":{"revision":"sdk"}}')
@@ -192,7 +193,8 @@ def test_installed_check_rejects_stale_or_mixed_builds(tmp_path, monkeypatch, mo
         shmem_library_path=lambda: str(root / ("wrong.so" if fault == "library" else "third-party/shmem/install/shmem/lib/libshmem.so")))
     monkeypatch.setattr(launch, "ROOT", root)
     monkeypatch.setitem(sys.modules, "build_support", SimpleNamespace(
-        validate_shmem_sdk=lambda *args: sdk, source_fingerprint=lambda: "source", metadata_cores=lambda: 4))
+        validate_shmem_sdk=lambda *args: sdk, source_fingerprint=lambda: "source", metadata_cores=lambda: 4,
+        enabled=lambda name, env: env.get(name, 'OFF') == 'ON'))
     monkeypatch.setitem(sys.modules, "deep_ep._native", SimpleNamespace(require_native=lambda _: native))
     monkeypatch.setattr(launch.runpy, "run_path", lambda _: {"_import_installed_deep_ep":
         lambda: SimpleNamespace(__file__=str(package / "__init__.py"))})

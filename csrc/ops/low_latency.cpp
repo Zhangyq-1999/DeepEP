@@ -170,6 +170,7 @@ void bind_low_latency(py::module_& module)
     module.attr("low_latency_core_protocol") = DispatchDedup::kLlCoreProtocolVersion;
     module.attr("low_latency_roce_qps_per_peer") = 0; // actual active physical cores
     module.attr("low_latency_implementation") = "ndr-hns1825";
+    module.attr("low_latency_combine_small_batch") = bool(deepep_ll_combine_small_batch_enabled());
 #ifdef DEEPEP_LL_RDMA
     if (!deepep_ll_rdma_enabled()) throw std::runtime_error("LL Host/device RDMA build mismatch; rebuild complete wheel");
     module.attr("low_latency_rdma_enabled") = true;

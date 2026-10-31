@@ -21,3 +21,4 @@ static_assert(offsetof(EpServerDedupCombineKernelArgs, coreNum) == 92, "active c
 }  // namespace deepep
 extern "C" void combine_server_dedup_kernel_do(void* stream, const deepep::EpServerDedupCombineKernelArgs* args);
 extern "C" void combine_clear_result_flags_kernel_do(void* stream, uint8_t* local, uint64_t blocks, uint32_t cores);
+extern "C" uint32_t deepep_ll_combine_small_batch_enabled();

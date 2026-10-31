@@ -15,6 +15,15 @@
 #include "low_latency/launch.hpp"
 #include "low_latency/combine_clear_flags.h"
 
+extern "C" DEEPEP_EXPORT uint32_t deepep_ll_combine_small_batch_enabled()
+{
+#ifdef DEEPEP_LL_COMBINE_SMALL_BATCH
+    return 1U;
+#else
+    return 0U;
+#endif
+}
+
 // 中文审计：ElasticBuffer._combine_low_latency → csrc/ops/low_latency.cpp
 // → combine_server_dedup_kernel_do → 本入口。输入依赖匹配dispatch handle的路由/计数/权重。
 // profiler中的combine_server_dedup_kernel包含下层准备、控制通知、回传与最终归约。

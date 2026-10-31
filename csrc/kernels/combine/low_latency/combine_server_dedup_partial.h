@@ -13,6 +13,9 @@
 #include "ep_memory_server_dedup_buffer_layout.h"
 #include "ep_memory_server_dedup_combine_config.h"
 #include "combine_server_dedup_select.h"
+#ifdef DEEPEP_LL_COMBINE_SMALL_BATCH
+#include "combine_partial_plan.h"
+#endif
 
 namespace CombineDedup {
 using namespace AscendC;
@@ -61,6 +64,10 @@ public:
         cast_ = scratch.ReinterpretCast<float>();
         product_ = scratch[layout.computeBytes].ReinterpretCast<float>();
         sum_ = scratch[2U * layout.computeBytes].ReinterpretCast<float>();
+#ifdef DEEPEP_LL_COMBINE_SMALL_BATCH
+        planScratch_ = scratch;
+        planScratchBytes_ = layout.phaseOffset;
+#endif
         low_ = Allocate<uint16_t>(blocks_ * 480U);
         inputs_ = scratch[layout.inputOffset].ReinterpretCast<uint16_t>();
         outputs_ = scratch[layout.outputOffset];
@@ -69,6 +76,15 @@ public:
         table3_.SetGlobalBuffer(reinterpret_cast<__gm__ uint32_t*>(table3));
         types_.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t*>(types));
     }
+
+#ifdef DEEPEP_LL_COMBINE_SMALL_BATCH
+    __aicore__ inline void PrepareTasks()
+    {
+        planned_ = plan_.Prepare(planScratch_, planScratchBytes_, rows_, types_, table2_, tokens_,
+                                 uint32_t(args_->rankSize), uint32_t(args_->rank),
+                                 GetBlockIdx() - recvCores_, recvCores_);
+    }
+#endif
 
     __aicore__ inline uint32_t Process()
     {
@@ -84,8 +100,15 @@ public:
         const uint32_t ownServer = uint32_t(args_->rank) / Group;
         uint32_t owner = 0U, completed = 0U;
         for (uint32_t step = 1U; step <= servers; ++step) {
+#ifdef DEEPEP_LL_COMBINE_SMALL_BATCH
+            const uint32_t begin = planned_ && step > 1U ? plan_.End(step - 2U) : 0U;
+            const uint32_t end = planned_ ? plan_.End(step - 1U)
+                : SelectServer(ServerDedupHalfOrder(servers, ownServer, step - 1U), owner, step == 1U);
+            for (uint32_t task = begin; task < end; ++task) {
+#else
             const uint32_t count = SelectServer(ServerDedupHalfOrder(servers, ownServer, step - 1U), owner, step == 1U);
             for (uint32_t task = 0; task < count; ++task) {
+#endif
                 const uint32_t row = uint32_t(rows_.GetValue(task));
                 LoadTask(row);
                 const uint32_t source = uint32_t(table2Ub_.GetValue(0U));
@@ -286,6 +309,12 @@ private:
     uint32_t blocks_ = 0, packetBytes_ = 0, inputBytes_ = 0, inputLanes_ = 0, outputLanes_ = 0;
     uint32_t inputSequence_ = 0, scanRows_ = 0;
     uint64_t stageStride_ = 0, stageBase_ = 0, window_ = 0;
+#ifdef DEEPEP_LL_COMBINE_SMALL_BATCH
+    PartialTaskPlan<Group> plan_;
+    LocalTensor<uint8_t> planScratch_;
+    uint32_t planScratchBytes_ = 0U;
+    bool planned_ = false;
+#endif
 };
 }  // namespace CombineDedup
 #endif

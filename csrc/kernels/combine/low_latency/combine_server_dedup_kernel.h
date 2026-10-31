@@ -125,7 +125,9 @@ public:
                     // Notification has been issued; do not add an MTE3 drain.
                 }
 
+#ifndef DEEPEP_LL_COMBINE_SMALL_BATCH
                 WaitServerReady();
+#endif
 
                 ReturnPartialTokens();
 
@@ -229,13 +231,18 @@ private:
         const uint32_t base = uint32_t(selected_) / coreNum_, extra = uint32_t(selected_) % coreNum_;
         const uint32_t count = base + (core_ < extra ? 1U : 0U);
         const uint32_t start = core_ * base + (core_ < extra ? core_ : extra);
-        for (uint32_t lane = 0; lane < lanes_; ++lane) SetFlag<HardEvent::MTE3_MTE2>(lane);
+#ifdef DEEPEP_LL_COMBINE_SMALL_BATCH
+        const uint32_t activeLanes = count < lanes_ ? count : lanes_;
+#else
+        const uint32_t activeLanes = lanes_;
+#endif
+        for (uint32_t lane = 0; lane < activeLanes; ++lane) SetFlag<HardEvent::MTE3_MTE2>(lane);
         uint32_t cacheBegin = 0U, cacheEnd = 0U;
         for (uint32_t task = 0; task < count; ++task) {
             const uint32_t row = uint32_t(packedUb_.GetValue(start + task));
             CacheTableRows(row, start, task, count, cacheBegin, cacheEnd);
             const uint32_t slot = uint32_t(tableUb_.GetValue((row - cacheBegin) * 3U));
-            const uint32_t lane = task % lanes_;
+            const uint32_t lane = task % activeLanes;
             WaitFlag<HardEvent::MTE3_MTE2>(lane);
             auto payload = payloadUb_[lane * laneBytes_ / 2U];
             DataCopyPad(payload, expert_[uint64_t(row) * h_], {1U, h_ * 2U, 0U, 0U, 0U}, {false, 0U, 0U, uint16_t(0)});
@@ -246,7 +253,7 @@ private:
         }
         // Also consumes seeded, unused lane events. All stage stores complete
         // before publication; individual tokens never wait immediately after store.
-        for (uint32_t lane = 0; lane < lanes_; ++lane) WaitFlag<HardEvent::MTE3_MTE2>(lane);
+        for (uint32_t lane = 0; lane < activeLanes; ++lane) WaitFlag<HardEvent::MTE3_MTE2>(lane);
         Duplicate<float>(preparePublish_, 0.0f, 64U);
         Sync<HardEvent::V_S>();
         for (uint32_t j = 0; j < 8U; ++j) preparePublish_.SetValue(j * 8U, 1.0f);
@@ -340,8 +347,15 @@ private:
         const uint32_t servers = uint32_t(args_->rankSize) / Group;
         const uint32_t ownServer = uint32_t(args_->rank) / Group;
         uint32_t owner = 0U, sendSequence = 0U;
+#ifdef DEEPEP_LL_COMBINE_SMALL_BATCH
+        const uint32_t owned = uint32_t(selected_) / sendCores_ + (core_ < uint32_t(selected_) % sendCores_ ? 1U : 0U);
+        if (owned == 0U) return;
+        const uint32_t activeLanes = owned < lanes_ ? owned : lanes_;
+#else
+        const uint32_t activeLanes = lanes_;
+#endif
         uint64_t flagMask[2] = {0xffU, 0U};
-        for (uint32_t lane = 0; lane < lanes_; ++lane) {
+        for (uint32_t lane = 0; lane < activeLanes; ++lane) {
             // The entire 32B Flag is initialized once and is not touched by Copy.
             Duplicate<float>(resultUb_[lane * resultStride_].ReinterpretCast<float>()[120U], 1.0f, flagMask,
                              uint8_t(blocks_), 1U, 16U);
@@ -362,7 +376,7 @@ private:
                 const uint32_t source = uint32_t(tableUb_.GetValue(0U));
                 const uint32_t token = uint32_t(tableUb_.GetValue(1U));
                 const uint32_t topk = uint32_t(tableUb_.GetValue(2U));
-                const uint32_t lane = sendSequence++ % lanes_;
+                const uint32_t lane = sendSequence++ % activeLanes;
                 // Input lifetime ends after Vector has consumed its last block.
                 WaitFlag<HardEvent::V_MTE2>(lane);
                 auto input = payloadUb_[lane * laneBytes_ / 2U];
@@ -394,7 +408,7 @@ private:
         }
         returnBatch_.SubmitPending();
         // Final retirement includes unused seeded lanes, never a per-token drain.
-        for (uint32_t lane = 0; lane < lanes_; ++lane) {
+        for (uint32_t lane = 0; lane < activeLanes; ++lane) {
             WaitFlag<HardEvent::V_MTE2>(lane);
             WaitFlag<HardEvent::MTE3_V>(lane);
         }
@@ -412,6 +426,12 @@ private:
         partial.Init(args_, &pipe_, arena_.Get<uint8_t>()[kEpServerDedupCombineResidentUbBytes], expertAddr_,
                      tableAddr_, relayAddr_, typesAddr_, tokens_, bs_, h_, topK_, experts_, dtype_, window_,
                      workspace_, &returnBatch_);
+#ifdef DEEPEP_LL_COMBINE_SMALL_BATCH
+        // Metadata is already immutable. Plan while peers finish staging;
+        // payload loads still begin strictly after the existing ready wait.
+        partial.PrepareTasks();
+        WaitServerReady();
+#endif
         partialTasks_ = partial.Process();
         // Retire only input and Vector users before scalar metadata reuse.
         // M4 output slots and MTE3_V events stay live for M5's per-slot waits.

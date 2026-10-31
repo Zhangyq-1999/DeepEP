@@ -12,7 +12,7 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[2]
-BRANCH = "kernel/ll-ndr-metadata-cores"
+BRANCH = "perf/ll-combine-small-batch"
 VISIBILITY = ("CUDA_VISIBLE_DEVICES", "ASCEND_RT_VISIBLE_DEVICES", "ASCEND_VISIBLE_DEVICES", "PROBE_VISIBLE_DEVICES")
 RANK_ENV = ("RANK", "WORLD_SIZE", "LOCAL_RANK", "LOCAL_WORLD_SIZE", "GROUP_RANK", "ROLE_RANK",
             "MASTER_ADDR", "MASTER_PORT", "DEEPEP_SHMEM_ENDPOINT")
@@ -182,6 +182,10 @@ def installed_identity(a):
             info.get("shmem", {}).get("build") != sdk["build"]):
         raise RuntimeError("Installed wheel and current SHMEM SDK identity differ; rebuild the wheel")
     histogram = os.environ.get("DEEPEP_LL_COUNT_HISTOGRAM", "OFF") == "ON"
+    combine_small_batch = build_support.enabled("DEEPEP_LL_COMBINE_SMALL_BATCH", os.environ)
+    if (bool(getattr(native, "low_latency_combine_small_batch", False)) != combine_small_batch
+            or info.get("ll_combine_small_batch", False) != combine_small_batch):
+        raise RuntimeError("Installed Combine variant differs from DEEPEP_LL_COMBINE_SMALL_BATCH; rebuild the wheel")
     metadata = build_support.metadata_cores()
     expected_protocol = 41000 + 2 * metadata + int(histogram)
     if (getattr(native, "low_latency_dispatch_metadata_cores", None) != metadata
@@ -224,6 +228,7 @@ def installed_identity(a):
     return {"schema": 1, "project_root": str(ROOT.resolve()), "git_revision": revision,
             "source_sha256": fingerprint, "sdk_revision": lock["revision"], "sdk_build": sdk["build"],
             "core_protocol": expected_protocol, "count_histogram": histogram, "metadata_cores": metadata,
+            "combine_small_batch": combine_small_batch,
             "roce_qps_per_peer": native.low_latency_core_config()["active_aiv"], "timer_schema": 3, "reference_profile": reference,
             "reference_profile_schema": 5 if reference else None, "mode": a.mode, "arguments": shared_args}
 
