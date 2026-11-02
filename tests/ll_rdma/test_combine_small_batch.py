@@ -20,7 +20,7 @@ def function_body(source, marker):
     return source[start:cursor]
 
 
-@pytest.mark.parametrize("receive_cores", [0, 8, 16, 24])
+@pytest.mark.parametrize("receive_cores", [0, 8, 16, 24, 32, 36])
 def test_production_plan_matches_original_scan(tmp_path, receive_cores):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
     if not zig:
@@ -46,6 +46,7 @@ template<class T>void Gather(LocalTensor<T> d,LocalTensor<T> s,LocalTensor<uint3
 #include <random>
 #include <numeric>
 #include "kernels/combine/low_latency/combine_partial_plan.h"
+#include "kernels/combine/low_latency/combine_layout.h"
 using namespace AscendC;
 using namespace CombineDedup;
 template<uint32_t Group>struct Original {
@@ -122,6 +123,15 @@ void BadRank(){
        {types.data()},{routes.data()},3,16,0,0,8));
 }
 int main(){
+ // A 56-AIV device must admit 20 send + 36 receive, as well as the
+ // original 28/28 split. Check Host admission before executing ownership.
+ assert(EpCombineRecvCoreCount(56)==(DEEPEP_LL_COMBINE_RECV_CORES?DEEPEP_LL_COMBINE_RECV_CORES:28));
+ if(DEEPEP_LL_COMBINE_RECV_CORES)assert(EpCombineRecvCoreCount(DEEPEP_LL_COMBINE_RECV_CORES)==0);
+ for(uint32_t world:{4,16,32})for(uint32_t bs:{32,48,64,72}){
+  Layout launch;assert(BuildLayout(world,bs,3584,8,384,launch,56));
+  const auto ub=EpCombineM45Layout(10000,bs,3584,8,EpCombineRecvCoreCount(56));
+  assert(ub.inputLanes && ub.totalBytes<=kEpServerDedupCombineRecvUbBytes);
+ }
  for(uint32_t c:{16,32,56,64,72})for(uint32_t n:{0,1,7,63,64,65,255,256,257,576,577,1024,10000})
   for(uint32_t pattern=0;pattern<4;++pattern){
    Check<4>(16,pattern*4,c,n,3584,8,pattern);

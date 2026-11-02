@@ -72,8 +72,7 @@ template<class T> void TestDataCopyPad(GlobalTensor<T> d,LocalTensor<T> s,DataCo
 using namespace AscendC;
 using namespace CombineDedup;
 
-template<class T> void Check(uint32_t bs,uint32_t h,uint32_t k,uint32_t participant,bool dedup,uint32_t delay,uint32_t partialTasks) {
-    const uint32_t recv=8;
+template<class T> void Check(uint32_t bs,uint32_t h,uint32_t k,uint32_t participant,bool dedup,uint32_t delay,uint32_t partialTasks,uint32_t recv=8) {
     auto layout=EpCombineM45Layout(100,bs,h,k,recv);
     assert(layout.inputLanes && layout.totalBytes<=kEpServerDedupCombineRecvUbBytes);
     const uint32_t usable=kEpServerDedupCombineRecvUbBytes-kEpServerDedupCombineResidentUbBytes;
@@ -164,5 +163,10 @@ int main(){
     for(uint32_t h:{3584,7168})for(uint32_t partial:{0,1,7,11}){
         Check<half>(72,h,8,0,true,1,partial);Check<bfloat16_t>(72,h,6,7,false,1,0);
     }
+    // Cover every final owner in receive-heavy splits, including empty
+    // owners when BS=32 and receive=36. Deferred writes must stay in range.
+    for(uint32_t recv:{32,36})for(uint32_t bs:{32,48,64,72})
+        for(uint32_t participant=0;participant<recv;++participant)
+            for(bool dedup:{false,true})Check<bfloat16_t>(bs,256,8,participant,dedup,1,5,recv);
     std::puts("PASS production M5: delayed arrivals, BF16/FP16 results, M4 retirement, masks, tails and guards");
 }

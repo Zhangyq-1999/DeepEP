@@ -53,7 +53,9 @@ base 和 opt 使用各自的 Combine kernel 源码。base 从上游提交 `5b38b
 | `--recv-cores 8` | 0 | 指定接收、汇集和最终归约核数；0 沿用核数均分 |
 | `--early-reduce ON` | OFF | BS ≤ 72 时，按原 slot 顺序归约已到齐的贡献，同时推进至多两个 token |
 
-显式接收核数支持 8～36，且不超过实际 AIV 核数的一半。其余核负责暂存和 DIRECT 回传。各 rank 使用相同的核数配置；最后 8 核仍负责组内就绪通知。
+显式接收核数支持 8～36，并须小于实际 AIV 总核数。其余核负责 DIRECT 回传，TERMINAL 暂存仍由全部核参与。各 rank 使用相同的核数配置；最后 8 核负责组内就绪通知。
+
+分核调整参考了上游 [ll-configurable-groups 的实现](https://github.com/TangYunfei147/DeepEP-LL/blob/705decf9bd24a0ead24368a2a19307c36dd09ea2/tests/ll_stage_timer/CORE_SPLIT.md)。接收核可以超过总核数的一半，例如 56 核时配置 20 个发送核和 36 个接收归约核。当前分支继续使用已有控制区容量、Get 汇集和跨机 RDMA 回传，base 使用原冻结源码。
 
 例如，构建一个组合实验版：
 
@@ -64,6 +66,17 @@ bash tests/ll_cpp_bench/build.sh \
 ```
 
 分别构建原版、单项优化版和组合版，再用相同参数对比。正式性能构建使用 `--profile OFF`，编译器会移除诊断代码。打点用于定位问题，启用打点后的 Event 耗时单独统计。
+
+只对比分核时，可以构建 `r36-profile`。它关闭其他优化，只把接收核数改为 36：
+
+```bash
+bash tests/ll_cpp_bench/build.sh \
+    --shmem-root "$SHMEM_ROOT" --mpi-home "$MPI_HOME" \
+    --build-dir "$PWD/build/ll-cpp-r36-profile" --variant opt \
+    --small-batch OFF --recv-cores 36 --early-reduce OFF --profile ON
+```
+
+将它与下文的 `ref-profile` 用 `--variants ref-profile,r36-profile` 对比，运行时保持 `--profile 2`。双机测试需要两边都编译。56 核时，原流程使用 28 个接收核，实验版使用 36 个；重点比较 DIRECT 回传和最终归约的收尾。分核调整已通过 Host 检查，设备精度和时延仍需实测。
 
 ## 单机 EP2、EP4、EP8、EP16
 

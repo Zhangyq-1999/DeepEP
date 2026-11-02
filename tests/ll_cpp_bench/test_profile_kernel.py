@@ -35,7 +35,8 @@ template class CombineDedup::CombineMemoryServerDedupKernel<16>;
 int main() {}
 ''', encoding="utf-8")
     (tmp_path / "shmem.h").write_text('#pragma once\ninline void dcci_cachelines(uint8_t*, uint64_t) {}\n')
-    flags = ["-DDEEPEP_LL_RDMA=1", "-DDEEPEP_LL_COMBINE_EARLY_REDUCE=1"]
+    flags = ["-DDEEPEP_LL_RDMA=1", "-DDEEPEP_LL_COMBINE_EARLY_REDUCE=1",
+             "-DDEEPEP_LL_COMBINE_RECV_CORES=36"]
     if profile:
         flags += ["-DDEEPEP_LL_COMBINE_PROFILE=1"]
     if small:

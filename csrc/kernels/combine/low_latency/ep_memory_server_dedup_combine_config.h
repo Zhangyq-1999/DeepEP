@@ -43,19 +43,20 @@ COMBINE_DEDUP_EP_COMBINE_CONSTEXPR uint32_t EpCombineAlign(uint32_t n, uint32_t 
 }
 // 0 keeps the original half/half split. The count is fixed across ranks,
 // including launches with different local BS, so ready-row coverage agrees.
-// The last eight cores still publish group readiness. Positive values select
-// an explicit receive count; zero return means unsupported at this launch size.
+// The last eight cores still publish group readiness. An explicit receive count
+// may exceed half the active cores, within the existing ready-row capacity.
+// Keep at least one DIRECT sender; zero return means an unsupported launch.
 #ifndef DEEPEP_LL_COMBINE_RECV_CORES
 #define DEEPEP_LL_COMBINE_RECV_CORES 0
 #endif
 COMBINE_DEDUP_EP_COMBINE_CONSTEXPR uint32_t EpCombineRecvCoreCount(uint32_t cores)
 {
-    const uint32_t half = cores / 2U;
 #if DEEPEP_LL_COMBINE_RECV_CORES > 0
     return DEEPEP_LL_COMBINE_RECV_CORES >= DispatchDedup::kLlNotifyCoreNum &&
-           DEEPEP_LL_COMBINE_RECV_CORES <= half ? DEEPEP_LL_COMBINE_RECV_CORES : 0U;
+           DEEPEP_LL_COMBINE_RECV_CORES <= kCombineNotifyRows &&
+           DEEPEP_LL_COMBINE_RECV_CORES < cores ? DEEPEP_LL_COMBINE_RECV_CORES : 0U;
 #else
-    return half;
+    return cores / 2U;
 #endif
 }
 COMBINE_DEDUP_EP_COMBINE_CONSTEXPR bool EpCombineEarlyReduce(uint32_t bs)

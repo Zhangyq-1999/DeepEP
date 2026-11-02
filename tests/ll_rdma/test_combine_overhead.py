@@ -92,7 +92,7 @@ template<uint32_t Group> struct Test {
   }
  }
 };
-int main(){for(uint32_t n=16;n<=72;n+=2)for(uint32_t recv=8;recv<=n/2;++recv){Test<4>(n,recv).Run();Test<16>(n,recv).Run();}}
+int main(){for(uint32_t n=16;n<=72;n+=2)for(uint32_t recv=8;recv<=36 && recv<n;++recv){Test<4>(n,recv).Run();Test<16>(n,recv).Run();}}
 ''', 'combine-control')
 
 
