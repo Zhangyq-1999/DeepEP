@@ -58,7 +58,7 @@ def bash():
 
 
 def test_shell_syntax(bash):
-    for script in ("build.sh", "run.sh", "launch.sh", "prepare_shmem.sh"):
+    for script in ("build.sh", "run.sh", "launch.sh", "prepare_shmem.sh", "hydra_proxy_command.sh"):
         subprocess.run([bash, "-n", str(HERE / script)], check=True, timeout=10)
 
 
@@ -107,7 +107,12 @@ def test_mpi_launch_commands(bash):
                                  "--tokens", "72", "--output-dir", "/tmp/test data"],
                                 capture_output=True, text=True, timeout=10, check=True)
         assert f"-ppn 16 -n {ranks}" in result.stdout
-        assert f"-launcher {launcher}" in result.stdout
+        if launcher == "manual":
+            assert "-launcher ssh -launcher-exec" in result.stdout
+            assert "hydra_proxy_command.sh" in result.stdout
+            assert "-launcher manual" not in result.stdout
+        else:
+            assert f"-launcher {launcher}" in result.stdout
         assert "--tokens 72" in result.stdout
         assert "MPIEXEC_PORT_RANGE=29671:29771" in result.stdout
     for ep in (2,4,8,16):
@@ -141,6 +146,8 @@ def test_per_node_launch_arguments(bash):
         if node == 0:
             assert "HYDRA_LAUNCHER_AUTOFORK=0" in result.stdout
             assert "MPIEXEC_PORT_RANGE=31000:31000" in result.stdout
+            assert "-launcher ssh -launcher-exec" in result.stdout
+        assert "--launcher manual" not in result.stdout
     for args in (("--ep", "4", "--node-rank", "1"), ("--ep", "32"), ("--run-id", "../escape"),
                  ("--master-port", "65535", "--variants", "base,opt"), ("--variants", "../escape"),
                  ("--variants", "base,,opt")):
@@ -208,13 +215,31 @@ echo profile-fixture >"$out/rank-0-profile.csv"
             assert (run / "node-0" / f"{phase}-{variant}.log").exists()
 
 
-@pytest.mark.parametrize("failure", [False, True])
+def test_hydra_command_launcher_only_prints(bash, tmp_path):
+    proxy = tmp_path / "path with spaces" / "hydra_pmi_proxy"
+    proxy.parent.mkdir()
+    marker = tmp_path / "unexpected-execution"
+    proxy.write_text(f"#!/usr/bin/env bash\ntouch '{marker.as_posix()}'\n", newline="\n")
+    proxy.chmod(0o755)
+    result = subprocess.run([bash, str(HERE / "hydra_proxy_command.sh"), "-x", "node0",
+                             '"' + proxy.as_posix() + '"', "--control-port", "node0:29671",
+                             "--launcher", "ssh", "--usize", "-2", "--proxy-id", "0"],
+                            capture_output=True, text=True, check=True, timeout=10)
+    assert "LL_HYDRA_PROXY_READY 0 node0:29671" in result.stdout
+    assert "env -u HYDI_CONTROL_FD" in result.stdout
+    assert not marker.exists()
+
+
+@pytest.mark.parametrize("failure", [0, 1, 2])
 def test_two_node_script_sequence_with_fake_hydra(bash, tmp_path, failure):
     """Exercise two independent scripts. This fixture is not an MPI runtime test."""
     root = tmp_path / "project"
     script = root / "tests/ll_cpp_bench/launch.sh"
     script.parent.mkdir(parents=True)
     shutil.copyfile(HERE / "launch.sh", script)
+    command_launcher = script.with_name("hydra_proxy_command.sh")
+    shutil.copyfile(HERE / "hydra_proxy_command.sh", command_launcher)
+    command_launcher.chmod(0o755)
     mpi = tmp_path / "mpi"
     (mpi / "bin").mkdir(parents=True)
     shared = tmp_path / "shared"
@@ -235,12 +260,17 @@ if [[ ${1:-} == -version ]]; then echo '    Version: 3.2.1'; exit 0; fi
 [[ $HYDRA_LAUNCHER_AUTOFORK == 0 ]]
 port=${MPIEXEC_PORT_RANGE%:*}
 while (($#)); do
+    case $1 in -launcher) launcher=$2;; -launcher-exec) launcher_exec=$2;; esac
     if [[ $1 == --output-dir ]]; then out=$2; break; fi
     shift
 done
+[[ $launcher == ssh && $launcher_exec == */hydra_proxy_command.sh ]]
 mkdir -p "$out"
 touch "$FAKE_SHARED/controller-$port"
-echo HYDRA_LAUNCH_END
+for node in 0 1; do
+    bash "$launcher_exec" -x "node$node" '"/fixture/hydra_pmi_proxy"' --control-port "node0:$port" --proxy-id "$node"
+done
+if [[ ${FAKE_FAIL:-0} == 2 ]]; then echo 'fixture controller abort'; exit 134; fi
 for ((i=0;i<200;i++)); do
     if [[ -f "$FAKE_SHARED/join-$port-0" && -f "$FAKE_SHARED/join-$port-1" ]]; then break; fi
     sleep 0.02
@@ -261,6 +291,7 @@ for ((i=0;i<200;i++)); do
     sleep 0.02
 done
 [[ -f "$FAKE_SHARED/controller-$port" ]]
+if [[ ${FAKE_FAIL:-0} == 2 ]]; then echo 'fixture connection refused'; exit 1; fi
 touch "$FAKE_SHARED/join-$port-$node"
 for ((i=0;i<200;i++)); do
     [[ -f "$FAKE_SHARED/done-$port" ]] && exit 0
@@ -268,7 +299,7 @@ for ((i=0;i<200;i++)); do
 done
 exit 1
 ''')
-    env = dict(os.environ, FAKE_SHARED=shared.as_posix(), FAKE_FAIL=str(int(failure)))
+    env = dict(os.environ, FAKE_SHARED=shared.as_posix(), FAKE_FAIL=str(failure))
     # Git Bash accepts Windows drive paths as arguments, but PATH uses /c/... .
     helper_path = subprocess.check_output([bash, "-c", 'cygpath -u "$1"' if os.name == "nt" else 'printf "%s" "$1"',
                                           "_", helpers.as_posix()], text=True).strip()
@@ -279,13 +310,15 @@ exit 1
     processes = [subprocess.Popen([*args, "--node-rank", str(node)], env=env, stdout=subprocess.PIPE,
                                   stderr=subprocess.STDOUT, text=True) for node in (1, 0)]
     try:
-        for proc in processes:
+        for node, proc in zip((1, 0), processes):
             output, _ = proc.communicate(timeout=25)
-            assert (proc.returncode == 0) != failure, output
+            assert (proc.returncode == 0) == (failure == 0), output
+            if node == 0 and failure == 2:
+                assert "fixture controller abort" in output
     finally:
         for proc in processes:
             if proc.poll() is None:
                 proc.kill()
                 proc.wait(timeout=5)
     assert (shared / "controller-29671").exists()
-    assert (shared / "controller-29672").exists() != failure
+    assert (shared / "controller-29672").exists() == (failure == 0)

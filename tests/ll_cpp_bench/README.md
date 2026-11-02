@@ -133,6 +133,10 @@ bash tests/ll_cpp_bench/launch.sh \
 
 `run.sh` 保留为单个 MPI 作业的底层启动入口。常规单机与双机测试使用上面的 `launch.sh` 即可。
 
+MPICH 3.2.1 的内置 `manual` 模式在关闭 autofork 后，可能在打印 `HYDRA_LAUNCH_END` 后报 `free(): invalid pointer`。当前脚本通过 `-launcher-exec` 调用仓库中的 `hydra_proxy_command.sh`，由它打印代理命令，再由每台机器的启动脚本运行本机代理。这样可以保留手动会合方式，系统 MPI 和 kernel 构建继续复用。该辅助脚本只打印命令，不建立 SSH 连接。
+
+如果遇到 controller 异常退出，脚本会同时打印代理日志和 `.log.controller` 日志。优先查看 controller 的首个错误；随后出现的 `Connection refused` 可能只是 controller 退出后的结果。
+
 ## 采样与结果
 
 每种 BS 先运行一次 Dispatch，生成真实的路由表和专家输入。用例把 Dispatch 输出当作恒等专家的输出，使用均匀权重执行 Combine，并检查结果是否回到原输入。正式采样前后各检查一次精度，检查按 BF16 或 FP16 的舍入误差设置容差。

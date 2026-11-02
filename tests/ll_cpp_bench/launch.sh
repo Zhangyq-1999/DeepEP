@@ -64,6 +64,7 @@ if ((!dry)); then
     [[ -x "$mpi/bin/mpiexec" ]] || fail 'MPI executable unavailable'
     if ((ep==32)); then
         [[ -x "$mpi/bin/hydra_pmi_proxy" ]] || fail 'Hydra proxy unavailable'
+        [[ -x "$root/tests/ll_cpp_bench/hydra_proxy_command.sh" ]] || fail 'Update the checkout; executable hydra_proxy_command.sh is required'
         "$mpi/bin/mpiexec" -version | grep -Eq 'Version:[[:space:]]+3\.2\.1([[:space:]]|$)' || fail 'Per-node startup requires MPICH 3.2.1'
     fi
     command -v setsid >/dev/null || fail 'setsid is required'
@@ -123,33 +124,46 @@ for phase in "${!sequence[@]}"; do
             cmd=(env)
             for name in MPIR_CVAR_CH3_PORT_RANGE MPIR_PARAM_CH3_PORT_RANGE MPICH_CH3_PORT_RANGE \
                         MPIR_CVAR_PORTRANGE MPIR_CVAR_PORT_RANGE MPIR_PARAM_PORTRANGE MPIR_PARAM_PORT_RANGE \
-                        MPICH_PORTRANGE MPICH_PORT_RANGE MPIEXEC_PORTRANGE HYDI_CONTROL_FD; do
+                        MPICH_PORTRANGE MPICH_PORT_RANGE MPIEXEC_PORTRANGE HYDI_CONTROL_FD HYDRA_LAUNCHER_EXTRA_ARGS; do
                 cmd+=(-u "$name")
             done
             cmd+=("MPIEXEC_PORT_RANGE=$phase_port:$phase_port" "MPIEXEC_TIMEOUT=$job_timeout" HYDRA_LAUNCHER_AUTOFORK=0
-                  "$mpi/bin/mpiexec" -launcher manual -rmk user -demux poll -localhost "$master"
+                  "$mpi/bin/mpiexec" -launcher ssh -launcher-exec "$root/tests/ll_cpp_bench/hydra_proxy_command.sh"
+                  -rmk user -demux poll -localhost "$master"
                   -hosts "$hosts" -ppn 16 -n 32 -bind-to none -wdir "$root"
                   "$binary" "${bench_args[@]}" --output-dir "$out")
             if ((dry)); then print_cmd "${cmd[@]}"; else
                 setsid "${cmd[@]}" >"$log.controller" 2>&1 & controller=$!
-                # Wait for this controller to publish its proxy commands before
-                # starting our proxy; fail locally if it could not bind the port.
+                # The command-only launcher avoids MPICH 3.2.1 manual's invalid
+                # free when AUTOFORK=0. It prints commands without executing SSH.
                 deadline=$((SECONDS+join_timeout))
-                until grep -q '^HYDRA_LAUNCH_END' "$log.controller"; do
+                until grep -Fqx "LL_HYDRA_PROXY_READY 0 $master:$phase_port" "$log.controller" &&
+                      grep -Fqx "LL_HYDRA_PROXY_READY 1 $master:$phase_port" "$log.controller"; do
                     kill -0 "$controller" 2>/dev/null || { cat "$log.controller"; fail 'MPI controller exited'; }
                     ((SECONDS<deadline)) || fail 'MPI controller startup timed out'
                     sleep 0.1
                 done
+                # Publishing proxy commands does not guarantee the controller
+                # survived initialization. Surface its failure before joining.
+                kill -0 "$controller" 2>/dev/null || { cat "$log.controller"; fail 'MPI controller exited before proxy startup'; }
             fi
         fi
         cmd=(env -u HYDI_CONTROL_FD timeout --signal=PIPE --kill-after=5 "$job_timeout"
              "$mpi/bin/hydra_pmi_proxy" --control-port "$master:$phase_port" --rmk user
-             --launcher manual --demux poll --pgid 0 --retries "$(((join_timeout+9)/10))"
+             --launcher ssh --demux poll --pgid 0 --retries "$(((join_timeout+9)/10))"
              --usize "$ep" --proxy-id "$node_rank")
         if ((dry)); then print_cmd "${cmd[@]}"; continue; fi
         echo "Joining $master:$phase_port; log=$log"
         setsid "${cmd[@]}" >"$log" 2>&1 & proxy=$!
-        if wait "$proxy"; then proxy=; else status=$?; cat "$log"; exit "$status"; fi
+        if wait "$proxy"; then proxy=; else
+            status=$?
+            cat "$log"
+            if [[ -n $controller ]]; then
+                echo "MPI controller log: $log.controller"
+                cat "$log.controller"
+            fi
+            exit "$status"
+        fi
         if [[ -n $controller ]]; then
             if wait "$controller"; then controller=; else status=$?; cat "$log.controller"; exit "$status"; fi
             cat "$log.controller"
