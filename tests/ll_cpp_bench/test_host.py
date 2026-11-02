@@ -30,7 +30,7 @@ def bash():
 
 
 def test_shell_syntax(bash):
-    for script in ("build.sh", "run.sh", "prepare_shmem.sh"):
+    for script in ("build.sh", "run.sh", "launch.sh", "prepare_shmem.sh"):
         subprocess.run([bash, "-n", str(HERE / script)], check=True, timeout=10)
 
 
@@ -92,3 +92,112 @@ def test_mpi_launch_commands(bash):
         result = subprocess.run([bash, str(HERE / "run.sh"), *args, "--dry-run"],
                                 capture_output=True, timeout=10)
         assert result.returncode != 0
+
+
+def test_per_node_launch_arguments(bash):
+    for ep in (2, 4, 8, 16):
+        result = subprocess.run([bash, str(HERE / "launch.sh"), "--ep", str(ep), "--variants", "base,opt",
+                                 "--dry-run"], capture_output=True, text=True, check=True, timeout=10)
+        assert result.stdout.count(f"-ppn {ep} -n {ep}") == 2
+        assert "-launcher fork" in result.stdout
+        assert "0-base" in result.stdout and "1-opt" in result.stdout
+    for node in (0, 1):
+        result = subprocess.run([bash, str(HERE / "launch.sh"), "--ep", "32", "--hosts", "node0,node1",
+                                 "--node-rank", str(node), "--master-port", "31000", "--variants", "base,opt",
+                                 "--run-id", "trial", "--dry-run", "--", "--tokens", "72"],
+                                capture_output=True, text=True, check=True, timeout=10)
+        assert f"--proxy-id {node}" in result.stdout
+        assert "--control-port node0:31000" in result.stdout
+        assert "--control-port node0:31001" in result.stdout
+        assert ("-n 32" in result.stdout) == (node == 0)
+        if node == 0:
+            assert "HYDRA_LAUNCHER_AUTOFORK=0" in result.stdout
+            assert "MPIEXEC_PORT_RANGE=31000:31000" in result.stdout
+    for args in (("--ep", "4", "--node-rank", "1"), ("--ep", "32"), ("--run-id", "../escape"),
+                 ("--master-port", "65535", "--variants", "base,opt"), ("--variants", "unknown")):
+        result = subprocess.run([bash, str(HERE / "launch.sh"), *args, "--dry-run"],
+                                capture_output=True, timeout=10)
+        assert result.returncode != 0
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_two_node_script_sequence_with_fake_hydra(bash, tmp_path, failure):
+    """Exercise two independent scripts. This fixture is not an MPI runtime test."""
+    root = tmp_path / "project"
+    script = root / "tests/ll_cpp_bench/launch.sh"
+    script.parent.mkdir(parents=True)
+    shutil.copyfile(HERE / "launch.sh", script)
+    mpi = tmp_path / "mpi"
+    (mpi / "bin").mkdir(parents=True)
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    def write(path, body):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("#!/usr/bin/env bash\nset -eu\n" + body, newline="\n")
+        path.chmod(0o755)
+    for variant in ("base", "opt"):
+        write(root / f"build/ll-cpp-{variant}/ll_combine_bench", "exit 0\n")
+    # Git Bash lacks setsid on some Windows installations. Process-group and
+    # signal behavior belongs to Linux validation; this test checks orchestration.
+    helpers = tmp_path / "helpers"
+    write(helpers / "setsid", 'exec "$@"\n')
+    write(helpers / "timeout", 'shift 3\nexec "$@"\n')
+    write(mpi / "bin/mpiexec", r'''
+if [[ ${1:-} == -version ]]; then echo '    Version: 3.2.1'; exit 0; fi
+[[ $HYDRA_LAUNCHER_AUTOFORK == 0 ]]
+port=${MPIEXEC_PORT_RANGE%:*}
+while (($#)); do
+    if [[ $1 == --output-dir ]]; then out=$2; break; fi
+    shift
+done
+mkdir -p "$out"
+touch "$FAKE_SHARED/controller-$port"
+echo HYDRA_LAUNCH_END
+for ((i=0;i<200;i++)); do
+    if [[ -f "$FAKE_SHARED/join-$port-0" && -f "$FAKE_SHARED/join-$port-1" ]]; then break; fi
+    sleep 0.02
+done
+[[ -f "$FAKE_SHARED/join-$port-0" && -f "$FAKE_SHARED/join-$port-1" ]]
+if [[ ${FAKE_FAIL:-0} == 1 ]]; then touch "$FAKE_SHARED/done-$port"; exit 17; fi
+for ((r=0;r<32;r++)); do echo passed >"$out/rank-$r.PASS"; done
+echo summary >"$out/summary.csv"
+touch "$FAKE_SHARED/done-$port"
+''')
+    write(mpi / "bin/hydra_pmi_proxy", r'''
+while (($#)); do
+    case $1 in --control-port) port=${2##*:};; --proxy-id) node=$2;; esac
+    shift 2
+done
+for ((i=0;i<200;i++)); do
+    [[ -f "$FAKE_SHARED/controller-$port" ]] && break
+    sleep 0.02
+done
+[[ -f "$FAKE_SHARED/controller-$port" ]]
+touch "$FAKE_SHARED/join-$port-$node"
+for ((i=0;i<200;i++)); do
+    [[ -f "$FAKE_SHARED/done-$port" ]] && exit 0
+    sleep 0.02
+done
+exit 1
+''')
+    env = dict(os.environ, FAKE_SHARED=shared.as_posix(), FAKE_FAIL=str(int(failure)))
+    # Git Bash accepts Windows drive paths as arguments, but PATH uses /c/... .
+    helper_path = subprocess.check_output([bash, "-c", 'cygpath -u "$1"' if os.name == "nt" else 'printf "%s" "$1"',
+                                          "_", helpers.as_posix()], text=True).strip()
+    original_path = subprocess.check_output([bash, "-c", 'printf "%s" "$PATH"'], text=True)
+    env["PATH"] = helper_path + ":" + original_path
+    args = [bash, str(script), "--ep", "32", "--hosts", "node0,node1", "--mpi-home", mpi.as_posix(),
+            "--variants", "base,opt", "--run-id", "test", "--join-timeout", "5", "--job-timeout", "10"]
+    processes = [subprocess.Popen([*args, "--node-rank", str(node)], env=env, stdout=subprocess.PIPE,
+                                  stderr=subprocess.STDOUT, text=True) for node in (1, 0)]
+    try:
+        for proc in processes:
+            output, _ = proc.communicate(timeout=25)
+            assert (proc.returncode == 0) != failure, output
+    finally:
+        for proc in processes:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+    assert (shared / "controller-29671").exists()
+    assert (shared / "controller-29672").exists() != failure

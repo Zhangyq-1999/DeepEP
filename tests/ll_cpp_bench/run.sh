@@ -42,6 +42,7 @@ low=${BASH_REMATCH[1]} high=${BASH_REMATCH[2]}
 export PATH="$mpi/bin:$PATH"
 export LD_LIBRARY_PATH="$mpi/lib:$mpi/lib64:${SHMEM_ROOT:+$SHMEM_ROOT/lib:}${LD_LIBRARY_PATH:-}"
 export MPIEXEC_PORT_RANGE="$port_range" MPIEXEC_TIMEOUT="$job_timeout"
+if [[ $launcher == manual ]]; then export HYDRA_LAUNCHER_AUTOFORK=0; fi
 # Manual mode prints one Hydra proxy command per host. Keep this mpiexec alive
 # and run those commands on their respective hosts; all join one MPI world.
 cmd=("$mpi/bin/mpiexec" -launcher "$launcher" -hosts "$hosts" -ppn "$ppn" -n "$ep"

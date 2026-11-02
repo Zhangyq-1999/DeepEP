@@ -53,39 +53,38 @@ bash tests/ll_cpp_bench/build.sh \
 
 显式接收核数支持 8～36，且不超过实际 AIV 核数的一半。其余核负责暂存和 DIRECT 回传。各 rank 使用相同的核数配置；最后 8 核仍负责组内就绪通知。
 
-例如，单独测试提前归约：
+例如，构建一个组合实验版：
 
 ```bash
 bash tests/ll_cpp_bench/build.sh \
-    --shmem-root "$SHMEM_ROOT" --build-dir "$PWD/build/ll-cpp-early" \
-    --early-reduce ON
+    --shmem-root "$SHMEM_ROOT" --build-dir "$PWD/build/ll-cpp-opt" \
+    --small-batch ON --recv-cores 8 --early-reduce ON
 ```
 
 分别构建原版、单项优化版和组合版，再用相同参数对比。新路径目前通过了本地 CPU 模型检查，CANN 编译、设备精度和性能仍需在目标机器验证。
 
 ## 单机 EP2、EP4、EP8、EP16
 
-先用两张卡跑功能冒烟。`--devices` 的编号数量与本机进程数一致，可以选择当前空闲的卡。
+每台机器执行一次 `launch.sh`。脚本启动本机所有 rank，等待任务结束并检查结果。先用两张卡跑功能冒烟；`--devices` 的编号数量与本机进程数一致。
 
 ```bash
-bash tests/ll_cpp_bench/run.sh --hosts localhost --ep 2 --launcher fork -- \
+bash tests/ll_cpp_bench/launch.sh --ep 2 --variants base --run-id ep2-smoke -- \
     --devices 0,1 --tokens 1,8 --hidden 3584 --topk 8 --experts 384 \
-    --warmup 2 --iters 5 --output-dir "$PWD/results/cpp-2p-smoke"
+    --warmup 2 --iters 5
 ```
 
-EP4、EP8 同样指定 `--ep 4` 或 `--ep 8`。省略 `--devices` 时，程序默认使用从 0 开始的相应数量的卡。验证小 EP 后，再跑 16 卡性能：
+EP4、EP8 同样指定 `--ep 4` 或 `--ep 8`。省略 `--devices` 时，程序默认使用从 0 开始的相应数量的卡。验证小 EP 后，用一条命令对比 16 卡原版和优化版：
 
 ```bash
-bash tests/ll_cpp_bench/run.sh \
-    --hosts localhost --ep 16 --launcher fork \
-    --binary "$PWD/build/ll-cpp-base/ll_combine_bench" -- \
+bash tests/ll_cpp_bench/launch.sh \
+    --ep 16 --variants base,opt --run-id ep16-ab -- \
     --tokens 1,2,4,8,16,32,48,64,72 \
     --hidden 3584 --topk 8 --experts 384 --capacity 256 \
     --dtype bf16 --route random --seed 0 \
-    --warmup 10 --iters 100 --output-dir "$PWD/results/cpp-16p-base"
+    --warmup 10 --iters 100
 ```
 
-每个 MPI rank 绑定一张卡。结果目录应使用新路径，避免覆盖已有采样。
+`base` 使用 `build/ll-cpp-base/ll_combine_bench`，`opt` 使用 `build/ll-cpp-opt/ll_combine_bench`。脚本按指定顺序运行，前一版成功退出后再启动后一版。也可以用 `--variants base,opt,base` 做 A/B/A 对照。每次测试使用新的 `--run-id`。
 
 EP2 使用新增的 G2 Plain16 特化，支持 BF16 和 FP16；EP4、EP8、EP16 使用 G4。单机数据走 MTE。EP32 沿用 G16，跨主机回传走 RDMA；FIRST_HOP 汇集保留 Get 方案。
 
@@ -93,42 +92,38 @@ EP2 使用新增的 G2 Plain16 特化，支持 BF16 和 FP16；EP4、EP8、EP16 
 
 ## 双机 32 卡
 
-**两台机器共同组成一个 32-rank MPI 作业。** MPI 模式使用自己的 bootstrap，参数中的地址和端口范围用于 MPICH，无需另设 SHMEM TCP 端口。
+**两台机器各执行一次 `launch.sh`，共同组成一个 32-rank MPI 作业。** 脚本封装 MPICH 3.2.1 的 Hydra 启动流程，自动启动本机代理和 16 个 rank。运行时无需 SSH，也无需复制代理命令。
 
-### SSH 可互通时
+两台机器先加载前文的 CANN、MPI 和 SHMEM 环境。两边使用相同的仓库绝对路径、编译结果、`--hosts`、`--master-port`、`--variants` 和 `--run-id`。下面的 `HOST0`、`HOST1` 替换成实际 IP。
 
-在第一台机器执行。将 `HOST0`、`HOST1` 替换成两台机器可互通的 IP，`HOST0` 同时作为启动端地址。
+第一台机器执行：
 
 ```bash
-bash tests/ll_cpp_bench/run.sh \
-    --hosts HOST0,HOST1 --master-addr HOST0 \
-    --port-range 29671:29771 --launcher ssh \
-    --binary "$PWD/build/ll-cpp-base/ll_combine_bench" -- \
+bash tests/ll_cpp_bench/launch.sh \
+    --ep 32 --node-rank 0 --hosts HOST0,HOST1 \
+    --master-addr HOST0 --master-port 29671 \
+    --variants base,opt --run-id ep32-ab -- \
     --tokens 1,2,4,8,16,32,48,64,72 \
     --hidden 3584 --topk 8 --experts 384 --capacity 256 \
-    --dtype bf16 --warmup 10 --iters 100 \
-    --output-dir "$PWD/results/cpp-32p-base"
+    --dtype bf16 --warmup 10 --iters 100
 ```
 
-脚本为每台主机启动 16 个连续 rank。两边需要相同的源码、二进制、SDK 路径，以及可用的动态库搜索路径。
-
-### 两边分别手动启动时
-
-将上面命令的 `--launcher ssh` 改为 `--launcher manual`。第一台机器的终端会打印两条 `HYDRA_LAUNCH:` 命令，并等待代理连接。
-
-保持该终端运行。在两台机器各打开一个终端，加载 CANN 和 MPI 环境，然后分别执行对应的代理命令。复制时去掉行首的 `HYDRA_LAUNCH:` 标签；`--proxy-id 0` 对应 `HOST0`，`--proxy-id 1` 对应 `HOST1`。代理命令包含本轮实际的 `--control-port HOST0:PORT`，应整行使用本次输出。
+第二台机器执行：
 
 ```bash
-export MPI_HOME=/usr/local/mpich-3.2.1
-export PATH="$MPI_HOME/bin:$PATH"
-export LD_LIBRARY_PATH="$MPI_HOME/lib:$MPI_HOME/lib64:${LD_LIBRARY_PATH:-}"
-source /usr/local/Ascend/ascend-toolkit/set_env.sh
-# 在对应机器执行本轮打印的 hydra_pmi_proxy 完整命令。
+bash tests/ll_cpp_bench/launch.sh \
+    --ep 32 --node-rank 1 --hosts HOST0,HOST1 \
+    --master-addr HOST0 --master-port 29671 \
+    --variants base,opt --run-id ep32-ab
 ```
 
-两条代理命令都连接后，MPI 为它们分配同一个作业中的 rank，随后初始化 SHMEM。手动启动也使用一个 `mpiexec`；分别执行两个 `mpiexec -n 16` 会形成两个独立的 MPI 作业。
+用例参数以第一台 `--` 后面的配置为准，MPI 将这些参数传给全部 rank。两边都启动后，脚本先运行原版，再运行优化版。第二台可以先启动，默认等待第一台最多 300 秒。
 
-`--port-range` 控制 MPICH 可用的端口范围，实际端口由 MPICH 选择。`--job-timeout` 默认 3600 秒，包含等待手动启动的时间。启动前可加 `--dry-run`，检查脚本生成的命令。
+`--master-port` 是首轮测试的 MPI 控制端口，后续每版递增 1。例如，`base,opt` 使用 29671 和 29672。MPI 数据连接使用其正常端口分配；两台机器需要允许 MPI 通信。SHMEM 通过 MPI bootstrap 初始化。
+
+`--join-timeout` 默认 300 秒，`--job-timeout` 默认 3600 秒。脚本在超时或失败时退出，并清理本次启动的进程。第一台的退出码反映 MPI 作业的整体状态，各节点同时检查本机 rank 的 PASS 文件。启动前可加 `--dry-run` 查看命令。
+
+`run.sh` 保留为单个 MPI 作业的底层启动入口。常规单机与双机测试使用上面的 `launch.sh` 即可。
 
 ## 采样与结果
 
@@ -148,6 +143,8 @@ source /usr/local/Ascend/ascend-toolkit/set_env.sh
 MPI 同步在计时区间外，确保所有 rank 完成上一轮后再复用双 bank。MPI Barrier 仍可能存在返回时刻的偏差；Event 区间也可能包含 Host 下发造成的空隙。这里报告的是 Event 时延，细分 kernel 的执行与等待可再用 CANN profiling 查看。
 
 `rank-N.csv` 保存每个 rank 的全部采样。rank 0 的 `summary.csv` 按同轮最慢 rank 汇总，再计算均值、最小值、最大值、p50 和 p99，单位为 μs。汇总也记录实际核数和三个实验开关。双机输出分布在各自主机，完整采样需要保留两边目录。
+
+例如，`--run-id ep32-ab --variants base,opt` 的结果保存在 `results/ll-cpp/ep32-ab/0-base` 和 `1-opt`。`node-0`、`node-1` 子目录保存各节点的启动日志。
 
 全部采样、精度检查和 SHMEM finalize 成功后，各 rank 写出 `rank-N.PASS`。单 rank 异常会调用 `MPI_Abort`，结束本次 MPI 作业。本用例用于功能冒烟和性能对照，完整的随机权重、路由元数据与独立 CPU golden 检查仍由原 Python 精度用例覆盖。
 
