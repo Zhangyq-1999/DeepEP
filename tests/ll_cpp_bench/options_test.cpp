@@ -19,7 +19,9 @@ int main()
     }
     auto o = parse({"bench", "--tokens", "1,72", "--dtype", "fp16"});
     assert(o.profile == 0);
-    assert(o.entrySync == "host");
+    assert(o.entrySync == "device");
+    assert(parse({"bench", "--entry-sync", "host"}).entrySync == "host");
+    assert(parse({"bench", "--profile-iters", "4"}).profileIterations == 4);
     auto diagnostic = parse({"bench", "--tokens", "1,72", "--dtype", "fp16", "--profile", "2"});
     assert(diagnostic.profile == 2 && diagnostic.signature() != o.signature());
     assert(o.rank == 17 && o.world == 32 && o.device == 1 && o.tokens.back() == 72);
@@ -28,7 +30,6 @@ int main()
                                                            {"bench", "--devices", "0,1"},
                                                            {"bench", "--iters", "-1"},
                                                            {"bench", "--profile", "3"},
-                                                           {"bench", "--entry-sync", "device"},
                                                            {"bench", "--entry-sync", "unknown"},
                                                            {"bench", "--hidden", "17"},
                                                            {"bench", "--capacity", "4"},

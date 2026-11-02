@@ -1,4 +1,6 @@
 #include "options.hpp"
+#include "sample_report.hpp"
+#include "profile_samples.hpp"
 #include "profile.hpp"
 #include "mpi_coordinator.hpp"
 #include <cstdlib>
@@ -25,6 +27,7 @@
 #include "kernels/combine/low_latency/launch.hpp"
 
 extern "C" void ll_bench_entry_gate_do(void* stream, uint8_t* flag);
+extern "C" void ll_bench_roce_entry_sync_do(void* stream);
 
 namespace {
 void check(int status, const char* operation)
@@ -73,7 +76,8 @@ struct EntryGate {
     Buffer flag{64U};
     uint32_t* released = nullptr;
     aclrtStream control = nullptr;
-    EntryGate()
+    uint32_t world;
+    explicit EntryGate(uint32_t ranks) : world(ranks)
     {
         check(aclrtMallocHost(reinterpret_cast<void**>(&released), 64U), "gate host allocation");
         std::memset(released, 0, 64U);
@@ -95,7 +99,8 @@ struct EntryGate {
         // Previous iteration is complete. The release DMA uses a separate stream.
         check(aclrtMemset(flag.p, flag.bytes, 0, flag.bytes), "arm entry gate");
         ll_bench_entry_gate_do(stream, flag.p);
-        check(aclshmemx_barrier_on_stream(ACLSHMEM_TEAM_WORLD, stream), "enqueue device entry barrier");
+        if (world > 16) ll_bench_roce_entry_sync_do(stream);
+        else check(aclshmemx_barrier_on_stream(ACLSHMEM_TEAM_WORLD, stream), "device entry barrier");
     }
     void release()
     {
@@ -247,7 +252,7 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
     static_assert(llbench::workspaceBytes == DispatchDedup::kEpServerDedupPeerBytes);
     const auto& session = *shared;
     const auto& peers = *shared->peers;
-    const auto& o = shared->options;
+    auto o = shared->options;
     const auto stream = shared->stream;
     const auto cores = shared->cores;
     if (DEEPEP_LL_COMBINE_ORIGINAL && o.world == 2)
@@ -260,8 +265,8 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
     const uint32_t returnOptions = deepep_ll_combine_return_options();
     if (returnOptions != (DEEPEP_BENCH_REMOTE_FIRST | (DEEPEP_BENCH_DEFER_RETURN << 1)))
         throw std::runtime_error("Mismatched Host/device return options");
-    if (o.profile && !profileBuild)
-        throw std::runtime_error("Rebuild with build.sh --profile ON before requesting device diagnostics");
+    if (!profileBuild) o.profile = 0;
+    if (profileBuild && o.profile) o.iterations = o.profileIterations;
     std::ostringstream identity;
     identity << o.signature() << '/' << cores << '/' << DEEPEP_BENCH_SOURCE_ID << '/'
              << deepep_ll_combine_small_batch_enabled() << '/' << deepep_ll_combine_recv_cores() << '/'
@@ -276,9 +281,10 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
     std::unique_ptr<EntryGate> gate;
     if (o.entrySync == "device") {
         // Complete first-use SDK setup before blocking the compute stream.
-        check(aclshmemx_barrier_on_stream(ACLSHMEM_TEAM_WORLD, stream), "prime device entry barrier");
+        if (o.world > 16) ll_bench_roce_entry_sync_do(stream);
+        else check(aclshmemx_barrier_on_stream(ACLSHMEM_TEAM_WORLD, stream), "prime device entry barrier");
         check(aclrtSynchronizeStream(stream), "entry barrier preparation");
-        gate = std::make_unique<EntryGate>();
+        gate = std::make_unique<EntryGate>(o.world);
     }
     std::filesystem::create_directories(o.output);
     auto rankPath = std::filesystem::path(o.output) / ("rank-" + std::to_string(o.rank) + ".csv");
@@ -326,6 +332,15 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
         check(aclrtSynchronizeStream(stream), "correctness Combine");
         auto error = c.precision(o.dtype == "bf16");
         peers.barrier();
+        std::unique_ptr<Buffer> profileBuffer;
+        std::vector<uint64_t> profileData;
+        llbench::ProfileSamples selectedProfiles;
+        if (o.profile) {
+            profileData.resize(size_t(cores) * CombineProfile::kWords);
+            profileBuffer = std::make_unique<Buffer>(profileData.size() * sizeof(uint64_t));
+            c.combine.stageTimer = profileBuffer->p;
+            c.combine.timerMode = o.profile;
+        }
         for (uint32_t i = 0; i < o.warmup; ++i) {
             if (gate)
                 gate->enqueue(stream);
@@ -340,14 +355,6 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
         }
         std::vector<float> times;
         times.reserve(o.iterations);
-        std::unique_ptr<Buffer> profileBuffer;
-        std::vector<uint64_t> profileData;
-        if (o.profile) {
-            profileData.resize(size_t(cores) * CombineProfile::kWords);
-            profileBuffer = std::make_unique<Buffer>(profileData.size() * sizeof(uint64_t));
-            c.combine.stageTimer = profileBuffer->p;
-            c.combine.timerMode = o.profile;
-        }
         Event start, end;
         for (uint32_t i = 0; i < o.iterations; ++i) {
             // Every peer completed its previous kernel before this barrier
@@ -382,20 +389,16 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
                 profileBuffer->download(profileData.data(), profileBuffer->bytes);
                 llbench::profile_rows(profileCsv, profileData, cores, recv, o.rank, o.world, bs, o.device, o.profile,
                                       i);
+                selectedProfiles.capture(profileData, cores, recv);
             }
         }
         c.precision(o.dtype == "bf16");
         samples.flush();
         if (o.profile) profileCsv.flush();
         auto data = peers.gather(times.data(), times.size() * sizeof(float));
+        const auto rankMax = llbench::rank_max_samples(data, o, bs);
+        if (o.profile) selectedProfiles.write(peers, o, bs, cores, recv, rankMax);
         if (o.rank == 0) {
-            std::vector<float> rankMax(o.iterations, 0);
-            for (uint32_t r = 0; r < o.world; ++r)
-                for (uint32_t i = 0; i < o.iterations; ++i) {
-                    float v;
-                    std::memcpy(&v, data.data() + (r * o.iterations + i) * sizeof(float), sizeof(float));
-                    rankMax[i] = std::max(rankMax[i], v);
-                }
             auto s = llbench::stats(rankMax);
             summary << o.world << ',' << bs << ',' << o.hidden << ',' << o.topk << ',' << o.experts << ',' << o.dtype
                     << ',' << o.route << ',' << o.seed << ',' << o.capacity << ',' << o.warmup << ','

@@ -3,7 +3,7 @@
 set -euo pipefail
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 source "$root/tests/ll_cpp_bench/experiment_defaults.sh"
-variants="base,$ll_bench_profiles"
+variants=$ll_bench_variants
 cann=$ll_bench_cann mpi=$ll_bench_mpi shmem=$ll_bench_shmem jobs=4 dry=0
 fail() { echo "ERROR: $*" >&2; exit 2; }
 while (($#)); do
@@ -12,8 +12,8 @@ while (($#)); do
             cat <<'USAGE'
 build_all.sh [--variants NAME[,NAME...]] [--jobs N] [--dry-run]
              [--cann-home DIR] [--mpi-home DIR] [--shmem-root DIR]
-With no arguments, build base and the four current diagnostic experiments:
-ref-profile, remote-profile, pipeline-profile, return-profile.
+Defaults: base, remote, pipeline, return (clean), followed by
+ref-profile, remote-profile, pipeline-profile, return-profile (diagnostic).
 Previous experiments opt-profile, r36-profile and early-profile remain
 available through --variants but are excluded from the default build.
 ops-shmem-base builds the optional ops-transformer baseline with SHMEM transport.
@@ -40,22 +40,23 @@ IFS=, read -r -a names <<< "$variants"
 # Validate the complete selection before starting any build.
 for name in "${names[@]}"; do
     case "$name" in
-        base|ops-shmem-base|ref-profile|opt-profile|r36-profile|early-profile|remote-profile|pipeline-profile|return-profile) ;;
+        base|remote|pipeline|return|ops-shmem-base|ref-profile|opt-profile|r36-profile|early-profile|remote-profile|pipeline-profile|return-profile) ;;
         *) fail "Unknown experiment: $name (see --help)";;
     esac
 done
 if ((!dry)); then ll_bench_environment "$cann" "$mpi" "$shmem"; fi
 for name in "${names[@]}"; do
-    variant=opt profile=ON small=OFF early=OFF remote=OFF defer=OFF recv=0
+    variant=opt profile=OFF small=OFF early=OFF remote=OFF defer=OFF recv=0
+    if [[ $name == *-profile ]]; then profile=ON; fi
     case "$name" in
         base) variant=base; profile=OFF;;
         ops-shmem-base) variant=ops-shmem-base; profile=OFF;;
         opt-profile) small=ON;;
         r36-profile) recv=36;;
         early-profile) early=ON;;
-        remote-profile) remote=ON;;
-        pipeline-profile) defer=ON;;
-        return-profile) remote=ON; defer=ON;;
+        remote|remote-profile) remote=ON;;
+        pipeline|pipeline-profile) defer=ON;;
+        return|return-profile) remote=ON; defer=ON;;
     esac
     cmd=(bash "$root/tests/ll_cpp_bench/build.sh"
          --cann-home "$cann" --mpi-home "$mpi" --shmem-root "$shmem"

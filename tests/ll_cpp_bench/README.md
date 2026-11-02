@@ -27,11 +27,14 @@ git pull --ff-only origin perf/ll-combine-small-batch
 bash tests/ll_cpp_bench/build_all.sh
 ```
 
-`build_all.sh` 默认只更新以下 5 个构建目录，每个构建使用 4 个编译任务。所有开关都显式传入，重复编译会覆盖旧的 CMake 选项。已有构建目录继续用于增量编译。升级到单次初始化入口后，需要重编本轮选择的全部版本，生成各自的 `libll_bench_variant.so`。
+`build_all.sh` 默认更新以下 8 个构建目录，每个构建使用 4 个编译任务。所有开关都显式传入，重复编译会覆盖旧的 CMake 选项。已有构建目录继续用于增量编译。升级到单次初始化入口后，需要重编本轮选择的全部版本，生成各自的 `libll_bench_variant.so`。
 
 | 构建名 | 启用的实验 | 打点 |
 | --- | --- | --- |
 | `base` | 冻结的上游原版 | 关闭 |
+| `remote` | 优先回传跨机结果 | 关闭 |
+| `pipeline` | 准备下一包时暂存上一包 | 关闭 |
+| `return` | 优先跨机回传，加暂存流水 | 关闭 |
 | `ref-profile` | 实验开关全部关闭，用作打点对照 | 开启 |
 | `remote-profile` | 优先回传跨机结果 | 开启 |
 | `pipeline-profile` | 准备下一包时暂存上一包 | 开启 |
@@ -51,9 +54,11 @@ bash tests/ll_cpp_bench/run_all.sh
 bash tests/ll_cpp_bench/run_all.sh 第一台打印的RUN_ID
 ```
 
-默认对比表中的 4 个打点版本，每版依次测试 **BS32、48、64、72、256**。其余参数为 EP32、H3584、TopK 8、384 个专家、BF16、随机路由、seed 0、capacity 256；每个 BS 预热 10 轮、采样 10 轮，使用二级打点。EP32 继续使用 Host MPI Barrier。各阶段自动打印时延、精度检查结果和细粒度打点汇总。
+默认先跑 4 个干净版本，再跑 4 个打点版本。每版测试 **BS32、48、64、72、256**，形状为 EP32、H3584、TopK 8、384 个专家、BF16、随机路由、seed 0、capacity 256。每个 BS 预热 10 轮；干净版采样 100 轮，打点版采样 10 轮。`--iters` 和 `--profile-iters` 分别控制两类采样次数。
 
-每次在第一台执行相同命令，脚本都会生成新的结果目录。第二台每轮使用对应的新 `RUN_ID`。结果仍保存在各自的 `results/ll-cpp/<RUN_ID>/`。`base` 保留为无打点性能参考，可以单独运行 `run_all.sh --variants base --profile 0 --iters 100`。打点版的时延用于阶段分析，最终收益需用关闭打点的构建确认。
+干净版在编译时关闭打点，使用独立 kernel。打点版在预热前启用所选打点级别，让预热和采样执行相同路径。一次运行可同时包含两类版本，`--profile 2` 只作用于支持打点的构建。
+
+每次启动都会生成新的结果目录，保留此前数据。第一台按 BS 打印干净版和打点版的时延表，再打印全局选中轮次的诊断数据。第二台正常结束时只打印成功状态，分析时通常提供第一台的 `summary.txt` 即可。
 
 BS256 用于观察较大数据量的行为。`early-reduce` 只作用于 BS ≤ 72；BS256 沿用原归约路径。回传顺序优化在跨机 G16 场景生效，单机 G2/G4 保留原顺序。
 
@@ -64,12 +69,16 @@ BS256 用于观察较大数据量的行为。`early-reduce` 只作用于 BS ≤ 
 bash tests/ll_cpp_bench/build_all.sh \
     --variants ref-profile,return-profile --jobs 8 --shmem-root "$SHMEM_ROOT"
 
-# 单机 EP16；EP2、EP4、EP8 同样支持。
+# 单机 EP16；EP4、EP8 也可使用默认版本。
 bash tests/ll_cpp_bench/run_all.sh --ep 16
+
+# 上游 base 没有 EP2 特化，EP2 使用实验 kernel。
+bash tests/ll_cpp_bench/build_all.sh --variants remote,remote-profile
+bash tests/ll_cpp_bench/run_all.sh --ep 2 --variants remote,remote-profile
 
 # 单机 EP4 指定设备，覆盖 BS、预热和采样次数。
 bash tests/ll_cpp_bench/run_all.sh --ep 4 --devices 6,7,14,15 \
-    --variants ref-profile,return-profile --tokens 32,72,256 --warmup 10 --iters 20
+    --variants ref-profile,return-profile --tokens 32,72,256 --warmup 10 --profile-iters 20
 
 # 更换双机地址、端口或版本顺序时，第二台复制此命令打印的加入命令。
 bash tests/ll_cpp_bench/run_all.sh --hosts HOST0,HOST1 --node-rank 0 \
@@ -86,7 +95,7 @@ bash tests/ll_cpp_bench/run_all.sh --hosts HOST0,HOST1 --node-rank 0 \
 
 跨机适配使用 `aclshmemx_roce_qp_put_nbi`，在原有批次边界调用 `aclshmemx_roce_qp_quiet`。这与原仓 Hcomm 的批量提交、CQE 策略有差异，结果用于比较 SHMEM 后端上的算法方案。单机也运行这套分层算法，只执行机内阶段。原来的 `base` 继续使用冻结的 DeepEP kernel。
 
-两边分别按需编译，默认 `build_all.sh` 仍只构建前文的 5 个版本：
+两边分别按需编译，默认 `build_all.sh` 构建前文的 8 个版本：
 
 ```bash
 bash tests/ll_cpp_bench/build_all.sh --variants base,ops-shmem-base
@@ -257,7 +266,7 @@ EP32 初始化时若出现 `Too many open files`，随后报 `HrtRaBlockGetSocke
 
 每种 BS 先运行一次 Dispatch，生成真实的路由表和专家输入。用例把 Dispatch 输出当作恒等专家的输出，使用均匀权重执行 Combine，并检查结果是否回到原输入。正式采样前后各检查一次精度，检查按 BF16 或 FP16 的舍入误差设置容差。
 
-单机默认使用 `--entry-sync device`。用例先在计算流中排好以下任务：
+EP4、EP8、EP16、EP32 默认使用 `--entry-sync device`。用例先在计算流中排好以下任务：
 
 ```text
 本卡启动门控 → SHMEM 设备 barrier → 起始 Event → Combine → 结束 Event
@@ -267,9 +276,9 @@ EP32 初始化时若出现 `Too many open files`，随后报 `HrtRaBlockGetSocke
 
 这种安排让设备 barrier 吸收 Host 放行偏差，也避免起始 Event 执行后继续等待 Host 提交 Combine。设备调度仍可能带来少量启动间隔，实际间隔以 CANN profiling 为准。
 
-EP32 默认沿用 Host MPI Barrier，结果记录为 `entry_sync=host`。设备门控模式目前用于单机 MTE 场景。单机也可以显式指定 `--entry-sync host`，与此前测试方式对照。
+EP32 在独立的测试 kernel 中调用 `aclshmemx_roce_sync_all`，单机沿用 SHMEM 设备 barrier。入口同步使用现有 SDK，位于起始 Event 之前。`--entry-sync host` 保留此前的 Host MPI 同步方式，可用于检查启动偏差的影响。设备调度和通信收尾仍需实测，入口同步不保证所有轮次时延一致。
 
-`rank-N.csv` 保存每个 rank 的全部采样。rank 0 的 `summary.csv` 按同轮最慢 rank 汇总，再计算均值、最小值、最大值、p50 和 p99，单位为 μs。汇总也记录实际核数、原版标识、启动同步方式、实验开关和打点状态。双机输出分布在各自主机，完整采样需要保留两边目录。
+`rank-N.csv` 保存每个 rank 的全部采样。rank 0 的 `rank-max.csv` 保留每轮最慢 rank 的编号和 Event 耗时；`summary.csv` 按同轮最慢 rank 汇总，再计算均值、最小值、最大值、p50 和 p99，单位为 μs。汇总也记录实际核数、原版标识、启动同步方式、实验开关和打点状态。双机输出分布在各自主机，完整采样需要保留两边目录。
 
 单机 `--run-id ep4-ab --variants base,opt` 的结果目录形如 `results/ll-cpp/ep4-ab/20261102-153000-Ab12Cd/`，其中 `0-base`、`1-opt` 保存两版结果，`node-0` 保存启动日志。双机仍使用 `results/ll-cpp/<run-id>/`，其中 `node-0`、`node-1` 保存各节点的日志。
 
@@ -301,7 +310,7 @@ bash tests/ll_cpp_bench/launch.sh \
     --devices 6,7,14,15 --tokens 32,48,64,72 \
     --hidden 3584 --topk 8 --experts 384 --capacity 256 --dtype bf16 \
     --route random --seed 0 --entry-sync device \
-    --warmup 10 --iters 10 --profile 2
+    --warmup 10 --profile-iters 10 --profile 2
 ```
 
 以上启动命令可以直接重复执行。每次的新目录内，`0-ref-profile` 和 `1-opt-profile` 分别保存原流程与优化流程的诊断数据。需要 A/B/A 对照时，使用 `--variants ref-profile,opt-profile,ref-profile`。只看阶段边界时，把运行参数改为 `--profile 1`。
@@ -310,22 +319,25 @@ bash tests/ll_cpp_bench/launch.sh \
 
 ### 在终端查看汇总
 
-打点测试结束后，`launch.sh` 自动打印汇总，并保存为当前结果目录下的 `profile-summary-node-N.txt`。复制 `LL_COMBINE_PROFILE_SUMMARY BEGIN` 到 `END` 之间的内容，即可分享诊断结果。
+测试结束后，第一台打印每个 BS 的对比表，包含均值、P50、最小值、P95、最大值和变异系数（CV）。`clean` 行用于性能比较，`profile` 行用于定位耗时。当前报告用线性插值计算分位数；选取诊断轮次时仍选择排序后中间偏前的真实样本。
 
-已有 CSV 可以直接汇总，原始数据保留。以下命令只编译和运行一个 Host C++ 小程序，使用 `g++`，无需加载 CANN、MPI 或 Python，也不会启动算子：
+报告保留全部样本。`WIDE` 表示 `(最大值 − 最小值) / P50 > 20%`，提醒检查波动；`IQR` 列出超过 `Q3 + 1.5 × (Q3 − Q1)` 的高值候选。这些标记用于排查，程序继续用全部样本计算统计值。
+
+打点回显中的 `E` 行给出逐轮最慢 rank 与耗时。`D` 行标识全局中位轮和最慢轮，`S`、`R` 分别展示该轮最慢 rank 的发送核与接收核。`P` 行列出 Put 返回相对本核入口较晚的候选核。各核时间保留 tick；分析跨核、跨 rank 的绝对先后需要时钟校准。
+
+rank 0 在采样后汇总选中轮次的 32-rank 代表记录，保存在各版本目录的 `diagnostic.csv`。全量逐核记录仍保存在各卡所属机器的 `rank-N-profile.csv`。报告保存为运行目录下的 `summary.txt`，可以重新生成：
 
 ```bash
-bash tests/ll_cpp_bench/summarize.sh results/ll-cpp/ep4-detail-v2/0-opt
+bash tests/ll_cpp_bench/summarize.sh --suite results/ll-cpp/RUN_ID
 ```
 
-汇总按 BS 展示 Event 均值、最小值和最大值，以及各阶段的耗时。阶段统计先取每轮所有可见核的最大值，再计算均值和最大值；各阶段可能重叠，分别分析。
+需要完整的本地阶段汇总时，使用原有入口：
 
-`send_pipe_tail` 单列 DIRECT 函数返回后到 `PIPE_ALL` 完成的时间，`recv_pipe_tail` 记录接收侧对应的收尾。`batch_flush` 记录随后批次回收函数的调用时间；是否包含 RDMA 请求，以 `rdma_packets` 和 `rdma_quiet_calls` 为准。
+```bash
+bash tests/ll_cpp_bench/summarize.sh results/ll-cpp/RUN_ID/4-ref-profile
+```
 
-程序按同轮最慢 rank 的 Event 耗时排序，选择中位轮次和最慢轮次。每个轮次展示该 rank 内耗时最长的发送核和接收核，包括任务量、时间戳、前八项累计开销、轮询次数和最慢单次调用。偶数轮次取中间两个样本中的前一个，保持数据来自同一个真实样本。Event 使用 μs，核内时间保留 tick，换算需要确认设备计数器频率。
-
-双机结果保存在两台机器各自的目录时，每台机器分别打印本地汇总。`scope_ranks` 和 `coverage` 标明实际统计范围；分析 EP32 时需要同时提供两台的打印结果。
-
+这两个命令只运行 Host C++ 汇总程序，无需 CANN、MPI 或 Python。逐阶段最大值可能来自不同核，需分别分析。所有核内偏移以本核入口为零点。
 ### 字段与分析方法
 
 每个 rank 的 `rank-N-profile.csv` 保存每轮、每个 AIV 核的记录。一级打点记录阶段边界和任务量。二级打点进一步区分以下操作：
@@ -360,7 +372,7 @@ bash tests/ll_cpp_bench/summarize.sh results/ll-cpp/ep4-detail-v2/0-opt
 
 外层阶段耗时包含内层细分项，例如 `direct_submit_ticks` 可能包含 `rdma_*` 耗时，应分别阅读。不同核的并行耗时也分别分析。跨设备时间戳需要先确认时钟对齐，tick 换算为时间需要确认计数器频率。
 
-诊断记录和导出会影响时延。确认方案后，以 `--profile OFF` 重新编译，再用默认 `--profile 0` 采集最终性能。
+诊断记录和导出会影响时延。性能对比使用同轮测试中对应的干净版本；自行构建时，用 `build.sh --profile OFF` 生成无打点 kernel。
 
 ## 启动参数
 
@@ -373,11 +385,12 @@ bash tests/ll_cpp_bench/summarize.sh results/ll-cpp/ep4-detail-v2/0-opt
 | `--dtype` | bf16 | 支持 bf16、fp16 |
 | `--route` | random | random 为无重复随机专家，hotspot 集中命中前 TopK 个专家 |
 | `--seed` | 0 | 路由随机种子 |
-| `--warmup` / `--iters` | 10 / 100 | 预热轮数与采样轮数 |
-| `--entry-sync` | auto | 单机使用设备门控与 barrier；EP32 使用 Host MPI Barrier |
-| `--profile` | 0 | 0 关闭，1 记录阶段边界，2 增加热循环打点；1/2 需要诊断构建 |
+| `--warmup` / `--iters` | 10 / 100 | 预热轮数与无打点运行的采样轮数 |
+| `--profile-iters` | 10 | 启用打点时的采样轮数 |
+| `--entry-sync` | auto | 使用设备门控与 barrier；显式选择 host 可使用原 Host MPI 同步 |
+| `--profile` | 0 | 0 关闭，1 记录阶段边界，2 增加热循环打点；干净构建自动保持关闭 |
 | `--timeout` | 300 | SHMEM 初始化和控制操作超时，单位为秒 |
 
-上表是可执行文件和 `launch.sh` 的默认值。便捷入口 `run_all.sh` 默认使用 `--iters 10 --profile 2`，用于细粒度对照；其余形状参数相同。
+上表是可执行文件和 `launch.sh` 的默认值。便捷入口 `run_all.sh` 默认使用 `--profile 2`，干净版采样 100 轮，打点版采样 10 轮；其余形状参数相同。
 
 MPICH 手动启动行为可查阅 [Hydra 3.2.1 实现](https://github.com/pmodels/mpich/blob/v3.2.1/src/pm/hydra/tools/bootstrap/external/external_common_launch.c)；端口范围和作业超时见 [mpiexec 参数说明](https://www.mpich.org/static/docs/v3.2/www1/mpiexec.html)。

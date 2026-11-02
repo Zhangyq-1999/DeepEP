@@ -406,15 +406,18 @@ void report(const fs::path& directory)
     }
     std::cout << "=== LL_COMBINE_PROFILE_SUMMARY END ===\n";
 }
+#include "compact_report.hpp"
 }  // namespace
 int main(int argc, char** argv)
 {
-    if (argc != 2 || std::string(argv[1]) == "--help") {
-        std::cout << "Usage: ll_combine_profile_report RESULT_PHASE_DIRECTORY\n";
+    const bool suite = argc == 3 && std::string(argv[1]) == "--suite";
+    if ((!suite && argc != 2) || std::string(argv[1]) == "--help") {
+        std::cout << "Usage: ll_combine_profile_report RESULT_PHASE_DIRECTORY | --suite RUN_DIRECTORY\n";
         return argc == 2 ? 0 : 2;
     }
     try {
-        report(argv[1]);
+        if (suite) suite_report(argv[2]);
+        else report(argv[1]);
     } catch (const std::exception& e) {
         std::cerr << "Profile summary failed: " << e.what() << '\n';
         return 1;

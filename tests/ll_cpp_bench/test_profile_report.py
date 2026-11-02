@@ -163,3 +163,54 @@ def test_schema_two_report_remains_readable(reporter, tmp_path):
     out = subprocess.check_output([str(reporter), str(tmp_path)], text=True)
     assert "coverage=2/2 FULL" in out
     assert "rdma_return:" not in out
+
+
+def test_compact_global_comparison_preserves_outliers(reporter, tmp_path):
+    fields = ["ep", "tokens", "hidden", "topk", "experts", "dtype", "route", "seed",
+              "warmup", "samples", "entry_sync", "profile_build"]
+    config = dict(ep=2, tokens=32, hidden=3584, topk=8, experts=384, dtype="bf16", route="random",
+                  seed=0, warmup=10, samples=6, entry_sync="device", profile_build=0)
+    for name, values in (("0-base", [10, 10, 11, 10, 11, 100]), ("1-remote", [9, 10, 9, 9, 10, 10])):
+        directory = tmp_path / name
+        directory.mkdir()
+        write_csv(directory / "summary.csv", fields, [config])
+        write_csv(directory / "rank-max.csv", ["tokens", "iteration", "rank", "us"],
+                  [dict(tokens=32, iteration=i, rank=i % 2, us=v) for i, v in enumerate(values)])
+    out = subprocess.check_output([str(reporter), "--suite", str(tmp_path)], text=True)
+    assert "no samples removed" in out
+    row = next(line for line in out.splitlines() if line.startswith("0-base"))
+    assert "25.33" in row and "100.00" in row and "WIDE" in row  # retain the 100 us tail
+    assert "IQR 0-base n=1" in out and "5/1/100.00" in out
+    assert out.index("variant ") < out.index("IQR 0-base")
+    # A local node's subset must not silently become a global statistic.
+    path = tmp_path / "0-base/rank-max.csv"
+    original = path.read_text()
+    path.write_text("\n".join(original.splitlines()[:-1]) + "\n")
+    result = subprocess.run([str(reporter), "--suite", str(tmp_path)], capture_output=True, text=True)
+    assert result.returncode != 0 and "Missing global samples" in result.stderr
+
+
+def test_compact_diagnostics_select_same_global_iteration(reporter, tmp_path):
+    directory = tmp_path / "0-ref-profile"
+    directory.mkdir()
+    fixture_data(directory)
+    config = dict(ep=2, tokens=32, hidden=3584, topk=8, experts=384, dtype="bf16", route="random",
+                  seed=0, warmup=10, samples=3, entry_sync="device", profile_build=1)
+    write_csv(directory / "summary.csv", list(config), [config])
+    write_csv(directory / "rank-max.csv", ["tokens", "iteration", "rank", "us"],
+              [dict(tokens=32, iteration=i, rank=r, us=v) for i, r, v in [(0, 0, 10), (1, 1, 30), (2, 0, 13)]])
+    records = []
+    for rank in (0, 1):
+        with (directory / f"rank-{rank}-profile.csv").open() as f:
+            reader = csv.DictReader(f)
+            fields = reader.fieldnames
+            records.extend(row for row in reader if row["iteration"] in ("1", "2"))
+    write_csv(directory / "diagnostic.csv", fields, records)
+    out = subprocess.check_output([str(reporter), "--suite", str(tmp_path)], text=True)
+    assert "D 0-ref-profile p50 i=2 event_r=0 us=13.00" in out
+    assert "D 0-ref-profile worst i=1 event_r=1 us=30.00" in out
+    assert "S r/c=1/0" in out and "R r/c=1/1" in out
+    # Host 0 alone cannot satisfy the selected global sample contract.
+    write_csv(directory / "diagnostic.csv", fields, [r for r in records if r["rank"] == "0"])
+    result = subprocess.run([str(reporter), "--suite", str(tmp_path)], capture_output=True, text=True)
+    assert result.returncode != 0 and "Partial global diagnostics" in result.stderr

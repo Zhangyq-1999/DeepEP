@@ -70,20 +70,20 @@ def call_options(output):
 def test_build_all_isolated_matrix_and_failure_stop(harness):
     run, env = harness
     calls = call_options(run("build_all.sh").stdout)
-    assert len(calls) == 5
-    for name, call in zip(("base", *PROFILES), calls):
+    assert len(calls) == 8
+    for name, call in zip(("base", "remote", "pipeline", "return", *PROFILES), calls):
         assert call["--build-dir"].endswith("/build/ll-cpp-" + name)
         assert call["--variant"] == ("base" if name == "base" else "opt")
-        assert call["--profile"] == ("OFF" if name == "base" else "ON")
+        assert call["--profile"] == ("ON" if name.endswith("-profile") else "OFF")
         assert call["--small-batch"] == ("ON" if name == "opt-profile" else "OFF")
         assert call["--recv-cores"] == ("36" if name == "r36-profile" else "0")
         assert call["--early-reduce"] == ("ON" if name == "early-profile" else "OFF")
-        assert call["--remote-first"] == ("ON" if name in ("remote-profile", "return-profile") else "OFF")
-        assert call["--defer-return"] == ("ON" if name in ("pipeline-profile", "return-profile") else "OFF")
+        assert call["--remote-first"] == ("ON" if name in ("remote", "return", "remote-profile", "return-profile") else "OFF")
+        assert call["--defer-return"] == ("ON" if name in ("pipeline", "return", "pipeline-profile", "return-profile") else "OFF")
         assert call["--shmem-root"].endswith("/third-party/shmem/install/shmem")
     env["FAIL_BUILD"] = "ref-profile"
     result = run("build_all.sh", ok=False)
-    assert result.returncode == 17 and len(call_options(result.stdout)) == 2
+    assert result.returncode == 17 and len(call_options(result.stdout)) == 5
     assert "CALL" not in run("build_all.sh", "--variants", "base,typo", ok=False).stdout
 
 
@@ -113,9 +113,10 @@ def test_repeat_default_run_and_second_host_join(harness):
         ids.append(call["--run-id"])
         assert call["--node-rank"] == "0" and call["--ep"] == "32"
         assert call["--hosts"] == "90.90.93.84,90.90.93.184"
-        assert call["--variants"] == ",".join(PROFILES)
+        assert call["--variants"] == ",".join(("base", "remote", "pipeline", "return", *PROFILES))
         assert call["--tokens"] == "32,48,64,72,256"
-        assert call["--iters"] == "10" and call["--profile"] == "2"
+        assert call["--iters"] == "100" and call["--profile"] == "2"
+        assert call["--profile-iters"] == "10"
         assert f"run_all.sh {ids[-1]} \n" in result.stdout
     assert len(set(ids)) == 2
     env["TEST_LOCAL_IP"] = "90.90.93.184"
@@ -143,7 +144,7 @@ def test_host_detection_and_benchmark_overrides(harness):
     local, = call_options(run("run_all.sh", "--ep", "4", "--devices", "6,7,14,15").stdout)
     assert local["--hosts"] == "localhost" and local["--node-rank"] == "0"
     assert local["--devices"] == "6,7,14,15" and local["--entry-sync"] == "auto"
-    assert "uninstrumented" in run("run_all.sh", "--ep", "16", "--variants", "base", ok=False).stderr
+    assert call_options(run("run_all.sh", "--ep", "16", "--variants", "base").stdout)[0]["--profile"] == "2"
     clean, = call_options(run("run_all.sh", "--ep", "16", "--variants", "base", "--profile", "0").stdout)
     assert clean["--profile"] == "0"
     env["TEST_LOCAL_IP"] = "90.90.93.84 90.90.93.184"
@@ -156,6 +157,6 @@ def test_optional_ops_baseline(harness):
     assert len(commands) == 2
     assert commands[1]["--variant"] == "ops-shmem-base"
     assert commands[1]["--profile"] == "OFF"
-    assert "uninstrumented" in run("run_all.sh", "--variants", "ops-shmem-base", ok=False).stderr
+    assert call_options(run("run_all.sh", "--variants", "ops-shmem-base").stdout)[0]["--profile"] == "2"
     cmd, = call_options(run("run_all.sh", "--variants", "base,ops-shmem-base", "--profile", "0").stdout)
     assert cmd["--variants"] == "base,ops-shmem-base" and cmd["--profile"] == "0"

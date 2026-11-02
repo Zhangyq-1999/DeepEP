@@ -185,10 +185,8 @@ else
     fi
     if [[ -n $controller ]]; then
         if wait "$controller"; then controller=; else status=$?; cat "$log.controller"; exit "$status"; fi
-        cat "$log.controller"
     fi
 fi
-cat "$log"
 for phase in "${!sequence[@]}"; do
     variant=${sequence[$phase]}
     out="$result_root/$phase-$variant"
@@ -196,10 +194,9 @@ for phase in "${!sequence[@]}"; do
     for ((rank=node_rank*per_host; rank<(node_rank+1)*per_host; ++rank)); do
         [[ -s "$out/rank-$rank.PASS" ]] || fail "Missing successful result for rank $rank; see $log"
     done
-    echo "Completed phase $phase ($variant) on node $node_rank"
-    [[ $node_rank != 0 ]] || cat "$out/summary.csv"
-    profile_files=("$out"/rank-*-profile.csv)
-    if [[ -f ${profile_files[0]} ]]; then
-        bash "$root/tests/ll_cpp_bench/summarize.sh" "$out" | tee "$out/profile-summary-node-$node_rank.txt"
-    fi
 done
+if ((node_rank==0)); then
+    bash "$root/tests/ll_cpp_bench/summarize.sh" --suite "$result_root" | tee "$result_root/summary.txt"
+else
+    echo "PASS node=1; global summary and selected 32-rank diagnostics are on node 0."
+fi

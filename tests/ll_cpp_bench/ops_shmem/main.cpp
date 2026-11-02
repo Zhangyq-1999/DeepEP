@@ -1,4 +1,5 @@
 #include "fixture.hpp"
+#include "../sample_report.hpp"
 #include "../mpi_coordinator.hpp"
 #include "../variant_api.hpp"
 #include "runtime/ll_core_config.hpp"
@@ -12,6 +13,7 @@
 #include <memory>
 
 extern "C" void ll_bench_entry_gate_do(void* stream, uint8_t* flag);
+extern "C" void ll_bench_roce_entry_sync_do(void* stream);
 namespace {
 void check(int rc, const char* operation)
 {
@@ -54,7 +56,8 @@ struct Gate {
     Buffer flag{64};
     uint32_t* released = nullptr;
     aclrtStream control = nullptr;
-    Gate()
+    uint32_t world;
+    explicit Gate(uint32_t ranks) : world(ranks)
     {
         check(aclrtMallocHost(reinterpret_cast<void**>(&released), 64), "gate Host allocation");
         std::memset(released, 0, 64);
@@ -70,7 +73,8 @@ struct Gate {
     {
         check(aclrtMemset(flag.p, flag.bytes, 0, flag.bytes), "arm gate");
         ll_bench_entry_gate_do(stream, flag.p);
-        check(aclshmemx_barrier_on_stream(ACLSHMEM_TEAM_WORLD, stream), "device entry barrier");
+        if (world > 16) ll_bench_roce_entry_sync_do(stream);
+        else check(aclshmemx_barrier_on_stream(ACLSHMEM_TEAM_WORLD, stream), "device entry barrier");
     }
     void release()
     {
@@ -157,10 +161,10 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
     static_assert(llbench::workspaceBytes == opsbench::workspaceBytes);
     const auto& session = *shared;
     const auto& peers = *shared->peers;
-    const auto& o = shared->options;
+    auto o = shared->options;
     const auto stream = shared->stream;
     const auto cores = shared->cores;
-    if (o.profile) throw std::runtime_error("ops-shmem-base is a clean kernel; use --profile 0");
+    o.profile = 0;
     if ((o.hidden != 3584 && o.hidden != 7168) || o.topk != 8 || o.experts != 384)
         throw std::runtime_error("Initial ops-shmem baseline supports H3584/H7168, TopK8, E384");
     uint64_t ub = 0;
@@ -187,9 +191,10 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
     context.upload(&c, sizeof(c));
     std::unique_ptr<Gate> gate;
     if (o.entrySync == "device") {
-        check(aclshmemx_barrier_on_stream(ACLSHMEM_TEAM_WORLD, stream), "prime entry barrier");
+        if (o.world > 16) ll_bench_roce_entry_sync_do(stream);
+        else check(aclshmemx_barrier_on_stream(ACLSHMEM_TEAM_WORLD, stream), "prime device entry barrier");
         check(aclrtSynchronizeStream(stream), "entry barrier preparation");
-        gate = std::make_unique<Gate>();
+        gate = std::make_unique<Gate>(o.world);
     }
     if (!o.rank)
         std::cout << "ops-shmem-base: upstream " << LL_OPS_REV
@@ -229,14 +234,8 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
         item.precision(o.dtype == "bf16");
         samples.flush();
         auto gathered = peers.gather(times.data(), times.size() * sizeof(float));
+        const auto rankMax = llbench::rank_max_samples(gathered, o, bs);
         if (!o.rank) {
-            std::vector<float> rankMax(o.iterations, 0);
-            for (uint32_t rank = 0; rank < o.world; ++rank)
-                for (uint32_t i = 0; i < o.iterations; ++i) {
-                    float value;
-                    std::memcpy(&value, gathered.data() + (rank * o.iterations + i) * sizeof(float), sizeof(float));
-                    rankMax[i] = std::max(rankMax[i], value);
-                }
             auto s = llbench::stats(rankMax);
             summary << o.world << ',' << bs << ',' << o.hidden << ',' << o.topk << ',' << o.experts << ',' << o.dtype
                     << ',' << o.route << ',' << o.seed << ',' << o.capacity << ',' << o.warmup << ',' << o.iterations

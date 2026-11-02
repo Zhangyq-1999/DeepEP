@@ -183,12 +183,15 @@ inline uint64_t profile_interval(const uint64_t* row, CombineProfile::Word begin
 
 inline void profile_rows(std::ostream& out, const std::vector<uint64_t>& data, uint32_t cores, uint32_t recv,
                          uint32_t rank, uint32_t world, uint32_t bs, uint32_t device, uint32_t level,
-                         uint32_t iteration)
+                         uint32_t iteration, std::vector<uint32_t> selection = {})
 {
     using namespace CombineProfile;
     if (data.size() != size_t(cores) * kWords || recv > cores)
         throw std::runtime_error("Invalid Combine profile dimensions");
-    for (uint32_t core = 0; core < cores; ++core) {
+    if (selection.empty())
+        for (uint32_t core = 0; core < cores; ++core) selection.push_back(core);
+    for (uint32_t core : selection) {
+        if (core >= cores) throw std::runtime_error("Invalid selected profile core");
         auto row = data.data() + core * kWords;
         const uint64_t required = (uint64_t(1) << Entry) | (uint64_t(1) << FlushDone);
         if (row[Schema] != kSchema || row[Complete] != 1 || row[Rank] != rank || row[Core] != core ||

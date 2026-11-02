@@ -247,7 +247,7 @@ done
     for _ in range(2):
         result = subprocess.run(args, env=env, capture_output=True, text=True, timeout=20)
         assert result.returncode == 0, result.stdout + result.stderr
-        assert result.stdout.count("profile-summary:") == 2
+        assert result.stdout.count("profile-summary:") == 1
     runs = list((root / "results/ll-cpp/repeat").iterdir())
     assert len(runs) == 2
     for run in runs:
@@ -258,7 +258,7 @@ done
             assert len(list(output.glob("rank-*.PASS"))) == 4
             assert f"ll-cpp-{variant}" in (output / "summary.csv").read_text()
             assert (output / "rank-0-profile.csv").read_text().strip() == "profile-fixture"
-            assert (output / "profile-summary-node-0.txt").exists()
+            assert (output.parent / "summary.txt").exists()
 
 
 def test_hydra_command_launcher_only_prints(bash, tmp_path):
@@ -302,6 +302,7 @@ def test_two_node_script_sequence_with_fake_hydra(bash, tmp_path, failure):
     helpers = tmp_path / "helpers"
     write(helpers / "setsid", 'exec "$@"\n')
     write(helpers / "timeout", 'shift 3\nexec "$@"\n')
+    write(script.with_name("summarize.sh"), 'echo "fixture global summary"\n')
     write(mpi / "bin/mpiexec", r'''
 if [[ ${1:-} == -version ]]; then echo '    Version: 3.2.1'; exit 0; fi
 [[ $HYDRA_LAUNCHER_AUTOFORK == 0 ]]

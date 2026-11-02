@@ -4,13 +4,13 @@ set -euo pipefail
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 source "$root/tests/ll_cpp_bench/experiment_defaults.sh"
 ep=32 node_rank=${NODE_RANK:-} hosts="${HOST0:-90.90.93.84},${HOST1:-90.90.93.184}"
-master= port=29671 variants=$ll_bench_profiles run_id= dry=0
+master= port=29671 variants=$ll_bench_variants run_id= dry=0
 cann=$ll_bench_cann mpi=$ll_bench_mpi shmem=$ll_bench_shmem
 job_timeout=3600 join_timeout=300
-bench_keys=(tokens hidden topk experts capacity dtype route seed entry-sync warmup iters profile timeout)
+bench_keys=(tokens hidden topk experts capacity dtype route seed entry-sync warmup iters profile-iters profile timeout)
 declare -A bench=([tokens]=32,48,64,72,256 [hidden]=3584 [topk]=8 [experts]=384
                   [capacity]=256 [dtype]=bf16 [route]=random [seed]=0 [entry-sync]=auto
-                  [warmup]=10 [iters]=10 [profile]=2 [timeout]=300)
+                  [warmup]=10 [iters]=100 [profile-iters]=10 [profile]=2 [timeout]=300)
 fail() { echo "ERROR: $*" >&2; exit 2; }
 while (($#)); do
     case "$1" in
@@ -25,12 +25,12 @@ Options: --ep 2|4|8|16|32 --node-rank 0|1 --hosts HOST0,HOST1
 Benchmark options (with or without a preceding --):
          --tokens LIST --devices LIST --hidden N --topk N --experts N --capacity N
          --dtype bf16|fp16 --route random|hotspot --seed N --entry-sync auto|host|device
-         --warmup N --iters N --profile 0|1|2 --timeout SECONDS
+         --warmup N --iters N --profile-iters N --profile 0|1|2 --timeout SECONDS
 Defaults: EP32, hosts 90.90.93.84,90.90.93.184, port 29671.
-          Four diagnostic versions; BS 32,48,64,72,256; H3584/K8/E384/BF16.
-          Warmup 10, samples 10, profile 2; Host MPI sync for EP32.
+          Four clean and four diagnostic versions; BS 32,48,64,72,256; H3584/K8/E384/BF16.
+          Warmup 10; clean samples 100; diagnostic samples 10, level 2.
 All selected variants share one MPI/ACL/SHMEM initialization.
-Single-host EP2/4/8/16 defaults to device entry sync.
+Device entry sync before Events for EP4/8/16/32; --entry-sync host retains the old mode.
 Node is detected from local addresses; --node-rank overrides detection.
 Node 0 generates a new run-id on every invocation unless --run-id is supplied.
 For custom hosts, ports or variants, use the printed node-1 command.
@@ -48,7 +48,7 @@ USAGE
                 --run-id) run_id=$value;; --mpi-home) mpi=$value;; --cann-home) cann=$value;;
                 --shmem-root) shmem=$value;; --job-timeout) job_timeout=$value;; --join-timeout) join_timeout=$value;;
             esac;;
-        --tokens|--devices|--hidden|--topk|--experts|--capacity|--dtype|--route|--seed|--entry-sync|--warmup|--iters|--profile|--timeout)
+        --tokens|--devices|--hidden|--topk|--experts|--capacity|--dtype|--route|--seed|--entry-sync|--warmup|--iters|--profile-iters|--profile|--timeout)
             (($#>=2)) || fail "Missing value: $1"
             bench[${1#--}]=$2; shift 2;;
         -*) fail "Unknown option: $1";;
@@ -89,19 +89,16 @@ if [[ -z $run_id ]]; then
 fi
 [[ $run_id =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]] || fail 'Use letters, digits, _, . or - for run-id'
 [[ ${bench[profile]} =~ ^[012]$ ]] || fail 'profile must be 0, 1 or 2'
-if [[ ( ,$variants, == *,base,* || ,$variants, == *,ops-shmem-base,* ) && ${bench[profile]} != 0 ]]; then
-    fail 'base and ops-shmem-base are uninstrumented; use --profile 0, or ref-profile for diagnostics'
-fi
 printf 'RUN_ID=%s\nnode=%s EP=%s variants=%s\n' "$run_id" "$node_rank" "$ep" "$variants"
 if [[ $node_rank == 0 ]]; then
-    printf 'BS=%s warmup=%s iters=%s profile=%s\n' "${bench[tokens]}" "${bench[warmup]}" "${bench[iters]}" "${bench[profile]}"
+    printf 'BS=%s warmup=%s clean_iters=%s profile_iters=%s profile=%s\n' "${bench[tokens]}" "${bench[warmup]}" "${bench[iters]}" "${bench[profile-iters]}" "${bench[profile]}"
 else
     echo 'Benchmark shapes and sampling options come from node 0.'
 fi
 if [[ $ep == 32 && $node_rank == 0 ]]; then
     peer_cmd=(bash tests/ll_cpp_bench/run_all.sh "$run_id")
     # With defaults this prints only RUN_ID; custom launch settings travel too.
-    if [[ $hosts != 90.90.93.84,90.90.93.184 || $master != 90.90.93.84 || $port != 29671 || $variants != "$ll_bench_profiles" ]]; then
+    if [[ $hosts != 90.90.93.84,90.90.93.184 || $master != 90.90.93.84 || $port != 29671 || $variants != "$ll_bench_variants" ]]; then
         peer_cmd+=(--node-rank 1 --hosts "$hosts" --master-addr "$master" --master-port "$port" --variants "$variants")
     fi
     if [[ ${bench[profile]} != 2 ]]; then peer_cmd+=(--profile "${bench[profile]}"); fi
