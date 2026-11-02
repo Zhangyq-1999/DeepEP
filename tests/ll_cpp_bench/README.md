@@ -12,6 +12,69 @@
 
 可以复用此前编译 LL 算子时生成的 SHMEM SDK。这个 SDK 独立于 Conda。没有现成 SDK 时，下面的 Shell/CMake 脚本会编译仓库锁定的 SHMEM 子模块，并登记 SDK 信息。
 
+## 一次编译并运行全部实验
+
+已有配套 SHMEM SDK 时，两台机器各执行以下命令。脚本默认使用 `/usr/local/Ascend/cann-9.2.T101`、`/usr/local/mpich-3.2.1` 和当前仓库的 `third-party/shmem/install/shmem`。已设置的 `ASCEND_HOME_PATH`、`MPI_HOME`、`SHMEM_ROOT` 优先于这些路径。脚本自动加载所选 CANN 的 `set_env.sh`，并配置 MPI、SHMEM 的库路径。
+
+```bash
+git fetch origin
+git switch perf/ll-combine-small-batch
+git pull --ff-only origin perf/ll-combine-small-batch
+bash tests/ll_cpp_bench/build_all.sh
+```
+
+`build_all.sh` 顺序更新以下 8 个构建目录，每个构建默认使用 4 个编译任务。所有开关都显式传入，重复编译会覆盖旧的 CMake 选项。
+
+| 构建名 | 启用的实验 | 打点 |
+| --- | --- | --- |
+| `base` | 冻结的上游原版 | 关闭 |
+| `ref-profile` | 实验开关全部关闭，用作打点对照 | 开启 |
+| `opt-profile` | `small-batch` 任务缓存 | 开启 |
+| `r36-profile` | 36 个接收核 | 开启 |
+| `early-profile` | 提前归约 | 开启 |
+| `remote-profile` | 优先回传跨机结果 | 开启 |
+| `pipeline-profile` | 准备下一包时暂存上一包 | 开启 |
+| `return-profile` | 优先跨机回传，加暂存流水 | 开启 |
+
+默认使用当前两台机器：节点 0 为 `90.90.93.84`，节点 1 为 `90.90.93.184`。脚本根据本机 IP 识别节点。两边编译完成后，第一台执行：
+
+```bash
+bash tests/ll_cpp_bench/run_all.sh
+```
+
+第一台会打印新的 `RUN_ID` 和第二台的完整命令。第二台复制该命令即可：
+
+```bash
+bash tests/ll_cpp_bench/run_all.sh 第一台打印的RUN_ID
+```
+
+默认对比表中的 7 个打点版本，每版依次测试 **BS32、48、64、72、256**。其余参数为 EP32、H3584、TopK 8、384 个专家、BF16、随机路由、seed 0、capacity 256；每个 BS 预热 10 轮、采样 10 轮，使用二级打点。EP32 继续使用 Host MPI Barrier。各阶段自动打印时延、精度检查结果和细粒度打点汇总。
+
+每次在第一台执行相同命令，脚本都会生成新的结果目录。第二台每轮使用对应的新 `RUN_ID`。结果仍保存在各自的 `results/ll-cpp/<RUN_ID>/`。`base` 保留为无打点性能参考，可以单独运行 `run_all.sh --variants base --profile 0 --iters 100`。打点版的时延用于阶段分析，最终收益需用关闭打点的构建确认。
+
+BS256 用于观察较大数据量的行为。`early-reduce` 只作用于 BS ≤ 72；BS256 沿用原归约路径。回传顺序优化在跨机 G16 场景生效，单机 G2/G4 保留原顺序。
+
+参数仍可覆盖，例如：
+
+```bash
+# 只重编本轮关心的两个版本，也可覆盖 SDK 路径和并行度。
+bash tests/ll_cpp_bench/build_all.sh \
+    --variants ref-profile,return-profile --jobs 8 --shmem-root "$SHMEM_ROOT"
+
+# 单机 EP16；EP2、EP4、EP8 同样支持。
+bash tests/ll_cpp_bench/run_all.sh --ep 16
+
+# 单机 EP4 指定设备，覆盖 BS、预热和采样次数。
+bash tests/ll_cpp_bench/run_all.sh --ep 4 --devices 6,7,14,15 \
+    --variants ref-profile,return-profile --tokens 32,72,256 --warmup 10 --iters 20
+
+# 更换双机地址、端口或版本顺序时，第二台复制此命令打印的加入命令。
+bash tests/ll_cpp_bench/run_all.sh --hosts HOST0,HOST1 --node-rank 0 \
+    --master-port 30071 --variants return-profile,ref-profile
+```
+
+用 `--dry-run` 可以查看编译或启动命令。识别不到本机 IP 时，使用 `--node-rank 0` 或 `--node-rank 1` 指定节点。首次准备 SDK、定制编译选项和底层启动方式见下文。
+
 ## 拉代码和编译
 
 你已经拉取 fork 时，在现有仓库中执行以下命令。双机测试需要两台机器使用相同的绝对路径。
@@ -55,7 +118,7 @@ base 和 opt 使用各自的 Combine kernel 源码。base 从上游提交 `5b38b
 | `--remote-first ON` | OFF | 跨机结果优先回传，本机结果随后处理 |
 | `--defer-return ON` | OFF | 多输出槽时，用下一包准备掩盖上一包 GM 暂存；组内末包立即提交 |
 
-回传顺序与暂存流水的分析、四组编译命令和新增打点见 [回传优化对照](RETURN_PIPELINE_AB.md)。这两个开关默认关闭，先独立对比，再测试组合。
+回传顺序与暂存流水的分析和新增打点见 [回传优化对照](RETURN_PIPELINE_AB.md)。这两个开关默认关闭，先独立对比，再测试组合。
 
 显式接收核数支持 8～36，并须小于实际 AIV 总核数。其余核负责 DIRECT 回传，TERMINAL 暂存仍由全部核参与。各 rank 使用相同的核数配置；最后 8 核负责组内就绪通知。
 
@@ -269,7 +332,7 @@ bash tests/ll_cpp_bench/summarize.sh results/ll-cpp/ep4-detail-v2/0-opt
 
 | 参数 | 默认值 | 含义 |
 | --- | --- | --- |
-| `--tokens` | 32,48,64,72 | 每卡 token 数，可给多个 BS |
+| `--tokens` | 32,48,64,72,256 | 每卡 token 数，可给多个 BS |
 | `--hidden` | 3584 | hidden 维度，可设为 7168 |
 | `--topk` / `--experts` | 8 / 384 | 每 token 专家数与全局专家数 |
 | `--capacity` | 256 | 原算子的每卡最大 token 参数，影响自动去重策略；至少覆盖所有 BS |
@@ -280,5 +343,7 @@ bash tests/ll_cpp_bench/summarize.sh results/ll-cpp/ep4-detail-v2/0-opt
 | `--entry-sync` | auto | 单机使用设备门控与 barrier；EP32 使用 Host MPI Barrier |
 | `--profile` | 0 | 0 关闭，1 记录阶段边界，2 增加热循环打点；1/2 需要诊断构建 |
 | `--timeout` | 300 | SHMEM 初始化和控制操作超时，单位为秒 |
+
+上表是可执行文件和 `launch.sh` 的默认值。便捷入口 `run_all.sh` 默认使用 `--iters 10 --profile 2`，用于细粒度对照；其余形状参数相同。
 
 MPICH 手动启动行为可查阅 [Hydra 3.2.1 实现](https://github.com/pmodels/mpich/blob/v3.2.1/src/pm/hydra/tools/bootstrap/external/external_common_launch.c)；端口范围和作业超时见 [mpiexec 参数说明](https://www.mpich.org/static/docs/v3.2/www1/mpiexec.html)。

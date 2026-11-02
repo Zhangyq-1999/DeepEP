@@ -244,7 +244,7 @@ void help()
 {
     std::cout << "LL Combine C++ benchmark (use run.sh for one process per card)\n"
                  "MPI assigns EP2/4/8/16/32; --devices lists one device per local rank\n"
-                 "--tokens 32,48,64,72 --hidden 3584 --topk 8 --experts 384 --capacity 256\n"
+                 "--tokens 32,48,64,72,256 --hidden 3584 --topk 8 --experts 384 --capacity 256\n"
                  "--entry-sync auto|device|host (auto: single-host device gate/barrier, multi-host MPI only)\n"
                  "--profile 0|1|2 --dtype bf16|fp16 --route random|hotspot --seed 0 --warmup 10 --iters 100 --timeout "
                  "300 --output-dir DIR\n";

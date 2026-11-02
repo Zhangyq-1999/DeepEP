@@ -58,7 +58,8 @@ def bash():
 
 
 def test_shell_syntax(bash):
-    for script in ("build.sh", "run.sh", "launch.sh", "prepare_shmem.sh", "hydra_proxy_command.sh"):
+    for script in ("build.sh", "run.sh", "launch.sh", "prepare_shmem.sh", "hydra_proxy_command.sh",
+                   "build_all.sh", "run_all.sh", "experiment_defaults.sh"):
         subprocess.run([bash, "-n", str(HERE / script)], check=True, timeout=10)
 
 
