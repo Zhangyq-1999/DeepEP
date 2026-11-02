@@ -114,6 +114,7 @@ def test_real_dispatch_launch_routes_exactly_one_specialization(tmp_path, refere
 #include <initializer_list>
 #include <stdexcept>
 #include "csrc/kernels/dispatch/low_latency/launch.hpp"
+#include "csrc/kernels/dispatch/low_latency/common/ll_group_policy.h"
 static unsigned calls = 0, calledMode = 99, calledGroup = 0;
 static void* expectedStream = nullptr;
 static const deepep::EpServerDedupKernelArgs* expectedArgs = nullptr;
@@ -161,8 +162,10 @@ int main() {
 #else
     assert(deepep_ll_reference_profile_enabled() == 0);
 #endif
-    for (uint32_t world : {16U, 32U, 64U, 128U, 256U})
-        assert(deepep_ll_ranks_per_group(world) == (world <= 16U ? 4U : 16U));
+    // The Host query and the device policy must select the same specialization,
+    // including the EP2/4/8 standalone benchmark and the EP16/32 boundary.
+    for (uint32_t world = 1U; world <= 256U; ++world)
+        assert(deepep_ll_ranks_per_group(world) == DispatchDedup::LlGroupForWorld(world));
     deepep::EpServerDedupKernelArgs args{};
     int streamHandle = 1;
     expectedStream = &streamHandle;

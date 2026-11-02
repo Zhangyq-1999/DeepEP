@@ -31,7 +31,12 @@ extern "C" DEEPEP_EXPORT int32_t deepep_ll_combine_recv_cores()
 
 extern "C" DEEPEP_EXPORT uint32_t deepep_ll_combine_early_reduce_enabled()
 {
-    return CombineDedup::EpCombineEarlyReduce(1U) ? 1U : 0U;
+    // Report the build option on Host; EpCombineEarlyReduce runs on AICore.
+#ifdef DEEPEP_LL_COMBINE_EARLY_REDUCE
+    return 1U;
+#else
+    return 0U;
+#endif
 }
 
 // 中文审计：ElasticBuffer._combine_low_latency → csrc/ops/low_latency.cpp

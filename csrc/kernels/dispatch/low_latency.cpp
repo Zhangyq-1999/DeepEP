@@ -43,7 +43,12 @@ extern "C" DEEPEP_EXPORT uint32_t deepep_ll_reference_profile_schema()
 }
 extern "C" DEEPEP_EXPORT uint32_t deepep_ll_ranks_per_group(uint32_t world)
 {
-    return DispatchDedup::LlGroupForWorld(world);
+    // This exported query runs on Host even in a Bisheng -xasc translation
+    // unit, where LlGroupForWorld is an AICore-only helper.
+    using DispatchDedup::LlTilingKey;
+    if (world == 2U) return uint32_t(LlTilingKey::Group2);
+    return uint32_t(world <= DispatchDedup::kLlPhysicalRanksPerHost
+                        ? LlTilingKey::Group4 : LlTilingKey::Group16);
 }
 
 extern "C" DEEPEP_EXPORT uint32_t deepep_ll_core_protocol_version()
