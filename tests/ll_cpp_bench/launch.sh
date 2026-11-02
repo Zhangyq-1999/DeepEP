@@ -12,13 +12,15 @@ while (($#)); do
         --help|-h)
             cat <<'USAGE'
 launch.sh --ep 2|4|8|16|32 [--node-rank 0|1] [--hosts HOST0,HOST1]
-          [--master-addr IP] [--master-port PORT] [--variants base|opt|base,opt]
+          [--master-addr IP] [--master-port PORT] [--variants NAME[,NAME...]]
           [--run-id NAME] [--mpi-home DIR] [--job-timeout SECONDS]
           [--join-timeout SECONDS] [--dry-run] -- [benchmark options]
 Each host runs this script once. EP32 uses one MPICH 3.2.1 MPI world,
 without SSH or manually copying proxy commands. Benchmark arguments come
 from node 0. Both nodes use the same checkout path, hosts, ports, variants
-and run-id. Results: results/ll-cpp/NAME/<phase>-<variant>/.
+and run-id. Each variant uses build/ll-cpp-NAME/ll_combine_bench.
+Single-host runs create results/ll-cpp/<run-id>/<timestamp>-<unique>/.
+EP32 uses results/ll-cpp/<run-id>/; choose the same new run-id on both nodes.
 USAGE
             exit 0;;
         --dry-run) dry=1; shift;;
@@ -45,7 +47,7 @@ else
     ((node_rank==0 && ${#nodes[@]}==1)) || fail 'EP2/4/8/16 uses one host and node-rank 0'
 fi
 [[ -z $master || $master =~ ^[a-zA-Z0-9_.-]+$ ]] || fail 'Invalid master address'
-[[ $variants =~ ^(base|opt)(,(base|opt))*$ ]] || fail 'Use base, opt, or a comma-separated sequence'
+[[ $variants =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*(,[a-zA-Z0-9][a-zA-Z0-9_-]*)*$ ]] || fail 'Use comma-separated build names containing letters, digits, _ or -'
 IFS=, read -r -a sequence <<< "$variants"
 ((${#sequence[@]}<=8)) || fail 'At most eight comparison phases are supported'
 [[ $port =~ ^[1-9][0-9]{3,4}$ ]] && ((port>=1024 && port+${#sequence[@]}-1<=65535)) || fail 'Invalid master-port'
@@ -70,9 +72,16 @@ if ((!dry)); then
         [[ -x "$root/build/ll-cpp-$variant/ll_combine_bench" ]] || fail "Build ll-cpp-$variant first"
     done
     mkdir -p "$result_root"
+    if ((ep<=16)); then
+        # mktemp reserves a fresh directory even for invocations in the same second.
+        result_root=$(mktemp -d "$result_root/$(date +%Y%m%d-%H%M%S)-XXXXXX")
+    fi
     # Exclusive local ownership; node-specific directories also support shared storage.
     mkdir "$result_root/node-$node_rank" || fail 'This node already has this run-id; select a new one'
+elif ((ep<=16)); then
+    result_root="$result_root/TIMESTAMP-UNIQUE"
 fi
+echo "Results: $result_root"
 controller= proxy=
 cleanup() {
     local status=$?

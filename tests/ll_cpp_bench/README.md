@@ -90,7 +90,9 @@ bash tests/ll_cpp_bench/launch.sh \
     --warmup 10 --iters 100
 ```
 
-`base` 使用 `build/ll-cpp-base/ll_combine_bench`，`opt` 使用 `build/ll-cpp-opt/ll_combine_bench`。脚本按指定顺序运行，前一版成功退出后再启动后一版。也可以用 `--variants base,opt,base` 做 A/B/A 对照。每次测试使用新的 `--run-id`。
+`base` 使用 `build/ll-cpp-base/ll_combine_bench`，`opt` 使用 `build/ll-cpp-opt/ll_combine_bench`。脚本按指定顺序运行，前一版成功退出后再启动后一版。也可以用 `--variants base,opt,base` 做 A/B/A 对照。
+
+单机测试每次都会在 `results/ll-cpp/<run-id>/` 下创建带时间戳和随机后缀的子目录。同一条命令可以重复执行，之前的 CSV、日志和汇总都会保留。脚本开头的 `Results:` 显示本次目录。`--variants` 也支持自定义构建名：例如 `ref-profile` 对应 `build/ll-cpp-ref-profile/ll_combine_bench`。
 
 EP2 使用新增的 G2 Plain16 特化，支持 BF16 和 FP16；EP4、EP8、EP16 使用 G4。单机数据走 MTE。EP32 沿用 G16，跨主机回传走 RDMA；FIRST_HOP 汇集保留 Get 方案。
 
@@ -100,7 +102,7 @@ EP2 使用新增的 G2 Plain16 特化，支持 BF16 和 FP16；EP4、EP8、EP16 
 
 **两台机器各执行一次 `launch.sh`，共同组成一个 32-rank MPI 作业。** 脚本封装 MPICH 3.2.1 的 Hydra 启动流程，自动启动本机代理和 16 个 rank。运行时无需 SSH，也无需复制代理命令。
 
-两台机器先加载前文的 CANN、MPI 和 SHMEM 环境。两边使用相同的仓库绝对路径、编译结果、`--hosts`、`--master-port`、`--variants` 和 `--run-id`。下面的 `HOST0`、`HOST1` 替换成实际 IP。
+两台机器先加载前文的 CANN、MPI 和 SHMEM 环境。两边使用相同的仓库绝对路径、编译结果、`--hosts`、`--master-port`、`--variants` 和 `--run-id`。双机继续使用共同指定的结果目录，每轮需在两边填写相同的新 `--run-id`。下面的 `HOST0`、`HOST1` 替换成实际 IP。
 
 第一台机器执行：
 
@@ -149,7 +151,7 @@ EP32 默认沿用 Host MPI Barrier，结果记录为 `entry_sync=host`。设备�
 
 `rank-N.csv` 保存每个 rank 的全部采样。rank 0 的 `summary.csv` 按同轮最慢 rank 汇总，再计算均值、最小值、最大值、p50 和 p99，单位为 μs。汇总也记录实际核数、原版标识、启动同步方式、实验开关和打点状态。双机输出分布在各自主机，完整采样需要保留两边目录。
 
-例如，`--run-id ep32-ab --variants base,opt` 的结果保存在 `results/ll-cpp/ep32-ab/0-base` 和 `1-opt`。`node-0`、`node-1` 子目录保存各节点的启动日志。
+单机 `--run-id ep4-ab --variants base,opt` 的结果目录形如 `results/ll-cpp/ep4-ab/20261102-153000-Ab12Cd/`，其中 `0-base`、`1-opt` 保存两版结果，`node-0` 保存启动日志。双机仍使用 `results/ll-cpp/<run-id>/`，其中 `node-0`、`node-1` 保存各节点的日志。
 
 全部采样、精度检查和 SHMEM finalize 成功后，各 rank 写出 `rank-N.PASS`。单 rank 异常会调用 `MPI_Abort`，结束本次 MPI 作业。本用例用于功能冒烟和性能对照，完整的随机权重、路由元数据与独立 CPU golden 检查仍由原 Python 精度用例覆盖。
 
@@ -157,22 +159,32 @@ EP32 默认沿用 Host MPI Barrier，结果记录为 `entry_sync=host`。设备�
 
 打点仅在 opt 构建中提供。编译时加 `--profile ON`，运行时用 `--profile 1` 记录阶段边界，或用 `--profile 2` 进一步累计热循环耗时和轮询次数。
 
-下面只打开打点，其余优化关闭，便于先分析原流程在实验源码中的阶段开销：
+### 原流程与优化流程对照
+
+原版 base 保持独立、无打点。细粒度对照使用两份实验源码构建：`ref-profile` 关闭全部优化，记录原流程；`opt-profile` 开启 `small_batch`，记录该优化的影响。两份都保持默认分核、关闭 `early_reduce`，并启用相同的二级打点。构建目录独立，原有 base 和 opt 构建继续保留。
 
 ```bash
 bash tests/ll_cpp_bench/build.sh \
     --shmem-root "$SHMEM_ROOT" --mpi-home "$MPI_HOME" \
-    --build-dir "$PWD/build/ll-cpp-opt" --variant opt \
+    --build-dir "$PWD/build/ll-cpp-ref-profile" --variant opt \
     --small-batch OFF --recv-cores 0 --early-reduce OFF --profile ON
 
+bash tests/ll_cpp_bench/build.sh \
+    --shmem-root "$SHMEM_ROOT" --mpi-home "$MPI_HOME" \
+    --build-dir "$PWD/build/ll-cpp-opt-profile" --variant opt \
+    --small-batch ON --recv-cores 0 --early-reduce OFF --profile ON
+
 bash tests/ll_cpp_bench/launch.sh \
-    --ep 4 --variants opt --run-id ep4-profile-1 -- \
+    --ep 4 --variants ref-profile,opt-profile --run-id ep4-profile-ab -- \
     --devices 6,7,14,15 --tokens 32,48,64,72 \
-    --hidden 3584 --topk 8 --experts 384 --dtype bf16 \
-    --warmup 10 --iters 10 --profile 1
+    --hidden 3584 --topk 8 --experts 384 --capacity 256 --dtype bf16 \
+    --route random --seed 0 --entry-sync device \
+    --warmup 10 --iters 10 --profile 2
 ```
 
-需要细分时，改用新的 run-id 和 `--profile 2`。分析某项优化时，保持其余配置相同，只调整对应编译开关。原版性能使用独立的 base 构建测量。
+以上启动命令可以直接重复执行。每次的新目录内，`0-ref-profile` 和 `1-opt-profile` 分别保存原流程与优化流程的诊断数据。需要 A/B/A 对照时，使用 `--variants ref-profile,opt-profile,ref-profile`。只看阶段边界时，把运行参数改为 `--profile 1`。
+
+`ref-profile` 用于阶段分析，最终原版性能仍以冻结源码的 base 构建为准。分析其他优化时，每次只调整一个编译开关。确认效果后，以 `--profile OFF` 编译，再比较两版的完整 Event 耗时。
 
 ### 在终端查看汇总
 

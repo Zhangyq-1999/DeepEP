@@ -142,10 +142,70 @@ def test_per_node_launch_arguments(bash):
             assert "HYDRA_LAUNCHER_AUTOFORK=0" in result.stdout
             assert "MPIEXEC_PORT_RANGE=31000:31000" in result.stdout
     for args in (("--ep", "4", "--node-rank", "1"), ("--ep", "32"), ("--run-id", "../escape"),
-                 ("--master-port", "65535", "--variants", "base,opt"), ("--variants", "unknown")):
+                 ("--master-port", "65535", "--variants", "base,opt"), ("--variants", "../escape"),
+                 ("--variants", "base,,opt")):
         result = subprocess.run([bash, str(HERE / "launch.sh"), *args, "--dry-run"],
                                 capture_output=True, timeout=10)
         assert result.returncode != 0
+
+
+def test_repeated_single_host_profile_comparison(bash, tmp_path):
+    """Run the same command twice with fake binaries; preserve both sets of results."""
+    root = tmp_path / "project"
+    script = root / "tests/ll_cpp_bench/launch.sh"
+    script.parent.mkdir(parents=True)
+    shutil.copyfile(HERE / "launch.sh", script)
+    mpi = tmp_path / "mpi"
+    helpers = tmp_path / "helpers"
+
+    def write(path, body):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("#!/usr/bin/env bash\nset -eu\n" + body, newline="\n")
+        path.chmod(0o755)
+
+    write(helpers / "setsid", 'exec "$@"\n')
+    write(helpers / "timeout", 'exit 1\n')  # Only availability is checked for one host.
+    write(mpi / "bin/mpiexec", r'''
+while (($#)); do
+    if [[ $1 == */ll_combine_bench ]]; then exec "$@"; fi
+    shift
+done
+exit 1
+''')
+    for variant in ("ref-profile", "opt-profile"):
+        write(root / f"build/ll-cpp-{variant}/ll_combine_bench", r'''
+while (($#)); do
+    case $1 in --output-dir) out=$2;; --profile) level=$2;; --entry-sync) sync=$2;; esac
+    shift 2
+done
+[[ $level == 2 && $sync == device ]]
+mkdir -p "$out"
+for ((r=0;r<4;r++)); do echo passed >"$out/rank-$r.PASS"; done
+echo "${0%/ll_combine_bench}" >"$out/summary.csv"
+echo profile-fixture >"$out/rank-0-profile.csv"
+''')
+    write(script.with_name("summarize.sh"), 'echo "profile-summary: $1"\n')
+    helper_path = subprocess.check_output([bash, "-c", 'cygpath -u "$1"' if os.name == "nt" else 'printf "%s" "$1"',
+                                          "_", helpers.as_posix()], text=True).strip()
+    original_path = subprocess.check_output([bash, "-c", 'printf "%s" "$PATH"'], text=True)
+    env = dict(os.environ, PATH=helper_path + ":" + original_path)
+    args = [bash, str(script), "--ep", "4", "--variants", "ref-profile,opt-profile",
+            "--mpi-home", mpi.as_posix(), "--run-id", "repeat", "--",
+            "--profile", "2", "--entry-sync", "device"]
+    for _ in range(2):
+        result = subprocess.run(args, env=env, capture_output=True, text=True, timeout=20)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert result.stdout.count("profile-summary:") == 2
+    runs = list((root / "results/ll-cpp/repeat").iterdir())
+    assert len(runs) == 2
+    for run in runs:
+        for phase, variant in enumerate(("ref-profile", "opt-profile")):
+            output = run / f"{phase}-{variant}"
+            assert len(list(output.glob("rank-*.PASS"))) == 4
+            assert f"ll-cpp-{variant}" in (output / "summary.csv").read_text()
+            assert (output / "rank-0-profile.csv").read_text().strip() == "profile-fixture"
+            assert (output / "profile-summary-node-0.txt").exists()
+            assert (run / "node-0" / f"{phase}-{variant}.log").exists()
 
 
 @pytest.mark.parametrize("failure", [False, True])
