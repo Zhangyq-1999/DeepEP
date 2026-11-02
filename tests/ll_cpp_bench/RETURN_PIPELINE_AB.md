@@ -43,7 +43,7 @@ Combine 已有有效 token 的待处理列表和可选 FIRST_HOP 任务缓存。
 
 ## 编译与运行
 
-两台机器更新同一分支后，运行无参数编译脚本。它会编译干净的 base 和全部 7 个打点版本。脚本复用已安装的配套 SDK，无需安装 Python 包。构建列表和默认环境路径见 [C++ 用例说明](README.md#一次编译并运行全部实验)。
+两台机器更新同一分支后，运行无参数编译脚本。它默认编译干净的 base，以及本节的 4 个打点版本；此前的任务缓存、分核和提前归约实验改为按需编译。脚本复用已安装的配套 SDK，无需安装 Python 包。构建列表和默认环境路径见 [C++ 用例说明](README.md#一次编译并运行当前实验)。
 
 ```bash
 git pull --ff-only origin perf/ll-combine-small-batch
@@ -62,13 +62,13 @@ bash tests/ll_cpp_bench/run_all.sh
 bash tests/ll_cpp_bench/run_all.sh 第一台打印的RUN_ID
 ```
 
-默认对比全部 7 个打点版本，测试 BS32、48、64、72 和 256。形状为 H3584、TopK 8、384 个专家、BF16、随机路由、seed 0；每个 BS 预热 10 轮、采样 10 轮，启用二级打点。脚本自动打印各 BS 的时延和打点汇总。每次从第一台启动都会生成新的 `RUN_ID`，保留此前数据。
+默认对比本节的 4 个打点版本，测试 BS32、48、64、72 和 256。形状为 H3584、TopK 8、384 个专家、BF16、随机路由、seed 0；每个 BS 预热 10 轮、采样 10 轮，启用二级打点。脚本自动打印各 BS 的时延和打点汇总。每次从第一台启动都会生成新的 `RUN_ID`，保留此前数据。
 
-只测本节的四组回传实验时，第一台使用以下命令，第二台复制脚本打印的加入命令。也可以调整 `--variants` 顺序，检查先后顺序对结果的影响。
+默认顺序为对照、优先跨机回传、暂存流水和组合版。第二轮可以反序运行，检查先后顺序对结果的影响。第一台执行以下命令，第二台复制脚本打印的加入命令：
 
 ```bash
 bash tests/ll_cpp_bench/run_all.sh \
-    --variants ref-profile,remote-profile,pipeline-profile,return-profile
+    --variants return-profile,pipeline-profile,remote-profile,ref-profile
 ```
 
 用 `--ep 4 --devices 6,7,14,15` 或 `--ep 16` 可以先做单机冒烟。主机地址、端口、编译并行度和形状参数都可覆盖，详见两个脚本的 `--help`。确认有收益后，用原有 `build.sh --profile OFF` 编译对应组合，再比较完整 Event 性能。

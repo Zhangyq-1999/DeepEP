@@ -8,8 +8,7 @@ import subprocess
 import pytest
 
 HERE = Path(__file__).resolve().parent
-PROFILES = ("ref-profile", "opt-profile", "r36-profile", "early-profile",
-            "remote-profile", "pipeline-profile", "return-profile")
+PROFILES = ("ref-profile", "remote-profile", "pipeline-profile", "return-profile")
 
 
 @pytest.fixture
@@ -71,7 +70,7 @@ def call_options(output):
 def test_build_all_isolated_matrix_and_failure_stop(harness):
     run, env = harness
     calls = call_options(run("build_all.sh").stdout)
-    assert len(calls) == 8
+    assert len(calls) == 5
     for name, call in zip(("base", *PROFILES), calls):
         assert call["--build-dir"].endswith("/build/ll-cpp-" + name)
         assert call["--variant"] == ("base" if name == "base" else "opt")
@@ -91,10 +90,13 @@ def test_build_all_isolated_matrix_and_failure_stop(harness):
 def test_build_sdk_and_selection_overrides(harness):
     run, env = harness
     env["SHMEM_ROOT"] = "/env/sdk"
-    calls = call_options(run("build_all.sh", "--variants", "return-profile,ref-profile",
+    calls = call_options(run("build_all.sh", "--variants", "return-profile,ref-profile,opt-profile,r36-profile,early-profile",
                              "--jobs", "8", "--shmem-root", "/selected/sdk with spaces",
                              "--mpi-home", "/selected/mpi", "--cann-home", "/selected/cann").stdout)
-    assert len(calls) == 2
+    assert len(calls) == 5
+    assert calls[2]["--small-batch"] == "ON"
+    assert calls[3]["--recv-cores"] == "36"
+    assert calls[4]["--early-reduce"] == "ON"
     for call in calls:
         assert call["--jobs"] == "8"
         assert call["--shmem-root"] == "/selected/sdk with spaces"

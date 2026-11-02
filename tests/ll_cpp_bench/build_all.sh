@@ -12,9 +12,10 @@ while (($#)); do
             cat <<'USAGE'
 build_all.sh [--variants NAME[,NAME...]] [--jobs N] [--dry-run]
              [--cann-home DIR] [--mpi-home DIR] [--shmem-root DIR]
-With no arguments, build base and all seven diagnostic experiments.
-Profiles: ref-profile, opt-profile, r36-profile, early-profile,
-          remote-profile, pipeline-profile, return-profile.
+With no arguments, build base and the four current diagnostic experiments:
+ref-profile, remote-profile, pipeline-profile, return-profile.
+Previous experiments opt-profile, r36-profile and early-profile remain
+available through --variants but are excluded from the default build.
 Existing build directories are updated in place; all flags are explicit.
 SDK defaults: CANN cann-9.2.T101, MPI /usr/local/mpich-3.2.1,
              SHMEM third-party/shmem/install/shmem in this checkout.

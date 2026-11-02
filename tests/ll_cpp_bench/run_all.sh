@@ -27,7 +27,7 @@ Benchmark options (with or without a preceding --):
          --dtype bf16|fp16 --route random|hotspot --seed N --entry-sync auto|host|device
          --warmup N --iters N --profile 0|1|2 --timeout SECONDS
 Defaults: EP32, hosts 90.90.93.84,90.90.93.184, port 29671.
-          Seven diagnostic versions; BS 32,48,64,72,256; H3584/K8/E384/BF16.
+          Four diagnostic versions; BS 32,48,64,72,256; H3584/K8/E384/BF16.
           Warmup 10, samples 10, profile 2; Host MPI sync for EP32.
 Single-host EP2/4/8/16 defaults to device entry sync.
 Node is detected from local addresses; --node-rank overrides detection.

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Shared defaults for the two convenience entry points. Source from Bash.
-ll_bench_profiles=ref-profile,opt-profile,r36-profile,early-profile,remote-profile,pipeline-profile,return-profile
+ll_bench_profiles=ref-profile,remote-profile,pipeline-profile,return-profile
 ll_bench_cann=${ASCEND_HOME_PATH:-/usr/local/Ascend/cann-9.2.T101}
 ll_bench_mpi=${MPI_HOME:-/usr/local/mpich-3.2.1}
 ll_bench_shmem=${SHMEM_ROOT:-$root/third-party/shmem/install/shmem}

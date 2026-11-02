@@ -12,7 +12,7 @@
 
 可以复用此前编译 LL 算子时生成的 SHMEM SDK。这个 SDK 独立于 Conda。没有现成 SDK 时，下面的 Shell/CMake 脚本会编译仓库锁定的 SHMEM 子模块，并登记 SDK 信息。
 
-## 一次编译并运行全部实验
+## 一次编译并运行当前实验
 
 已有配套 SHMEM SDK 时，两台机器各执行以下命令。脚本默认使用 `/usr/local/Ascend/cann-9.2.T101`、`/usr/local/mpich-3.2.1` 和当前仓库的 `third-party/shmem/install/shmem`。已设置的 `ASCEND_HOME_PATH`、`MPI_HOME`、`SHMEM_ROOT` 优先于这些路径。脚本自动加载所选 CANN 的 `set_env.sh`，并配置 MPI、SHMEM 的库路径。
 
@@ -23,18 +23,17 @@ git pull --ff-only origin perf/ll-combine-small-batch
 bash tests/ll_cpp_bench/build_all.sh
 ```
 
-`build_all.sh` 顺序更新以下 8 个构建目录，每个构建默认使用 4 个编译任务。所有开关都显式传入，重复编译会覆盖旧的 CMake 选项。
+`build_all.sh` 默认只更新以下 5 个构建目录，每个构建使用 4 个编译任务。所有开关都显式传入，重复编译会覆盖旧的 CMake 选项。已有构建目录继续用于增量编译。
 
 | 构建名 | 启用的实验 | 打点 |
 | --- | --- | --- |
 | `base` | 冻结的上游原版 | 关闭 |
 | `ref-profile` | 实验开关全部关闭，用作打点对照 | 开启 |
-| `opt-profile` | `small-batch` 任务缓存 | 开启 |
-| `r36-profile` | 36 个接收核 | 开启 |
-| `early-profile` | 提前归约 | 开启 |
 | `remote-profile` | 优先回传跨机结果 | 开启 |
 | `pipeline-profile` | 准备下一包时暂存上一包 | 开启 |
 | `return-profile` | 优先跨机回传，加暂存流水 | 开启 |
+
+此前的任务缓存 `opt-profile`、分核 `r36-profile` 和提前归约 `early-profile` 改为按需编译、运行。已有构建和结果文件继续保留。需要复测时，用 `--variants` 指定对应名称。
 
 默认使用当前两台机器：节点 0 为 `90.90.93.84`，节点 1 为 `90.90.93.184`。脚本根据本机 IP 识别节点。两边编译完成后，第一台执行：
 
@@ -48,7 +47,7 @@ bash tests/ll_cpp_bench/run_all.sh
 bash tests/ll_cpp_bench/run_all.sh 第一台打印的RUN_ID
 ```
 
-默认对比表中的 7 个打点版本，每版依次测试 **BS32、48、64、72、256**。其余参数为 EP32、H3584、TopK 8、384 个专家、BF16、随机路由、seed 0、capacity 256；每个 BS 预热 10 轮、采样 10 轮，使用二级打点。EP32 继续使用 Host MPI Barrier。各阶段自动打印时延、精度检查结果和细粒度打点汇总。
+默认对比表中的 4 个打点版本，每版依次测试 **BS32、48、64、72、256**。其余参数为 EP32、H3584、TopK 8、384 个专家、BF16、随机路由、seed 0、capacity 256；每个 BS 预热 10 轮、采样 10 轮，使用二级打点。EP32 继续使用 Host MPI Barrier。各阶段自动打印时延、精度检查结果和细粒度打点汇总。
 
 每次在第一台执行相同命令，脚本都会生成新的结果目录。第二台每轮使用对应的新 `RUN_ID`。结果仍保存在各自的 `results/ll-cpp/<RUN_ID>/`。`base` 保留为无打点性能参考，可以单独运行 `run_all.sh --variants base --profile 0 --iters 100`。打点版的时延用于阶段分析，最终收益需用关闭打点的构建确认。
 
