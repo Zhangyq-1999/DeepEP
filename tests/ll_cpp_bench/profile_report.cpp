@@ -100,7 +100,9 @@ struct Phase {
     Word detailBegin = Count, detailEnd = Count;
 };
 constexpr Phase phases[] = {{"body", Entry, FlushDone},
-                            {"init", ProfileInitEnd, InitEnd, InitPrefixTicks, InitPrefixTicks},
+                            {"profile_setup", Entry, ProfileInitEnd},
+                            {"magic", ProfileInitEnd, MagicEnd},
+                            {"init", MagicEnd, InitEnd, InitPrefixTicks, InitPrefixTicks},
                             {"stage", StageBegin, StageEnd, StageSelectLoadTicks, StagePublishTicks},
                             {"notify_wait", NotifyBegin, NotifyLocalReady, NotifyPollLoadTicks, NotifyPollCheckTicks},
                             {"notify_publish", NotifyLocalReady, NotifyEnd, NotifyResetTicks, NotifyPublishTicks},
@@ -111,7 +113,9 @@ constexpr Phase phases[] = {{"body", Entry, FlushDone},
                             {"direct_send", DirectSetupEnd, DirectEnd, DirectScanTicks, DirectDrainTicks},
                             {"final", FinalBegin, FinalEnd, FinalMetaLoadTicks, EarlyStalls},
                             {"final_drain", FinalEnd, DrainEnd},
-                            {"rdma_tail", PipeDone, FlushDone}};
+                            {"send_pipe_tail", DirectEnd, PipeDone},
+                            {"recv_pipe_tail", DrainEnd, PipeDone},
+                            {"batch_flush", PipeDone, FlushDone}};
 constexpr size_t phaseCount = sizeof(phases) / sizeof(phases[0]);
 struct Winner {
     uint64_t ticks = 0;
@@ -155,20 +159,26 @@ void detail(std::ostream& out, const Record& r)
 {
     out << "  " << (r.receive ? "RECEIVE" : "SEND") << " longest_body ";
     identify(out, r);
-    out << " body_ticks=" << r[FlushDone] << " lanes=" << r[InputLanes] << '/' << r[OutputLanes] << '\n';
+    out << " body_ticks=" << r[FlushDone];
+    // The kernel records lane counts only for final aggregation, not send cores.
+    if (r.receive) out << " final_lanes=" << r[InputLanes] << '/' << r[OutputLanes];
+    out << '\n';
     out << "    work: stage=" << r[StageRows] << " direct=" << r[DirectRows] << " partial=" << r[PartialRows]
         << " final_tokens=" << r[FinalTokens];
     if (r[Level] >= 2)
         out << " contributions=" << r[Contributions] << " local/get=" << r[PartialLocalContrib] << '/'
             << r[PartialGetContrib];
     out << '\n' << "    offsets_ticks:";
-    const std::vector<Word> send = {InitEnd,           StageEnd,         NotifyLocalReady, NotifyEnd,
-                                    DirectFirstSubmit, DirectLastSubmit, DirectEnd,        FlushDone};
+    const std::vector<Word> send = {InitEnd,          StageEnd,  NotifyLocalReady, NotifyEnd, DirectFirstSubmit,
+                                    DirectLastSubmit, DirectEnd, PipeDone,         FlushDone};
     const std::vector<Word> receive = {ReadyEnd,       PartialEnd, FinalFirstReady, FinalLastReady,
-                                       FinalLastStore, DrainEnd,   FlushDone};
+                                       FinalLastStore, DrainEnd,   PipeDone,        FlushDone};
     for (Word w : r.receive ? receive : send)
         if (r.present[w]) out << ' ' << names[w] << '=' << r[w];
     out << '\n';
+    const Word tailBegin = r.receive ? DrainEnd : DirectEnd;
+    uint64_t tail = 0;
+    if (r.interval(tailBegin, PipeDone, tail)) out << "    pipe_tail_ticks=" << tail << '\n';
     if (r[Level] < 2) return;
     const auto costs = top_costs(r, kDetailBegin, kDetailEnd);
     for (size_t i = 0; i < std::min<size_t>(8, costs.size()); ++i) {
@@ -313,6 +323,8 @@ void report(const fs::path& directory)
         << "Event unit=us; device durations/offsets=ticks. No assumed clock frequency.\n"
         << "Phase rows: mean/max of per-iteration maximum over available cores; overlapping rows are not additive.\n"
         << "Detail: same Event sample/rank, longest-duration send/receive core; top counters may overlap.\n"
+        << "Scalar-clock scopes: *_V/*_MTE waits do not synchronize Scalar; later V_S/PIPE_ALL may include prior "
+           "work.\n"
         << "Profiling adds overhead. Core offsets use each core's own entry; no cross-rank clock subtraction.\n";
     // Preserve shape/build context when node 0's summary exists.
     if (fs::exists(directory / "summary.csv")) {

@@ -50,7 +50,7 @@ def fixture_data(path, ranks=(0, 1), level=2):
                 row.update(iteration=iteration, device=6+rank, role="receive" if core else "send",
                            profile_build=1, entry_tick=(1 << 60) + rank * 1000000 + core * 100,
                            flush_done=1000+rank*100+iteration*10+core,
-                           profile_init_end=2, init_end=5,
+                           profile_init_end=2, magic_end=3, init_end=5,
                            rank=rank, core=core, tokens=32, world=2, schema=2, complete=1, valid=1, level=level,
                            input_lanes=2, output_lanes=2)
                 if core == 0:
@@ -67,6 +67,7 @@ def fixture_data(path, ranks=(0, 1), level=2):
                     if level == 2:
                         row.update(probe_ticks=50, probe_calls=10, probe_misses=4, probe_miss_ticks=20,
                                    probe_max_ticks=8, probe_max_token=9, probe_max_slot=4294967295)
+                row["pipe_done"] = row["flush_done"] - 10
                 rows.append(row)
         write_csv(path / f"rank-{rank}-profile.csv", fields, rows)
         write_csv(path / f"rank-{rank}.csv", ["tokens", "iteration", "combine_event_us"], events)
@@ -85,6 +86,10 @@ def test_report_same_sample_and_scope(reporter, tmp_path):
     median, worst = out.split("MEDIAN_EVENT_SAMPLE", 1)[1].split("WORST_EVENT_SAMPLE", 1)
     assert "direct_submit_ticks=113" in median and "direct_submit_ticks=212" in worst
     assert "slot=all" in out and "body_ticks=1020" in out
+    assert "pipe_tail_ticks=830" in median  # 1010 - 180, same sample/core.
+    assert "send_pipe_tail" in out and "recv_pipe_tail" in out and "batch_flush" in out
+    assert "rdma_tail" not in out
+    assert "SEND longest_body iter=2 rank=0 dev=6 core=0 body_ticks=1020\n" in out
     assert "notify_wait" not in out  # Absent timestamps are not zero-duration phases.
     assert out.count("LL_COMBINE_PROFILE_SUMMARY BEGIN") == 1
     assert before == {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in tmp_path.iterdir()}

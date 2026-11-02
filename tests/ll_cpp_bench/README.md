@@ -186,6 +186,8 @@ bash tests/ll_cpp_bench/summarize.sh results/ll-cpp/ep4-detail-v2/0-opt
 
 汇总按 BS 展示 Event 均值、最小值和最大值，以及各阶段的耗时。阶段统计先取每轮所有可见核的最大值，再计算均值和最大值；各阶段可能重叠，分别分析。
 
+`send_pipe_tail` 单列 DIRECT 函数返回后到 `PIPE_ALL` 完成的时间，`recv_pipe_tail` 记录接收侧对应的收尾。`batch_flush` 记录随后批次回收函数的调用时间；是否包含 RDMA 请求，以 `rdma_packets` 和 `rdma_quiet_calls` 为准。
+
 程序按同轮最慢 rank 的 Event 耗时排序，选择中位轮次和最慢轮次。每个轮次展示该 rank 内耗时最长的发送核和接收核，包括任务量、时间戳、前八项累计开销、轮询次数和最慢单次调用。偶数轮次取中间两个样本中的前一个，保持数据来自同一个真实样本。Event 使用 μs，核内时间保留 tick，换算需要确认设备计数器频率。
 
 双机结果保存在两台机器各自的目录时，每台机器分别打印本地汇总。`scope_ranks` 和 `coverage` 标明实际统计范围；分析 EP32 时需要同时提供两台的打印结果。
@@ -220,7 +222,9 @@ bash tests/ll_cpp_bench/summarize.sh results/ll-cpp/ep4-detail-v2/0-opt
 
 单次回传调用的最大耗时保存在 `direct_submit_max_ticks` 或 `partial_submit_max_ticks`，并记录对应 peer 和 token。`probe_max_ticks` 记录最慢的一次标记检查及其 token、slot；整 token 检查时 slot 为 `4294967295`。该值反映一次检查的耗时，持续未就绪的情况结合累计次数和耗时判断。`rdma_quiet_max_peer` 标出单次 quiet 等待最久的目标。
 
-计时沿用原有等待指令。`*_issue_ticks` 表示下发指令所花的时间，异步执行的剩余耗时可能体现在后续等待中。`*_wait_ticks` 记录到达等待指令后仍需等待的时间。外层阶段耗时包含内层细分项，例如 `direct_submit_ticks` 可能包含 `rdma_*` 耗时，应分别阅读。不同核的并行耗时也分别分析。跨设备时间戳需要先确认时钟对齐，tick 换算为时间需要确认计数器频率。
+计时沿用原有等待指令，记录标量流水执行到各打点位置的时间。`*_issue_ticks` 表示下发指令所花的时间。`MTE2_V`、`MTE3_V` 等事件约束向量流水，标量打点可能继续向前执行，因此这些 `*_wait_ticks` 只能反映对应调用区间。后续 `V_S` 或 `PIPE_ALL` 可能承担前序操作尚未完成的等待。例如，`probe_check_ticks` 包含 `ReduceSum` 和 `V_S`，也可能包含前面标记搬入的剩余等待。
+
+外层阶段耗时包含内层细分项，例如 `direct_submit_ticks` 可能包含 `rdma_*` 耗时，应分别阅读。不同核的并行耗时也分别分析。跨设备时间戳需要先确认时钟对齐，tick 换算为时间需要确认计数器频率。
 
 诊断记录和导出会影响时延。确认方案后，以 `--profile OFF` 重新编译，再用默认 `--profile 0` 采集最终性能。
 
