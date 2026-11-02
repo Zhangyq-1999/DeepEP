@@ -51,7 +51,7 @@ def fixture_data(path, ranks=(0, 1), level=2):
                            profile_build=1, entry_tick=(1 << 60) + rank * 1000000 + core * 100,
                            flush_done=1000+rank*100+iteration*10+core,
                            profile_init_end=2, magic_end=3, init_end=5,
-                           rank=rank, core=core, tokens=32, world=2, schema=2, complete=1, valid=1, level=level,
+                           rank=rank, core=core, tokens=32, world=2, schema=3, complete=1, valid=1, level=level,
                            input_lanes=2, output_lanes=2)
                 if core == 0:
                     # Maximum per iteration is 100,20,40, across different ranks.
@@ -120,3 +120,46 @@ def test_incomplete_report_rejected(reporter, tmp_path, problem):
     result = subprocess.run([str(reporter), str(tmp_path)], capture_output=True, text=True)
     assert result.returncode != 0
     assert "Profile summary failed:" in result.stderr
+
+
+def test_return_submission_and_overlap_report(reporter, tmp_path):
+    fixture_data(tmp_path)
+    for rank in (0, 1):
+        path = tmp_path / f"rank-{rank}-profile.csv"
+        with path.open(newline="") as stream:
+            reader = csv.DictReader(stream)
+            fields, rows = reader.fieldnames, list(reader)
+        for row in rows:
+            if row["role"] == "send":
+                row.update(rdma_first_stage=100, rdma_last_stage=400,
+                           rdma_first_put=200, rdma_last_put=500, rdma_packets=3,
+                           rdma_deferred_packets=1, rdma_stage_wait_ticks=50,
+                           rdma_stage_wait_max_ticks=30, rdma_stage_wait_max_peer=17,
+                           rdma_defer_gap_ticks=99999)
+        write_csv(path, fields, rows)
+    out = subprocess.check_output([str(reporter), str(tmp_path)], text=True)
+    assert "rdma_return: packets=3 deferred=1" in out
+    assert "RETURN largest_last_put_offset (own-core entry)" in out
+    assert "stage_wait=50 defer_gap=99999" in out
+    assert "max=30(peer=17)" in out
+    for line in out.splitlines():
+        if "top_ticks:" in line:
+            assert "defer_gap" not in line  # useful preparation time is not a cost
+
+
+def test_schema_two_report_remains_readable(reporter, tmp_path):
+    fixture_data(tmp_path)
+    added = {"rdma_first_stage", "rdma_last_stage", "rdma_first_put", "rdma_last_put",
+             "rdma_deferred_packets", "rdma_defer_gap_ticks", "rdma_stage_wait_max_ticks", "rdma_stage_wait_max_peer"}
+    for path in tmp_path.glob("*-profile.csv"):
+        with path.open(newline="") as stream:
+            reader = csv.DictReader(stream)
+            fields, rows = reader.fieldnames, list(reader)
+        fields = [f for f in fields if f not in added]
+        rows = [{k: v for k, v in row.items() if k not in added} for row in rows]
+        for row in rows:
+            row["schema"] = 2
+        write_csv(path, fields, rows)
+    out = subprocess.check_output([str(reporter), str(tmp_path)], text=True)
+    assert "coverage=2/2 FULL" in out
+    assert "rdma_return:" not in out

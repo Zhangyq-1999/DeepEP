@@ -21,7 +21,8 @@ def function_body(source, marker):
 
 
 @pytest.mark.parametrize("receive_cores", [0, 8, 16, 24, 32, 36])
-def test_production_plan_matches_original_scan(tmp_path, receive_cores):
+@pytest.mark.parametrize("remote_first", [False, True])
+def test_production_plan_matches_original_scan(tmp_path, receive_cores, remote_first):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
     if not zig:
         pytest.skip("Set DEEPEP_TEST_ZIG for the C++ CPU check")
@@ -93,7 +94,7 @@ template<uint32_t Group>void Check(uint32_t world,uint32_t rank,uint32_t c,uint3
   old.args_=&old.a;
   uint32_t owner=0;
   for(uint32_t step=0;step<world/Group;++step){
-   uint32_t group=ServerDedupHalfOrder(world/Group,rank/Group,step);
+   uint32_t group=CombineReturnServer<Group>(world/Group,rank/Group,step);
    uint32_t count=old.SelectServer(group,owner,step==0);
    expected.insert(expected.end(),selected.begin(),selected.begin()+count);
    assert(plan.End(step)==expected.size());
@@ -150,7 +151,8 @@ int main(){
     cpp = tmp_path / "partial-plan.cpp"
     cpp.write_text(source, encoding="utf-8")
     exe = tmp_path / "partial-plan.exe"
-    subprocess.run([zig, "c++", "-std=c++17", "-O1", "-UNDEBUG", f"-DDEEPEP_LL_COMBINE_RECV_CORES={receive_cores}", "-I" + str(tmp_path),
+    subprocess.run([zig, "c++", "-std=c++17", "-O1", "-UNDEBUG", f"-DDEEPEP_LL_COMBINE_RECV_CORES={receive_cores}",
+                    *(["-DDEEPEP_LL_COMBINE_REMOTE_FIRST=1"] if remote_first else []), "-I" + str(tmp_path),
                     "-I" + str(ROOT / "csrc"), str(cpp), "-o", str(exe)], check=True, timeout=180)
     result = subprocess.run([str(exe)], check=True, capture_output=True, text=True, timeout=90)
     assert "PASS production partial plan" in result.stdout
@@ -172,7 +174,8 @@ def test_variant_has_separate_build_cache_and_explicit_cli():
 
 
 @pytest.mark.parametrize("optimized", [False, True])
-def test_production_lane_events_and_payloads(tmp_path, optimized):
+@pytest.mark.parametrize("returns", [False, True])
+def test_production_lane_events_and_payloads(tmp_path, optimized, returns):
     """Execute both edited loops with deferred stores and checked event IDs."""
     zig = os.environ.get("DEEPEP_TEST_ZIG")
     if not zig:
@@ -189,6 +192,7 @@ def test_production_lane_events_and_payloads(tmp_path, optimized):
 #include <numeric>
 #include "kernels/combine/low_latency/combine_server_dedup_select.h"
 #include "kernels/combine/low_latency/combine_profile_device.h"
+#include "kernels/combine/low_latency/combine_return_schedule.h"
 using namespace AscendC;
 using namespace CombineDedup;
 struct Args{uint32_t rank=0,rankSize=16;bool rdma=false;};
@@ -264,6 +268,8 @@ int main(){for(uint32_t c:{16,32,56,64,72})for(uint32_t lanes:{1,2,8})for(uint32
     cpp, exe = tmp_path / "combine-lanes.cpp", tmp_path / "combine-lanes.exe"
     cpp.write_text(source, encoding="utf-8")
     flags = ["-DDEEPEP_LL_COMBINE_SMALL_BATCH=1"] if optimized else []
+    if returns:
+        flags += ["-DDEEPEP_LL_COMBINE_REMOTE_FIRST=1", "-DDEEPEP_LL_COMBINE_DEFER_RETURN=1"]
     subprocess.run([zig, "c++", "-std=c++17", "-O1", "-UNDEBUG", *flags,
                     "-I" + str(ROOT / "csrc"), "-I" + str(ROOT / "tests/ll_rdma/metadata_stubs"),
                     str(cpp), "-o", str(exe)], check=True, timeout=180)

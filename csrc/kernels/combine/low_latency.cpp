@@ -48,6 +48,18 @@ extern "C" DEEPEP_EXPORT uint32_t deepep_ll_combine_profile_enabled()
 #endif
 }
 
+extern "C" DEEPEP_EXPORT uint32_t deepep_ll_combine_return_options()
+{
+    uint32_t options = 0U;
+#ifdef DEEPEP_LL_COMBINE_REMOTE_FIRST
+    options |= 1U;
+#endif
+#ifdef DEEPEP_LL_COMBINE_DEFER_RETURN
+    options |= 2U;
+#endif
+    return options;
+}
+
 // 中文审计：ElasticBuffer._combine_low_latency → csrc/ops/low_latency.cpp
 // → combine_server_dedup_kernel_do → 本入口。输入依赖匹配dispatch handle的路由/计数/权重。
 // profiler中的combine_server_dedup_kernel包含下层准备、控制通知、回传与最终归约。

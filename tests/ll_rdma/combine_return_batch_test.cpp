@@ -68,6 +68,9 @@ int main(){
    profiler.Finish(0, 256, n);
    assert(record[CombineProfile::RdmaPackets] == remoteTargets.size());
    assert(record[CombineProfile::RdmaQuietCalls] == expectedQuiet);
+   assert(record[CombineProfile::RdmaDeferredPackets] == (deferred ? remoteTargets.size() : 0U));
+   const uint64_t putMask=(uint64_t(1)<<CombineProfile::RdmaFirstPut)|(uint64_t(1)<<CombineProfile::RdmaLastPut);
+   assert((record[CombineProfile::Valid]&putMask)==(remoteTargets.empty()?0U:putMask));
    if (expectedQuiet) assert(record[CombineProfile::RdmaQuietTicks] >= record[CombineProfile::RdmaQuietMaxTicks]);
 #endif
    for(unsigned i=0;i<n;++i){

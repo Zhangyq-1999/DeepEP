@@ -4,6 +4,7 @@
 #include "combine_profile_device.h"
 #include "ep_memory_server_dedup_combine_config.h"
 #include "combine_server_dedup_select.h"
+#include "combine_return_schedule.h"
 
 namespace CombineDedup {
 // M4 has not started computing yet. Reuse its three FP32 vectors for a
@@ -72,7 +73,7 @@ public:
 
         uint32_t owner = 0U, count = 0U;
         for (uint32_t step = 0; step < groups; ++step) {
-            const uint32_t server = ServerDedupHalfOrder(groups, rank / Group, step);
+            const uint32_t server = CombineReturnServer<Group>(groups, rank / Group, step);
             ServerDedupRankMask(mask, upper, ranks, int32_t(server * Group), int32_t((server + 1U) * Group), tokens);
             And(mask.ReinterpretCast<uint16_t>(), mask.ReinterpretCast<uint16_t>(),
                 typeMask.ReinterpretCast<uint16_t>(), int32_t((tokens + 15U) / 16U));

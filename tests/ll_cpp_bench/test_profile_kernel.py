@@ -13,7 +13,8 @@ ROOT = Path(__file__).resolve().parents[2]
 
 @pytest.mark.parametrize("profile", [False, True])
 @pytest.mark.parametrize("small", [False, True])
-def test_all_combine_profile_paths_compile(tmp_path, profile, small):
+@pytest.mark.parametrize("returns", [False, True])
+def test_all_combine_profile_paths_compile(tmp_path, profile, small, returns):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
     if not zig:
         pytest.skip("Set DEEPEP_TEST_ZIG for CPU compile checks")
@@ -37,6 +38,8 @@ int main() {}
     (tmp_path / "shmem.h").write_text('#pragma once\ninline void dcci_cachelines(uint8_t*, uint64_t) {}\n')
     flags = ["-DDEEPEP_LL_RDMA=1", "-DDEEPEP_LL_COMBINE_EARLY_REDUCE=1",
              "-DDEEPEP_LL_COMBINE_RECV_CORES=36"]
+    if returns:
+        flags += ["-DDEEPEP_LL_COMBINE_REMOTE_FIRST=1", "-DDEEPEP_LL_COMBINE_DEFER_RETURN=1"]
     if profile:
         flags += ["-DDEEPEP_LL_COMBINE_PROFILE=1"]
     if small:

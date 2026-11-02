@@ -173,6 +173,7 @@ void bind_low_latency(py::module_& module)
     module.attr("low_latency_combine_small_batch") = bool(deepep_ll_combine_small_batch_enabled());
     module.attr("low_latency_combine_recv_cores") = deepep_ll_combine_recv_cores();
     module.attr("low_latency_combine_early_reduce") = bool(deepep_ll_combine_early_reduce_enabled());
+    module.attr("low_latency_combine_return_options") = deepep_ll_combine_return_options();
 #ifdef DEEPEP_LL_RDMA
     if (!deepep_ll_rdma_enabled()) throw std::runtime_error("LL Host/device RDMA build mismatch; rebuild complete wheel");
     module.attr("low_latency_rdma_enabled") = true;

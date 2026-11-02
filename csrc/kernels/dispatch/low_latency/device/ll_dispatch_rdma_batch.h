@@ -21,6 +21,8 @@ class DispatchRdmaBatch {
     bool staged_ = false;
 #ifdef DEEPEP_LL_COMBINE_PROFILE
     CombineProfile::View combineProfile_;
+    uint64_t combineStageQueued_ = 0U;
+    bool combineDeferred_ = false;
 #endif
 #ifdef DEEPEP_LL_REFERENCE_PROFILE
     LlReferenceProfile::DeviceProfile* profile_ = nullptr;
@@ -92,11 +94,16 @@ public:
         pendingPeer_ = peer; pendingOffset_ = offset; pendingScratch_ = packet;
 #ifdef DEEPEP_LL_COMBINE_PROFILE
         const uint64_t stageBegin = combineProfile_.DetailClock();
+        combineProfile_.MarkOnce(CombineProfile::RdmaFirstStage);
 #endif
         DataCopy(Tensor(pendingStage_, true), packet, bytes_);
         SetFlag<HardEvent::MTE3_S>(7U); // same event as the old immediate Sync
 #ifdef DEEPEP_LL_COMBINE_PROFILE
         combineProfile_.Elapsed(CombineProfile::RdmaStageIssueTicks, stageBegin);
+        combineProfile_.Mark(CombineProfile::RdmaLastStage);
+        combineStageQueued_ = combineProfile_.DetailClock();
+        combineDeferred_ = defer;
+        combineProfile_.Add(CombineProfile::RdmaDeferredPackets, defer ? 1U : 0U);
 #endif
         peerMask_[peer / 32U] |= 1U << (peer % 32U);
         ++count_; staged_ = true;
@@ -111,11 +118,14 @@ public:
         if (profile_) profile_->StageWaitBegin(pendingSecond_);
 #endif
 #ifdef DEEPEP_LL_COMBINE_PROFILE
+        if (combineDeferred_) combineProfile_.Elapsed(CombineProfile::RdmaDeferGapTicks, combineStageQueued_);
         const uint64_t stageWait = combineProfile_.DetailClock();
 #endif
         WaitFlag<HardEvent::MTE3_S>(7U);
 #ifdef DEEPEP_LL_COMBINE_PROFILE
-        combineProfile_.Elapsed(CombineProfile::RdmaStageWaitTicks, stageWait);
+        combineProfile_.SampleMax(CombineProfile::RdmaStageWaitTicks, CombineProfile::RdmaStageWaitMaxTicks,
+                                  CombineProfile::RdmaStageWaitMaxPeer, CombineProfile::RdmaStageWaitMaxPeer,
+                                  stageWait, pendingPeer_, pendingPeer_);
 #endif
 #ifdef DEEPEP_LL_REFERENCE_PROFILE
         if (profile_) { profile_->StageWaitEnd(pendingSecond_); profile_->SecondPutBegin(pendingSecond_); }
@@ -123,12 +133,14 @@ public:
         // Only after the wait may NIC read GM and SDK overwrite the old UB lane.
 #ifdef DEEPEP_LL_COMBINE_PROFILE
         const uint64_t putBegin = combineProfile_.DetailClock();
+        combineProfile_.MarkOnce(CombineProfile::RdmaFirstPut);
 #endif
         Put(args_, pendingPeer_, RemoteAddress(args_, pendingPeer_, pendingOffset_),
             pendingStage_, bytes_, pendingScratch_);
 #ifdef DEEPEP_LL_COMBINE_PROFILE
         combineProfile_.Elapsed(CombineProfile::RdmaPutTicks, putBegin);
         combineProfile_.Add(CombineProfile::RdmaPackets);
+        combineProfile_.Mark(CombineProfile::RdmaLastPut);
 #endif
 #ifdef DEEPEP_LL_REFERENCE_PROFILE
         if (profile_) profile_->PutReturned(pendingSecond_);

@@ -112,11 +112,13 @@ public:
 #ifdef DEEPEP_LL_COMBINE_SMALL_BATCH
             const uint32_t begin = planned_ && step > 1U ? plan_.End(step - 2U) : 0U;
             const uint32_t end = planned_ ? plan_.End(step - 1U)
-                : SelectServer(ServerDedupHalfOrder(servers, ownServer, step - 1U), owner, step == 1U);
+                : SelectServer(CombineReturnServer<Group>(servers, ownServer, step - 1U), owner, step == 1U);
+            const uint32_t taskEnd = end;
             profile_.Elapsed(CombineProfile::PartialScanTicks, scanStart);
             for (uint32_t task = begin; task < end; ++task) {
 #else
-            const uint32_t count = SelectServer(ServerDedupHalfOrder(servers, ownServer, step - 1U), owner, step == 1U);
+            const uint32_t count = SelectServer(CombineReturnServer<Group>(servers, ownServer, step - 1U), owner, step == 1U);
+            const uint32_t taskEnd = count;
             profile_.Elapsed(CombineProfile::PartialScanTicks, scanStart);
             for (uint32_t task = 0; task < count; ++task) {
 #endif
@@ -136,7 +138,10 @@ public:
                     Aggregate<half>(row, source, members + 1U);
                 else
                     Aggregate<bfloat16_t>(row, source, members + 1U);
-                Send(completed % outputLanes_, source, token, topk);
+                // Publish a group's last packet immediately, including the
+                // one-task case. Only defer when another packet will follow.
+                Send(completed % outputLanes_, source, token, topk,
+                     CombineDeferReturn(outputLanes_) && task + 1U < taskEnd);
                 ++completed;
             }
             // Reuse phase scratch with its Vector dependency, not an MTE3 drain.
@@ -307,7 +312,7 @@ private:
         PipeBarrier<PIPE_V>();
         profile_.Elapsed(CombineProfile::PartialComputeIssueTicks, castStart);
     }
-    __aicore__ inline void Send(uint32_t lane, uint32_t source, uint32_t token, uint32_t topk)
+    __aicore__ inline void Send(uint32_t lane, uint32_t source, uint32_t token, uint32_t topk, bool defer)
     {
         // Only output-lane reuse waits for MTE3; aggregation entry never does.
         const uint64_t reuseStart = profile_.DetailClock();
@@ -328,7 +333,7 @@ private:
         const uint64_t offset = window_ + COMBINE_DEDUP_EP_SERVER_DEDUP_SHARED_DATA_OFFSET +
             (uint64_t(token) * k_ + topk) * packetBytes_;
         const uint64_t submitStart = profile_.DetailClock();
-        SendReturnPacket(*rdmaBatch_, args_, source, offset, output, packetBytes_, false);
+        SendReturnPacket(*rdmaBatch_, args_, source, offset, output, packetBytes_, defer);
         profile_.SampleMax(CombineProfile::PartialSubmitTicks, CombineProfile::PartialSubmitMaxTicks,
                            CombineProfile::PartialSubmitMaxPeer, CombineProfile::PartialSubmitMaxToken, submitStart,
                            source, token);

@@ -16,3 +16,7 @@ extern "C" uint32_t deepep_ll_combine_profile_enabled()
 {
     return 0U;
 }
+extern "C" uint32_t deepep_ll_combine_return_options()
+{
+    return 0U;
+}

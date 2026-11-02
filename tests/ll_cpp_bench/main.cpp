@@ -276,13 +276,16 @@ int main(int argc, char** argv)
             bool(deepep_ll_combine_early_reduce_enabled()) != CombineDedup::EpCombineEarlyReduce(1))
             throw std::runtime_error("Unsupported receive-core count or mismatched Host/device build");
         const bool profileBuild = deepep_ll_combine_profile_enabled() != 0;
+        const uint32_t returnOptions = deepep_ll_combine_return_options();
+        if (returnOptions != (DEEPEP_BENCH_REMOTE_FIRST | (DEEPEP_BENCH_DEFER_RETURN << 1)))
+            throw std::runtime_error("Mismatched Host/device return options");
         if (o.profile && !profileBuild)
             throw std::runtime_error("Rebuild with build.sh --profile ON before requesting device diagnostics");
         std::ostringstream identity;
         identity << o.signature() << '/' << cores << '/' << DEEPEP_BENCH_SOURCE_ID << '/'
                  << deepep_ll_combine_small_batch_enabled() << '/' << deepep_ll_combine_recv_cores() << '/'
                  << deepep_ll_combine_early_reduce_enabled() << '/' << profileBuild << '/'
-                 << DEEPEP_LL_COMBINE_ORIGINAL;
+                 << DEEPEP_LL_COMBINE_ORIGINAL << '/' << returnOptions;
         peers.verify(llbench::hash(identity.str()));
         setenv("DEEPEP_LL_BACKEND", "rdma", 1);
         {
@@ -320,12 +323,13 @@ int main(int argc, char** argv)
                 if (!summary) throw std::runtime_error("Cannot open summary");
                 summary << "ep,tokens,hidden,topk,experts,dtype,route,seed,capacity,warmup,source_id,samples,active_"
                            "aiv,recv_cores,small_batch,early_"
-                           "reduce,original,entry_sync,profile_build,profile_level,rank_max_mean_us,rank_max_min_us,"
+                           "reduce,remote_first,defer_return,original,entry_sync,profile_build,profile_level,rank_max_mean_us,rank_max_min_us,"
                            "rank_max_max_us,p50_us,p99_us\n";
             }
             std::cout << "rank=" << o.rank << " EP=" << o.world << " AIV=" << cores << " receive=" << recv
                       << " small_batch=" << deepep_ll_combine_small_batch_enabled()
                       << " early_reduce=" << deepep_ll_combine_early_reduce_enabled()
+                      << " remote_first=" << (returnOptions & 1U) << " defer_return=" << ((returnOptions >> 1) & 1U)
                       << " original=" << DEEPEP_LL_COMBINE_ORIGINAL << " entry_sync=" << o.entrySync
                       << " profile_build=" << profileBuild << " profile_level=" << o.profile << std::endl;
             if (o.rank == 0 && profileBuild)
@@ -421,7 +425,8 @@ int main(int argc, char** argv)
                             << o.dtype << ',' << o.route << ',' << o.seed << ',' << o.capacity << ',' << o.warmup << ','
                             << DEEPEP_BENCH_SOURCE_ID << ',' << o.iterations << ',' << cores << ',' << recv << ','
                             << deepep_ll_combine_small_batch_enabled() << ','
-                            << deepep_ll_combine_early_reduce_enabled() << ',' << DEEPEP_LL_COMBINE_ORIGINAL << ','
+                            << deepep_ll_combine_early_reduce_enabled() << ',' << (returnOptions & 1U) << ','
+                            << ((returnOptions >> 1) & 1U) << ',' << DEEPEP_LL_COMBINE_ORIGINAL << ','
                             << o.entrySync << ',' << profileBuild << ',' << o.profile << ',' << s.mean << ',' << s.min
                             << ',' << s.max << ',' << s.p50 << ',' << s.p99 << '\n';
                     summary.flush();

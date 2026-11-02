@@ -136,7 +136,7 @@ struct Case {
     std::array<std::map<uint32_t, Winner>, phaseCount> maxima;
     std::map<std::pair<uint32_t, uint32_t>, std::set<uint32_t>> seen;
     Sample median, worst;
-    uint32_t world = 0, level = 0;
+    uint32_t world = 0, level = 0, schema = 0;
 };
 void identify(std::ostream& out, const Record& r)
 {
@@ -149,7 +149,7 @@ std::vector<Word> top_costs(const Record& r, Word begin, Word end)
     for (uint32_t w = begin; w <= end && w < Count; ++w) {
         const auto& name = names[w];
         if (name.size() >= 6 && name.compare(name.size() - 6, 6, "_ticks") == 0 &&
-            name.find("_max_") == std::string::npos && r.v[w])
+            name.find("_max_") == std::string::npos && w != RdmaDeferGapTicks && r.v[w])
             costs.push_back(Word(w));
     }
     std::stable_sort(costs.begin(), costs.end(), [&](Word a, Word b) { return r[a] > r[b]; });
@@ -180,6 +180,14 @@ void detail(std::ostream& out, const Record& r)
     uint64_t tail = 0;
     if (r.interval(tailBegin, PipeDone, tail)) out << "    pipe_tail_ticks=" << tail << '\n';
     if (r[Level] < 2) return;
+    if (r[RdmaPackets] && r[Schema] >= 3U) {
+        out << "    rdma_return: packets=" << r[RdmaPackets] << " deferred=" << r[RdmaDeferredPackets];
+        for (Word w : {RdmaFirstStage, RdmaLastStage, RdmaFirstPut, RdmaLastPut})
+            if (r.present[w]) out << ' ' << names[w] << '=' << r[w];
+        out << " stage_wait_ticks=" << r[RdmaStageWaitTicks]
+            << " max=" << r[RdmaStageWaitMaxTicks] << "(peer=" << r[RdmaStageWaitMaxPeer] << ')'
+            << " defer_gap_ticks=" << r[RdmaDeferGapTicks] << '\n';
+    }
     const auto costs = top_costs(r, kDetailBegin, kDetailEnd);
     for (size_t i = 0; i < std::min<size_t>(8, costs.size()); ++i) {
         if (i % 4 == 0) out << "    top_ticks:";
@@ -228,6 +236,19 @@ void sample(std::ostream& out, const char* label, const Sample& s)
             << " body_ticks min/median/max=" << spans.front() << '/' << spans[(spans.size() - 1) / 2] << '/'
             << spans.back() << '\n';
         detail(out, *longest);
+    }
+    // Also expose a producer even when the slowest body belongs to a consumer.
+    // This ranks durations from each core's own entry, not absolute launch time.
+    const Record* latest = nullptr;
+    for (const auto& r : s.records)
+        if (r.present[RdmaLastPut] && (!latest || r[RdmaLastPut] > (*latest)[RdmaLastPut])) latest = &r;
+    if (latest) {
+        out << "  RETURN largest_last_put_offset (own-core entry) ";
+        identify(out, *latest);
+        out << " first=" << (*latest)[RdmaFirstPut] << " last=" << (*latest)[RdmaLastPut]
+            << " packets=" << (*latest)[RdmaPackets] << " deferred=" << (*latest)[RdmaDeferredPackets]
+            << " stage_wait=" << (*latest)[RdmaStageWaitTicks]
+            << " defer_gap=" << (*latest)[RdmaDeferGapTicks] << '\n';
     }
 }
 void report(const fs::path& directory)
@@ -281,17 +302,18 @@ void report(const fs::path& directory)
                     r.v[w] = integer(csv.cells[columns[w]]);
                     r.present[w] = true;
                 }
-            if (r[Schema] != kSchema || r[Complete] != 1 || r[Rank] != rank || !r.present[FlushDone] ||
+            if ((r[Schema] != kSchema && r[Schema] != 2U) || r[Complete] != 1 || r[Rank] != rank || !r.present[FlushDone] ||
                 !r.present[Entry] || !r[World] || rank >= r[World] || (r[Level] != 1 && r[Level] != 2))
-                throw std::runtime_error("Incomplete profile or unsupported schema (requires schema 2)");
+                throw std::runtime_error("Incomplete profile or unsupported schema (requires schema 2 or 3)");
             auto it = cases.find(uint32_t(r[Tokens]));
             if (it == cases.end() || !it->second.events.count(r.iteration))
                 throw std::runtime_error("Profile has no matching Event sample");
             auto& c = it->second;
-            if (c.world && (c.world != r[World] || c.level != r[Level]))
+            if (c.world && (c.world != r[World] || c.level != r[Level] || c.schema != r[Schema]))
                 throw std::runtime_error("Mixed profile configuration");
             c.world = uint32_t(r[World]);
             c.level = uint32_t(r[Level]);
+            c.schema = uint32_t(r[Schema]);
             if (!c.seen[{r.iteration, rank}].insert(uint32_t(r[Core])).second)
                 throw std::runtime_error("Duplicate profile core");
             for (size_t p = 0; p < phaseCount; ++p) {
@@ -332,7 +354,8 @@ void report(const fs::path& directory)
         while (csv.next()) {
             std::cout << "CONFIG";
             for (const char* key : {"tokens", "hidden", "topk", "experts", "dtype", "route", "seed", "warmup",
-                                    "small_batch", "early_reduce", "recv_cores", "entry_sync", "source_id"})
+                                    "small_batch", "early_reduce", "recv_cores", "remote_first", "defer_return",
+                                    "entry_sync", "source_id"})
                 if (csv.column(key) >= 0) std::cout << ' ' << key << '=' << csv.get(key);
             std::cout << '\n';
         }

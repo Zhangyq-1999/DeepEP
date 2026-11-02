@@ -3,7 +3,7 @@
 
 namespace CombineProfile {
 // One 1536-byte record per AIV. Timestamps precede StageRows; detail counters
-// are exported only at level 2. Schema 2 adds operation-level diagnosis.
+// are exported only at level 2. Schema 3 records actual RDMA submission timing.
 enum Word : uint32_t {
     Entry,
     ProfileInitEnd,
@@ -46,6 +46,10 @@ enum Word : uint32_t {
     DirectEnd,
     PipeDone,
     FlushDone,
+    RdmaFirstStage,
+    RdmaLastStage,
+    RdmaFirstPut,
+    RdmaLastPut,
     StageRows,
     DirectRows,
     PartialRows,
@@ -145,6 +149,10 @@ enum Word : uint32_t {
     RdmaQuietCalls,
     RdmaQuietMaxTicks,
     RdmaQuietMaxPeer,
+    RdmaDeferredPackets,
+    RdmaDeferGapTicks,
+    RdmaStageWaitMaxTicks,
+    RdmaStageWaitMaxPeer,
     Rank,
     Core,
     Tokens,
@@ -156,8 +164,8 @@ enum Word : uint32_t {
     Count
 };
 constexpr uint32_t kWords = 192U;
-constexpr uint64_t kSchema = 2U;
+constexpr uint64_t kSchema = 3U;
 constexpr Word kDetailBegin = InitPrefixTicks;
-constexpr Word kDetailEnd = RdmaQuietMaxPeer;
+constexpr Word kDetailEnd = RdmaStageWaitMaxPeer;
 static_assert(Count <= kWords && StageRows <= 64U, "profile record bounds");
 }  // namespace CombineProfile

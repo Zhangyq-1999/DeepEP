@@ -14,6 +14,8 @@ option(DEEPEP_LL_COMBINE_PROFILE "Build optional Combine diagnostics" OFF)
 option(DEEPEP_LL_COMBINE_ORIGINAL "Use the unaltered upstream Combine kernel" ON)
 option(DEEPEP_LL_COMBINE_SMALL_BATCH "Cache partial tasks and trim idle lanes" OFF)
 option(DEEPEP_LL_COMBINE_EARLY_REDUCE "Reduce ready contributions for BS <= 72" OFF)
+option(DEEPEP_LL_COMBINE_REMOTE_FIRST "Return cross-host results before local-host results" OFF)
+option(DEEPEP_LL_COMBINE_DEFER_RETURN "Overlap return staging with next-packet preparation" OFF)
 set(DEEPEP_LL_COMBINE_RECV_CORES "0" CACHE STRING "0=half; explicit receive cores in [8,36]")
 if(NOT DEEPEP_LL_COMBINE_RECV_CORES MATCHES "^(0|[89]|[12][0-9]|3[0-6])$")
     message(FATAL_ERROR "Receive cores must be 0 or an integer in [8,36]")
@@ -24,6 +26,7 @@ set(DEEPEP_LL_STAGE_TIMER OFF)
 set(DEEPEP_LL_COUNT_HISTOGRAM OFF)
 if(DEEPEP_LL_COMBINE_ORIGINAL)
     if(DEEPEP_LL_COMBINE_SMALL_BATCH OR DEEPEP_LL_COMBINE_EARLY_REDUCE OR DEEPEP_LL_COMBINE_PROFILE OR
+       DEEPEP_LL_COMBINE_REMOTE_FIRST OR DEEPEP_LL_COMBINE_DEFER_RETURN OR
        NOT DEEPEP_LL_COMBINE_RECV_CORES STREQUAL "0")
         message(FATAL_ERROR "Original Combine cannot enable experimental options or profiling; use --variant opt")
     endif()
@@ -53,6 +56,9 @@ target_compile_definitions(ll_combine_bench PRIVATE DEEPEP_LL_RDMA=1 DEEPEP_LL_M
     DEEPEP_LL_COMBINE_RECV_CORES=${DEEPEP_LL_COMBINE_RECV_CORES}
     $<$<BOOL:${DEEPEP_LL_COMBINE_SMALL_BATCH}>:DEEPEP_LL_COMBINE_SMALL_BATCH=1>
     $<$<BOOL:${DEEPEP_LL_COMBINE_EARLY_REDUCE}>:DEEPEP_LL_COMBINE_EARLY_REDUCE=1>)
+target_compile_definitions(ll_combine_bench PRIVATE
+    DEEPEP_BENCH_REMOTE_FIRST=$<BOOL:${DEEPEP_LL_COMBINE_REMOTE_FIRST}>
+    DEEPEP_BENCH_DEFER_RETURN=$<BOOL:${DEEPEP_LL_COMBINE_DEFER_RETURN}>)
 # Hash the compiled source tree, including uncommitted edits, for cross-rank checks.
 file(GLOB_RECURSE _identity_files CONFIGURE_DEPENDS
     "${DEEPEP_SOURCE_DIR}/csrc/*.h" "${DEEPEP_SOURCE_DIR}/csrc/*.hpp" "${DEEPEP_SOURCE_DIR}/csrc/*.cpp"
@@ -67,4 +73,4 @@ string(SHA256 _source_id "${_source_hashes}")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${_identity_files})
 target_compile_definitions(ll_combine_bench PRIVATE DEEPEP_BENCH_SOURCE_ID="${_source_id}")
 file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/bench-build.txt" CONTENT
-    "source=${_source_id}\noriginal=${DEEPEP_LL_COMBINE_ORIGINAL}\nbaseline_revision=${LL_COMBINE_BASELINE_REV}\ncombine_source=${DEEPEP_LL_COMBINE_SOURCE}\nsmall_batch=${DEEPEP_LL_COMBINE_SMALL_BATCH}\nrecv_cores=${DEEPEP_LL_COMBINE_RECV_CORES}\nearly_reduce=${DEEPEP_LL_COMBINE_EARLY_REDUCE}\nprofile=${DEEPEP_LL_COMBINE_PROFILE}\nmpi=${MPI_CXX_COMPILER}\nshmem=${SHMEM_ROOT}\n")
+    "source=${_source_id}\noriginal=${DEEPEP_LL_COMBINE_ORIGINAL}\nbaseline_revision=${LL_COMBINE_BASELINE_REV}\ncombine_source=${DEEPEP_LL_COMBINE_SOURCE}\nsmall_batch=${DEEPEP_LL_COMBINE_SMALL_BATCH}\nrecv_cores=${DEEPEP_LL_COMBINE_RECV_CORES}\nearly_reduce=${DEEPEP_LL_COMBINE_EARLY_REDUCE}\nremote_first=${DEEPEP_LL_COMBINE_REMOTE_FIRST}\ndefer_return=${DEEPEP_LL_COMBINE_DEFER_RETURN}\nprofile=${DEEPEP_LL_COMBINE_PROFILE}\nmpi=${MPI_CXX_COMPILER}\nshmem=${SHMEM_ROOT}\n")

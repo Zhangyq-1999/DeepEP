@@ -45,13 +45,17 @@ bash tests/ll_cpp_bench/build.sh \
 
 base 和 opt 使用各自的 Combine kernel 源码。base 从上游提交 `5b38bf2ea1f67f38c0c2d3662618ae1a0457bfc6` 提取原始 kernel 及其依赖头文件，保存在构建目录中。原始文件保持不变，实验开关和打点只进入 opt。`bench-build.txt` 记录实际源码路径、原版提交和编译选项。
 
-`--variant base` 明确选择原版；`--variant opt` 选择实验版。省略参数时，脚本根据实验开关选择：全部关闭时使用 base，启用任意实验或打点时使用 opt。三个优化开关可以单独编译：
+`--variant base` 明确选择原版；`--variant opt` 选择实验版。省略参数时，脚本根据实验开关选择：全部关闭时使用 base，启用任意实验或打点时使用 opt。各优化开关可以单独编译：
 
 | 编译参数 | 默认值 | 作用 |
 | --- | --- | --- |
 | `--small-batch ON` | OFF | 缓存 FIRST_HOP 任务列表，减少重复扫表和空闲缓冲槽处理 |
 | `--recv-cores 8` | 0 | 指定接收、汇集和最终归约核数；0 沿用核数均分 |
 | `--early-reduce ON` | OFF | BS ≤ 72 时，按原 slot 顺序归约已到齐的贡献，同时推进至多两个 token |
+| `--remote-first ON` | OFF | 跨机结果优先回传，本机结果随后处理 |
+| `--defer-return ON` | OFF | 多输出槽时，用下一包准备掩盖上一包 GM 暂存；组内末包立即提交 |
+
+回传顺序与暂存流水的分析、四组编译命令和新增打点见 [回传优化对照](RETURN_PIPELINE_AB.md)。这两个开关默认关闭，先独立对比，再测试组合。
 
 显式接收核数支持 8～36，并须小于实际 AIV 总核数。其余核负责 DIRECT 回传，TERMINAL 暂存仍由全部核参与。各 rank 使用相同的核数配置；最后 8 核负责组内就绪通知。
 
@@ -244,7 +248,7 @@ bash tests/ll_cpp_bench/summarize.sh results/ll-cpp/ep4-detail-v2/0-opt
 
 `notify_local_ready` 分开本卡准备等待与通知发布。`direct_first_submit`、`direct_last_submit` 和 `direct_pending_end` 标出首个提交调用、末个调用返回以及待提交任务处理完的位置。`final_first_ready`、`final_last_ready` 标出成功检查数据就绪的位置；`final_last_store` 标出末个输出写回的下发位置。最终输出完成仍以原有 drain 和 kernel 收尾为准。
 
-时间字段使用设备原始 tick。`entry_tick` 保留原始值，其余阶段时间戳均减去本核入口时间；缺失阶段留空。`profile_init_end` 标出诊断记录初始化完成的位置，可据此分开打点初始化与业务初始化。一级打点中的二级字段留空。schema 2 每核使用 1536 B 记录，在原有收尾完成后集中写出。
+时间字段使用设备原始 tick。`entry_tick` 保留原始值，其余阶段时间戳均减去本核入口时间；缺失阶段留空。`profile_init_end` 标出诊断记录初始化完成的位置，可据此分开打点初始化与业务初始化。一级打点中的二级字段留空。schema 3 每核使用 1536 B 记录，在原有收尾完成后集中写出。
 
 分析时先选择同一配置、同一轮的记录，比较发送核与接收核的任务量和阶段耗时。常见判断如下：
 

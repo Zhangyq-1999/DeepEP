@@ -1,5 +1,6 @@
 #pragma once
 #include "../../dispatch/low_latency/device/ll_dispatch_rdma_batch.h"
+#include "combine_return_schedule.h"
 namespace CombineDedup {
 // Caller has packed this output and acquired V->MTE3. A pending older frame
 // uses a different output lane; single-lane callers must select defer=false.

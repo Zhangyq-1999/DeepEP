@@ -434,7 +434,7 @@ private:
         profile_.Mark(CombineProfile::DirectSetupEnd);
         for (uint32_t step = 1U; step <= servers; ++step) {
             const uint64_t scanStart = profile_.DetailClock();
-            const uint32_t count = SelectDirectServer(ServerDedupHalfOrder(servers, ownServer, step - 1U));
+            const uint32_t count = SelectDirectServer(CombineReturnServer<Group>(servers, ownServer, step - 1U));
             profile_.Elapsed(CombineProfile::DirectScanTicks, scanStart);
             const uint32_t first = ServerDedupFirstOwned(core_, owner, sendCores_);
             owner = (owner + count) % sendCores_;
@@ -486,7 +486,8 @@ private:
                     (uint64_t(token) * topK_ + topk) * resultStride_;
                 profile_.MarkOnce(CombineProfile::DirectFirstSubmit);
                 const uint64_t submitStart = profile_.DetailClock();
-                SendReturnPacket(returnBatch_, args_, source, offset, output, resultStride_, false);
+                SendReturnPacket(returnBatch_, args_, source, offset, output, resultStride_,
+                                 CombineDeferReturn(activeLanes) && task + sendCores_ < count);
                 profile_.SampleMax(CombineProfile::DirectSubmitTicks, CombineProfile::DirectSubmitMaxTicks,
                                    CombineProfile::DirectSubmitMaxPeer, CombineProfile::DirectSubmitMaxToken,
                                    submitStart, source, token);
