@@ -174,6 +174,24 @@ bash tests/ll_cpp_bench/launch.sh \
 
 需要细分时，改用新的 run-id 和 `--profile 2`。分析某项优化时，保持其余配置相同，只调整对应编译开关。原版性能使用独立的 base 构建测量。
 
+### 在终端查看汇总
+
+打点测试结束后，`launch.sh` 自动打印汇总，并保存为当前结果目录下的 `profile-summary-node-N.txt`。复制 `LL_COMBINE_PROFILE_SUMMARY BEGIN` 到 `END` 之间的内容，即可分享诊断结果。
+
+已有 CSV 可以直接汇总，原始数据保留。以下命令只编译和运行一个 Host C++ 小程序，使用 `g++`，无需加载 CANN、MPI 或 Python，也不会启动算子：
+
+```bash
+bash tests/ll_cpp_bench/summarize.sh results/ll-cpp/ep4-detail-v2/0-opt
+```
+
+汇总按 BS 展示 Event 均值、最小值和最大值，以及各阶段的耗时。阶段统计先取每轮所有可见核的最大值，再计算均值和最大值；各阶段可能重叠，分别分析。
+
+程序按同轮最慢 rank 的 Event 耗时排序，选择中位轮次和最慢轮次。每个轮次展示该 rank 内耗时最长的发送核和接收核，包括任务量、时间戳、前八项累计开销、轮询次数和最慢单次调用。偶数轮次取中间两个样本中的前一个，保持数据来自同一个真实样本。Event 使用 μs，核内时间保留 tick，换算需要确认设备计数器频率。
+
+双机结果保存在两台机器各自的目录时，每台机器分别打印本地汇总。`scope_ranks` 和 `coverage` 标明实际统计范围；分析 EP32 时需要同时提供两台的打印结果。
+
+### 字段与分析方法
+
 每个 rank 的 `rank-N-profile.csv` 保存每轮、每个 AIV 核的记录。一级打点记录阶段边界和任务量。二级打点进一步区分以下操作：
 
 | 阶段 | 可以定位的步骤 | 主要字段前缀 |

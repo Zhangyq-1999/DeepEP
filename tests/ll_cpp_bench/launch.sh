@@ -153,4 +153,8 @@ for phase in "${!sequence[@]}"; do
     done
     echo "Completed phase $phase ($variant) on node $node_rank"
     [[ $node_rank != 0 ]] || cat "$out/summary.csv"
+    profile_files=("$out"/rank-*-profile.csv)
+    if [[ -f ${profile_files[0]} ]]; then
+        bash "$root/tests/ll_cpp_bench/summarize.sh" "$out" | tee "$out/profile-summary-node-$node_rank.txt"
+    fi
 done
