@@ -7,6 +7,21 @@ ep=16 node_rank=0 hosts=localhost master= port=29671 variants=base run_id=combin
 job_timeout=3600 join_timeout=300 dry=0
 bench_args=()
 fail() { echo "ERROR: $*" >&2; exit 2; }
+prepare_nofile() {
+    # Each node starts its own proxy; its children inherit this process limit.
+    # Leave the hard limit and any already-higher soft limit unchanged.
+    [[ $OSTYPE == linux* ]] || return 0
+    local soft hard target=65536
+    soft=$(ulimit -Sn)
+    hard=$(ulimit -Hn)
+    if [[ $soft != unlimited ]] && ((soft<target)); then
+        if [[ $hard != unlimited ]] && ((hard<target)); then
+            fail "nofile soft=$soft hard=$hard; raise this shell/container hard limit to at least $target before launching"
+        fi
+        ulimit -Sn "$target" || fail "Cannot raise nofile soft limit to $target"
+    fi
+    echo "node=$node_rank nofile soft=$(ulimit -Sn) hard=$hard"
+}
 while (($#)); do
     case "$1" in
         --help|-h)
@@ -61,6 +76,7 @@ export PATH="$mpi/bin:$PATH"
 export LD_LIBRARY_PATH="$mpi/lib:$mpi/lib64:${SHMEM_ROOT:+$SHMEM_ROOT/lib:}${LD_LIBRARY_PATH:-}"
 result_root="$root/results/ll-cpp/$run_id"
 if ((!dry)); then
+    prepare_nofile
     [[ -x "$mpi/bin/mpiexec" ]] || fail 'MPI executable unavailable'
     if ((ep==32)); then
         [[ -x "$mpi/bin/hydra_pmi_proxy" ]] || fail 'Hydra proxy unavailable'

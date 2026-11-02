@@ -137,6 +137,10 @@ MPICH 3.2.1 的内置 `manual` 模式在关闭 autofork 后，可能在打印 `H
 
 如果遇到 controller 异常退出，脚本会同时打印代理日志和 `.log.controller` 日志。优先查看 controller 的首个错误；随后出现的 `Connection refused` 可能只是 controller 退出后的结果。
 
+Linux 上，`launch.sh` 会将当前进程的文件描述符软上限提高到至少 65,536，并打印软、硬上限。每台机器的 MPI 代理和测试进程会继承这个额度。脚本保留原硬上限；硬上限不足时，先退出并提示调整启动环境。此设置只影响本次脚本及其子进程。
+
+EP32 初始化时若出现 `Too many open files`，随后报 `HrtRaBlockGetSockets` 超时，应先检查这个额度。已有的用例可在两边终端执行 `ulimit -Sn 65536` 后重试，无需重新编译。提高额度后仍有超时时，再检查设备网络和 SHMEM 建链日志。
+
 ## 采样与结果
 
 每种 BS 先运行一次 Dispatch，生成真实的路由表和专家输入。用例把 Dispatch 输出当作恒等专家的输出，使用均匀权重执行 Combine，并检查结果是否回到原输入。正式采样前后各检查一次精度，检查按 BF16 或 FP16 的舍入误差设置容差。

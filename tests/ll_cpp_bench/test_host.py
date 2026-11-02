@@ -62,6 +62,41 @@ def test_shell_syntax(bash):
         subprocess.run([bash, "-n", str(HERE / script)], check=True, timeout=10)
 
 
+@pytest.mark.parametrize("soft,hard,expected,ok", [
+    ("1024", "1048576", "65536", True),
+    ("131072", "1048576", "131072", True),
+    ("unlimited", "unlimited", "unlimited", True),
+    ("1024", "unlimited", "65536", True),
+    ("1024", "4096", None, False),
+])
+def test_per_node_nofile_setup(bash, soft, hard, expected, ok):
+    text = (HERE / "launch.sh").read_text(encoding="utf-8")
+    begin = text.index("prepare_nofile() {")
+    function = text[begin:text.index("\n}\n", begin) + 3]
+    # Exercise the actual launcher function with a resource-limit shell stub.
+    script = r'''
+set -eu
+OSTYPE=linux-gnu
+node_rank=1
+mock_soft=$1 mock_hard=$2
+fail() { echo "ERROR: $*" >&2; exit 2; }
+ulimit() {
+    if [[ $1 == -Hn ]]; then printf '%s\n' "$mock_hard"; return; fi
+    [[ $1 == -Sn ]]
+    if (($#==2)); then mock_soft=$2; else printf '%s\n' "$mock_soft"; fi
+}
+''' + function + '\nprepare_nofile\nprintf "effective=%s hard=%s\\n" "$mock_soft" "$mock_hard"\n'
+    result = subprocess.run([bash, "-c", script, "_", soft, hard],
+                            capture_output=True, text=True, timeout=10)
+    assert (result.returncode == 0) == ok, result.stdout + result.stderr
+    if ok:
+        assert f"effective={expected} hard={hard}" in result.stdout
+        assert f"node=1 nofile soft={expected} hard={hard}" in result.stdout
+    else:
+        assert "raise this shell/container hard limit" in result.stderr
+        assert "effective=" not in result.stdout
+
+
 @pytest.mark.parametrize("nested", [False, True])
 def test_sdk_manifest_record_and_check(tmp_path, nested):
     cmake = shutil.which("cmake")
