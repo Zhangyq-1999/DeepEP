@@ -26,7 +26,13 @@ def run_cpp(tmp_path, source, name):
         pytest.skip('Set DEEPEP_TEST_ZIG for the CPU C++ model')
     cpp = tmp_path / (name + '.cpp')
     exe = tmp_path / (name + '.exe')
-    cpp.write_text(source, encoding='utf-8')
+    # Isolated control models use a no-op diagnostic sink. The recorder itself
+    # is executed with profiling ON/OFF in ll_cpp_bench/test_profile.py.
+    cpp.write_text('''#include "kernels/combine/low_latency/combine_profile_layout.h"
+struct NoProfile {
+ void Mark(CombineProfile::Word) {} void Set(CombineProfile::Word, uint64_t) {}
+} profile_;
+''' + source, encoding='utf-8')
     subprocess.run([zig, 'c++', '-std=c++17', '-O1', '-UNDEBUG',
                     '-I' + str(tmp_path), '-I' + str(ROOT / 'csrc'), str(cpp), '-o', str(exe)],
                    check=True, timeout=180)
@@ -109,7 +115,7 @@ namespace DispatchDedup {constexpr int DISPATCH_DEDUP_DATA_TYPE_FP16=0;}
 namespace LlTransport {struct PollDeadline{PollDeadline(bool){}void Check(){}};}
 struct Tensor{std::vector<uint32_t> v;uint32_t GetValue(uint32_t i){return v.at(i);}void SetValue(uint32_t i,uint32_t x){v.at(i)=x;}};
 struct Test {
- bool enableDedup_=true,uncached_=false;uint32_t count_=3,begin_=17,k_=8,blocks_=15,inputLanes_=2,retiredOutputs_=0,dtype_=0;
+ bool enableDedup_=true,uncached_=false;uint32_t count_=3,begin_=17,k_=8,blocks_=15,inputLanes_=2,outputLanes_=1,retiredOutputs_=0,dtype_=0;
  Tensor masks_{{1,0x81,0xff}},pending_{{0,0,0}};
  uint32_t probes=0,clears=0,completed=0;
  void Init(){

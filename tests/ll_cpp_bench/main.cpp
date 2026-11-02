@@ -1,4 +1,5 @@
 #include "options.hpp"
+#include "profile.hpp"
 #include "mpi_coordinator.hpp"
 #include <cstdlib>
 #include <acl/acl.h>
@@ -12,6 +13,7 @@
 #include "host/mem/shmem_host_heap.h"
 #include "host/data_plane/shmem_host_rma.h"
 #include "host/data_plane/shmem_host_p2p_sync.h"
+#include "host/data_plane/shmem_host_cc.h"
 #include "kernels/dispatch/low_latency/common/ep_memory_server_dedup_layout.h"
 #include "kernels/dispatch/low_latency/common/ep_memory_server_dedup_tiling.h"
 #include "kernels/dispatch/low_latency/common/ll_dispatch_variant.h"
@@ -21,6 +23,8 @@
 #include "kernels/combine/low_latency/combine_layout.h"
 #include "kernels/combine/low_latency/ep_memory_server_dedup_combine_tiling.h"
 #include "kernels/combine/low_latency/launch.hpp"
+
+extern "C" void ll_bench_entry_gate_do(void* stream, uint8_t* flag);
 
 namespace {
 void check(int status, const char* operation)
@@ -63,6 +67,41 @@ struct Event {
     void record(aclrtStream stream)
     {
         check(aclrtRecordEvent(value, stream), "record event");
+    }
+};
+struct EntryGate {
+    Buffer flag{64U};
+    uint32_t* released = nullptr;
+    aclrtStream control = nullptr;
+    EntryGate()
+    {
+        check(aclrtMallocHost(reinterpret_cast<void**>(&released), 64U), "gate host allocation");
+        std::memset(released, 0, 64U);
+        released[0] = 1U;
+        const auto status = aclrtCreateStream(&control);
+        if (status != ACL_SUCCESS) {
+            aclrtFreeHost(released);
+            released = nullptr;
+            check(status, "gate control stream");
+        }
+    }
+    ~EntryGate()
+    {
+        if (control) aclrtDestroyStream(control);
+        if (released) aclrtFreeHost(released);
+    }
+    void enqueue(aclrtStream stream)
+    {
+        // Previous iteration is complete. The release DMA uses a separate stream.
+        check(aclrtMemset(flag.p, flag.bytes, 0, flag.bytes), "arm entry gate");
+        ll_bench_entry_gate_do(stream, flag.p);
+        check(aclshmemx_barrier_on_stream(ACLSHMEM_TEAM_WORLD, stream), "enqueue device entry barrier");
+    }
+    void release()
+    {
+        check(aclrtMemcpyAsync(flag.p, flag.bytes, released, 64U, ACL_MEMCPY_HOST_TO_DEVICE, control),
+              "release entry gate");
+        check(aclrtSynchronizeStream(control), "gate release completion");
     }
 };
 uint8_t* local_base(deepep::Session& session)
@@ -203,11 +242,12 @@ struct Case {
 };
 void help()
 {
-    std::cout
-        << "LL Combine C++ benchmark (use run.sh for one process per card)\n"
-           "MPI assigns EP2/4/8/16/32; --devices lists one device per local rank\n"
-           "--tokens 1,2,4,8,16,32,48,64,72 --hidden 3584 --topk 8 --experts 384 --capacity 256\n"
-           "--dtype bf16|fp16 --route random|hotspot --seed 0 --warmup 10 --iters 100 --timeout 300 --output-dir DIR\n";
+    std::cout << "LL Combine C++ benchmark (use run.sh for one process per card)\n"
+                 "MPI assigns EP2/4/8/16/32; --devices lists one device per local rank\n"
+                 "--tokens 32,48,64,72 --hidden 3584 --topk 8 --experts 384 --capacity 256\n"
+                 "--entry-sync auto|device|host (auto: single-host device gate/barrier, multi-host MPI only)\n"
+                 "--profile 0|1|2 --dtype bf16|fp16 --route random|hotspot --seed 0 --warmup 10 --iters 100 --timeout "
+                 "300 --output-dir DIR\n";
 }
 }  // namespace
 int main(int argc, char** argv)
@@ -223,6 +263,9 @@ int main(int argc, char** argv)
     try {
         llbench::Coordinator peers;
         auto o = llbench::Options::parse(argc, argv, peers.rank, peers.world, peers.localRank);
+        if (DEEPEP_LL_COMBINE_ORIGINAL && o.world == 2)
+            throw std::runtime_error(
+                "Unmodified upstream Combine supports G4/G16; use --variant opt for EP2 smoke tests");
         check(aclInit(nullptr), "aclInit");
         check(aclrtSetDevice(o.device), "aclrtSetDevice");
         aclrtStream stream = nullptr;
@@ -232,10 +275,14 @@ int main(int argc, char** argv)
         if (!recv || deepep_ll_combine_recv_cores() != DEEPEP_LL_COMBINE_RECV_CORES ||
             bool(deepep_ll_combine_early_reduce_enabled()) != CombineDedup::EpCombineEarlyReduce(1))
             throw std::runtime_error("Unsupported receive-core count or mismatched Host/device build");
+        const bool profileBuild = deepep_ll_combine_profile_enabled() != 0;
+        if (o.profile && !profileBuild)
+            throw std::runtime_error("Rebuild with build.sh --profile ON before requesting device diagnostics");
         std::ostringstream identity;
         identity << o.signature() << '/' << cores << '/' << DEEPEP_BENCH_SOURCE_ID << '/'
                  << deepep_ll_combine_small_batch_enabled() << '/' << deepep_ll_combine_recv_cores() << '/'
-                 << deepep_ll_combine_early_reduce_enabled();
+                 << deepep_ll_combine_early_reduce_enabled() << '/' << profileBuild << '/'
+                 << DEEPEP_LL_COMBINE_ORIGINAL;
         peers.verify(llbench::hash(identity.str()));
         setenv("DEEPEP_LL_BACKEND", "rdma", 1);
         {
@@ -246,25 +293,44 @@ int main(int argc, char** argv)
             auto hostComm = comm_args(session);
             Buffer comm(sizeof(hostComm));
             comm.upload(&hostComm, sizeof(hostComm));
+            std::unique_ptr<EntryGate> gate;
+            if (o.entrySync == "device") {
+                // Complete first-use SDK setup before blocking the compute stream.
+                check(aclshmemx_barrier_on_stream(ACLSHMEM_TEAM_WORLD, stream), "prime device entry barrier");
+                check(aclrtSynchronizeStream(stream), "entry barrier preparation");
+                gate = std::make_unique<EntryGate>();
+            }
             std::filesystem::create_directories(o.output);
             auto rankPath = std::filesystem::path(o.output) / ("rank-" + std::to_string(o.rank) + ".csv");
             if (std::filesystem::exists(rankPath))
                 throw std::runtime_error("Result exists; choose a new output directory");
             std::ofstream samples(rankPath);
             if (!samples) throw std::runtime_error("Cannot open rank output");
-            samples << "tokens,iteration,combine_event_us\n";
+            samples << "tokens,iteration,combine_event_us,original,entry_sync,profile_build,profile_level\n";
             samples << std::fixed << std::setprecision(3);
+            std::ofstream profileCsv;
+            if (o.profile) {
+                profileCsv.open(std::filesystem::path(o.output) / ("rank-" + std::to_string(o.rank) + "-profile.csv"));
+                if (!profileCsv) throw std::runtime_error("Cannot open profile output");
+                llbench::profile_header(profileCsv);
+            }
             std::ofstream summary;
             if (o.rank == 0) {
                 summary.open(std::filesystem::path(o.output) / "summary.csv");
                 if (!summary) throw std::runtime_error("Cannot open summary");
                 summary << "ep,tokens,hidden,topk,experts,dtype,route,seed,capacity,warmup,source_id,samples,active_"
                            "aiv,recv_cores,small_batch,early_"
-                           "reduce,rank_max_mean_us,rank_max_min_us,rank_max_max_us,p50_us,p99_us\n";
+                           "reduce,original,entry_sync,profile_build,profile_level,rank_max_mean_us,rank_max_min_us,"
+                           "rank_max_max_us,p50_us,p99_us\n";
             }
             std::cout << "rank=" << o.rank << " EP=" << o.world << " AIV=" << cores << " receive=" << recv
                       << " small_batch=" << deepep_ll_combine_small_batch_enabled()
-                      << " early_reduce=" << deepep_ll_combine_early_reduce_enabled() << std::endl;
+                      << " early_reduce=" << deepep_ll_combine_early_reduce_enabled()
+                      << " original=" << DEEPEP_LL_COMBINE_ORIGINAL << " entry_sync=" << o.entrySync
+                      << " profile_build=" << profileBuild << " profile_level=" << o.profile << std::endl;
+            if (o.rank == 0 && profileBuild)
+                std::cout << "Diagnostic build: use --profile OFF when rebuilding for clean Event performance."
+                          << std::endl;
             for (auto bs : o.tokens) {
                 Case c(o, bs, cores, comm.p);
                 peers.barrier();
@@ -281,29 +347,66 @@ int main(int argc, char** argv)
                 auto error = c.precision(o.dtype == "bf16");
                 peers.barrier();
                 for (uint32_t i = 0; i < o.warmup; ++i) {
+                    if (gate)
+                        gate->enqueue(stream);
+                    else
+                        peers.barrier();
                     launch();
+                    if (gate) {
+                        peers.barrier();
+                        gate->release();
+                    }
                     check(aclrtSynchronizeStream(stream), "warmup");
-                    peers.barrier();
                 }
                 std::vector<float> times;
                 times.reserve(o.iterations);
+                std::unique_ptr<Buffer> profileBuffer;
+                std::vector<uint64_t> profileData;
+                if (o.profile) {
+                    profileData.resize(size_t(cores) * CombineProfile::kWords);
+                    profileBuffer = std::make_unique<Buffer>(profileData.size() * sizeof(uint64_t));
+                    c.combine.stageTimer = profileBuffer->p;
+                    c.combine.timerMode = o.profile;
+                }
                 Event start, end;
                 for (uint32_t i = 0; i < o.iterations; ++i) {
                     // Every peer completed its previous kernel before this barrier
                     // releases either rotating bank. Host coordination is untimed.
-                    peers.barrier();
+                    if (o.profile) {
+                        // Clear outside the Event so missing core exports cannot reuse an older sample.
+                        std::fill(profileData.begin(), profileData.end(), 0U);
+                        profileBuffer->upload(profileData.data(), profileBuffer->bytes);
+                    }
+                    if (gate)
+                        gate->enqueue(stream);
+                    else
+                        peers.barrier();
                     start.record(stream);
                     launch();
                     end.record(stream);
+                    // Every rank has queued gate -> device barrier -> both Events
+                    // and Combine before Host releases any gate. MPI return skew
+                    // is absorbed by the device barrier outside the Event interval.
+                    if (gate) {
+                        peers.barrier();
+                        gate->release();
+                    }
                     check(aclrtSynchronizeStream(stream), "sample completion");
                     float ms = 0;
                     check(aclrtEventElapsedTime(&ms, start.value, end.value), "event elapsed");
                     if (!std::isfinite(ms) || ms <= 0) throw std::runtime_error("Invalid Event duration");
                     times.push_back(ms * 1000);
-                    samples << bs << ',' << i << ',' << times.back() << '\n';
+                    samples << bs << ',' << i << ',' << times.back() << ',' << DEEPEP_LL_COMBINE_ORIGINAL << ','
+                            << o.entrySync << ',' << profileBuild << ',' << o.profile << '\n';
+                    if (o.profile) {
+                        profileBuffer->download(profileData.data(), profileBuffer->bytes);
+                        llbench::profile_rows(profileCsv, profileData, cores, recv, o.rank, o.world, bs, o.device,
+                                              o.profile, i);
+                    }
                 }
                 c.precision(o.dtype == "bf16");
                 samples.flush();
+                if (o.profile) profileCsv.flush();
                 auto data = peers.gather(times.data(), times.size() * sizeof(float));
                 if (o.rank == 0) {
                     std::vector<float> rankMax(o.iterations, 0);
@@ -318,8 +421,9 @@ int main(int argc, char** argv)
                             << o.dtype << ',' << o.route << ',' << o.seed << ',' << o.capacity << ',' << o.warmup << ','
                             << DEEPEP_BENCH_SOURCE_ID << ',' << o.iterations << ',' << cores << ',' << recv << ','
                             << deepep_ll_combine_small_batch_enabled() << ','
-                            << deepep_ll_combine_early_reduce_enabled() << ',' << s.mean << ',' << s.min << ',' << s.max
-                            << ',' << s.p50 << ',' << s.p99 << '\n';
+                            << deepep_ll_combine_early_reduce_enabled() << ',' << DEEPEP_LL_COMBINE_ORIGINAL << ','
+                            << o.entrySync << ',' << profileBuild << ',' << o.profile << ',' << s.mean << ',' << s.min
+                            << ',' << s.max << ',' << s.p50 << ',' << s.p99 << '\n';
                     summary.flush();
                     std::cout << "BS=" << bs << " rank-MAX Event us: mean=" << s.mean << " range=[" << s.min << ','
                               << s.max << "] p99=" << s.p99 << " rank0_max_abs_error=" << error << std::endl;

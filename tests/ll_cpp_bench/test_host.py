@@ -2,13 +2,41 @@
 import os
 import hashlib
 import json
+import io
 from pathlib import Path
 import shutil
 import subprocess
+import tarfile
 
 import pytest
 
 HERE = Path(__file__).resolve().parent
+
+
+def test_original_kernel_snapshot_is_verbatim(tmp_path):
+    cmake = shutil.which("cmake")
+    git = shutil.which("git")
+    if not cmake or not git:
+        pytest.skip("CMake and Git are required")
+    root = HERE.parents[1]
+    revision = "5b38bf2ea1f67f38c0c2d3662618ae1a0457bfc6"
+    wrapper = tmp_path / "snapshot.cmake"
+    wrapper.write_text(f'set(DEEPEP_SOURCE_DIR "{root.as_posix()}")\n'
+                       f'include("{(HERE / "baseline.cmake").as_posix()}")\n')
+    subprocess.run([cmake, "-P", str(wrapper)], cwd=tmp_path, check=True, timeout=30)
+    expected = subprocess.check_output([git, "-C", str(root), "archive", "--format=tar", revision, "csrc/kernels"])
+    extracted = tmp_path / ("original-" + revision)
+    count = 0
+    with tarfile.open(fileobj=io.BytesIO(expected)) as archive:
+        for member in archive:
+            if member.isfile():
+                assert (extracted / member.name).read_bytes() == archive.extractfile(member).read()
+                count += 1
+    assert count > 100
+    original = (extracted / "csrc/kernels/combine/low_latency.cpp").read_text(encoding="utf-8")
+    assert "DEEPEP_LL_COMBINE_SMALL_BATCH" not in original
+    assert "CombineProfile" not in original
+    assert "ll_bench_entry_gate" not in original
 
 
 def test_options_routes_and_statistics(tmp_path):

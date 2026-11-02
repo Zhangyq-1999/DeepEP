@@ -29,9 +29,15 @@ find_path(DEVICE_RT_INCLUDE rt.h HINTS
     NO_DEFAULT_PATH)
 # This NDR performance branch builds LL only. Keep plain and reference objects
 # separate so profiling switches reuse dependency-tracked objects.
+if(NOT DEEPEP_LL_COMBINE_SOURCE)
+    set(DEEPEP_LL_COMBINE_SOURCE "${DEEPEP_SOURCE_DIR}/csrc/kernels/combine/low_latency.cpp")
+endif()
 set(_ll_sources
     "${DEEPEP_SOURCE_DIR}/csrc/kernels/dispatch/low_latency.cpp"
-    "${DEEPEP_SOURCE_DIR}/csrc/kernels/combine/low_latency.cpp")
+    "${DEEPEP_LL_COMBINE_SOURCE}")
+if(DEEPEP_LL_BENCH_GATE)
+    list(APPEND _ll_sources "${DEEPEP_SOURCE_DIR}/tests/ll_cpp_bench/entry_gate.cpp")
+endif()
 # One dispatch mode/group per translation unit keeps each device compilation
 # bounded; all supported modes still enter the final production library.
 foreach(_mode prequant_e4m3 fp16 fp16_e4m3 fp16_e5m2 bf16 bf16_e4m3 bf16_e5m2)
@@ -63,6 +69,10 @@ if(NOT DEFINED DEEPEP_LL_COMBINE_RECV_CORES)
 endif()
 set_property(SOURCE "${DEEPEP_SOURCE_DIR}/csrc/kernels/combine/low_latency.cpp"
     APPEND PROPERTY COMPILE_DEFINITIONS DEEPEP_LL_COMBINE_RECV_CORES=${DEEPEP_LL_COMBINE_RECV_CORES})
+if(DEEPEP_LL_COMBINE_PROFILE)
+    set_property(SOURCE "${DEEPEP_SOURCE_DIR}/csrc/kernels/combine/low_latency.cpp"
+        APPEND PROPERTY COMPILE_DEFINITIONS DEEPEP_LL_COMBINE_PROFILE=1)
+endif()
 if(DEEPEP_LL_COMBINE_EARLY_REDUCE)
     set_property(SOURCE "${DEEPEP_SOURCE_DIR}/csrc/kernels/combine/low_latency.cpp"
         APPEND PROPERTY COMPILE_DEFINITIONS DEEPEP_LL_COMBINE_EARLY_REDUCE=1)

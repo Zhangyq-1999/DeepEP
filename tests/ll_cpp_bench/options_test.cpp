@@ -15,13 +15,21 @@ int main()
         char* argv[] = {name};
         auto small = llbench::Options::parse(1, argv, world - 1, world, world - 1);
         assert(small.device == world - 1 && small.world == world);
+        assert(small.entrySync == "device" && small.tokens == std::vector<uint32_t>({32, 48, 64, 72}));
     }
     auto o = parse({"bench", "--tokens", "1,72", "--dtype", "fp16"});
+    assert(o.profile == 0);
+    assert(o.entrySync == "host");
+    auto diagnostic = parse({"bench", "--tokens", "1,72", "--dtype", "fp16", "--profile", "2"});
+    assert(diagnostic.profile == 2 && diagnostic.signature() != o.signature());
     assert(o.rank == 17 && o.world == 32 && o.device == 1 && o.tokens.back() == 72);
     for (auto args : std::vector<std::vector<std::string>>{{"bench", "--tokens", "1,"},
                                                            {"bench", "--tokens", "0"},
                                                            {"bench", "--devices", "0,1"},
                                                            {"bench", "--iters", "-1"},
+                                                           {"bench", "--profile", "3"},
+                                                           {"bench", "--entry-sync", "device"},
+                                                           {"bench", "--entry-sync", "unknown"},
                                                            {"bench", "--hidden", "17"},
                                                            {"bench", "--capacity", "4"},
                                                            {"bench", "--iters", "3", "--iters", "4"},

@@ -23,9 +23,9 @@ inline uint32_t number(const std::string& text, uint32_t low, uint32_t high)
 struct Options {
     uint32_t rank = 0, world = 16, device = 0;
     uint32_t hidden = 3584, topk = 8, experts = 384, capacity = 256, warmup = 10, iterations = 100, seed = 0,
-             timeout = 300;
-    std::vector<uint32_t> tokens{1, 2, 4, 8, 16, 32, 48, 64, 72};
-    std::string output = "results/ll-cpp", dtype = "bf16", route = "random";
+             timeout = 300, profile = 0;
+    std::vector<uint32_t> tokens{32, 48, 64, 72};
+    std::string output = "results/ll-cpp", dtype = "bf16", route = "random", entrySync = "auto";
     static Options parse(int argc, char** argv, uint32_t rank = 0, uint32_t world = 16, uint32_t localRank = 0)
     {
         Options o;
@@ -53,6 +53,10 @@ struct Options {
         text("--output-dir", o.output);
         text("--dtype", o.dtype);
         text("--route", o.route);
+        text("--entry-sync", o.entrySync);
+        if (o.entrySync == "auto") o.entrySync = world <= 16 ? "device" : "host";
+        if ((o.entrySync != "host" && o.entrySync != "device") || (world > 16 && o.entrySync == "device"))
+            throw std::invalid_argument("entry-sync supports device for single-host EP, or host for all EP sizes");
         const uint32_t perHost = std::min(world, 16U);
         std::string devices;
         for (uint32_t i = 0; i < perHost; ++i) devices += (i ? "," : "") + std::to_string(i);
@@ -75,6 +79,7 @@ struct Options {
         integer("--iters", o.iterations, 1, 10000);
         integer("--seed", o.seed, 0, 0xffffffffU);
         integer("--timeout", o.timeout, 1, 3600);
+        integer("--profile", o.profile, 0, 2);
         if (auto i = args.find("--tokens"); i != args.end()) {
             if (i->second.empty() || i->second.back() == ',') throw std::invalid_argument("Empty token count");
             o.tokens.clear();
@@ -96,7 +101,7 @@ struct Options {
     {
         std::ostringstream s;
         s << world << '/' << hidden << '/' << topk << '/' << experts << '/' << capacity << '/' << warmup << '/'
-          << iterations << '/' << seed << '/' << dtype << '/' << route;
+          << iterations << '/' << seed << '/' << dtype << '/' << route << '/' << profile << '/' << entrySync;
         for (auto b : tokens) s << '/' << b;
         return s.str();
     }

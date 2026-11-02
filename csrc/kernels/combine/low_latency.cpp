@@ -39,6 +39,15 @@ extern "C" DEEPEP_EXPORT uint32_t deepep_ll_combine_early_reduce_enabled()
 #endif
 }
 
+extern "C" DEEPEP_EXPORT uint32_t deepep_ll_combine_profile_enabled()
+{
+#ifdef DEEPEP_LL_COMBINE_PROFILE
+    return 1U;
+#else
+    return 0U;
+#endif
+}
+
 // 中文审计：ElasticBuffer._combine_low_latency → csrc/ops/low_latency.cpp
 // → combine_server_dedup_kernel_do → 本入口。输入依赖匹配dispatch handle的路由/计数/权重。
 // profiler中的combine_server_dedup_kernel包含下层准备、控制通知、回传与最终归约。
@@ -47,7 +56,8 @@ extern "C" [[bisheng::core_ratio(0, 1)]] __global__ __aicore__ void combine_serv
     GM_ADDR tokenType, GM_ADDR relayReadIndex, GM_ADDR sourceMask, GM_ADDR yOut, GM_ADDR tilingData, GM_ADDR stageTimer,
     uint32_t timerMode)
 {
-    (void)stageTimer; (void)timerMode;  // Reserved launch ABI slots; combine has no device tracing.
+    CombineProfile::DeviceProfile profile;
+    profile.Init(stageTimer, timerMode);
     const auto* args = reinterpret_cast<const __gm__ DispatchDedup::CommArgs*>(commArgs);
     util_set_ffts_config(args->fftsVal);
 
@@ -58,6 +68,7 @@ extern "C" [[bisheng::core_ratio(0, 1)]] __global__ __aicore__ void combine_serv
         magic = DispatchDedup::RotateDispatchServerDedupMagic(args, AscendC::GetBlockIdx(), &pipe);
     }
 
+    profile.Mark(CombineProfile::MagicEnd);
     const auto* td = reinterpret_cast<const volatile __gm__ CombineDedup::EpServerDedupCombineTilingData*>(tilingData);
     const bool enableDedup = DispatchDedup::EpServerDedupEnabled(td->numMaxTokensPerRank, td->bs, uint32_t(args->rankSize));
     if (!DispatchDedup::LlTilingKeyValid(args->rankSize, td->tilingKey)) { AscendC::Trap(); return; }
@@ -65,11 +76,14 @@ extern "C" [[bisheng::core_ratio(0, 1)]] __global__ __aicore__ void combine_serv
     CombineDedup::CombineMemoryServerDedupKernel<Group> kernel; \
     kernel.Init(commArgs, expertOut, destinationIndex, sendCounts, expertScales, tokenType, relayReadIndex, sourceMask, \
                 yOut, td->bs, td->h, td->topK, td->moeExpertNum, td->dtype, 0, magic, enableDedup); \
+    kernel.SetProfile(&profile); \
+    profile.Mark(CombineProfile::InitEnd); \
     kernel.Process()
     if (td->tilingKey == uint8_t(DispatchDedup::LlTilingKey::Group2)) { COMBINE_RUN(2U); }
     else if (td->tilingKey == uint8_t(DispatchDedup::LlTilingKey::Group4)) { COMBINE_RUN(4U); }
     else { COMBINE_RUN(16U); }
 #undef COMBINE_RUN
+    profile.Finish(args->rank, args->rankSize, td->bs);
 
 }
 extern "C" DEEPEP_EXPORT void combine_server_dedup_kernel_do(void* stream,

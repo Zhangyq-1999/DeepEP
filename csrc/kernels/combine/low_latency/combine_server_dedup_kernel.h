@@ -5,6 +5,7 @@
 #define COMBINE_DEDUP_EP_COMBINE_MEMORY_SERVER_DEDUP_KERNEL_H
 
 #include "kernel_operator.h"
+#include "combine_profile_device.h"
 #include "../../dispatch/low_latency/common/ep_memory_server_dedup_count_layout.h"
 #include "../../dispatch/low_latency/common/comm_args.h"
 #include "ep_memory_server_dedup_buffer_layout.h"
@@ -23,6 +24,13 @@ class CombineMemoryServerDedupKernel {
     friend struct CombineModuleTestAccess;
 
 public:
+    __aicore__ inline void SetProfile(CombineProfile::DeviceProfile* profile)
+    {
+        profile_.Bind(profile);
+#ifdef DEEPEP_LL_COMBINE_PROFILE
+        profileOwner_ = profile;
+#endif
+    }
     __aicore__ inline void Init(GM_ADDR commArgs, GM_ADDR expertOut, GM_ADDR assistInfoForCombine, GM_ADDR sendCounts,
                                 GM_ADDR expertScales, GM_ADDR tokenType, GM_ADDR relayReadIndex, GM_ADDR sourceMask,
                                 GM_ADDR yOut, uint32_t bs, uint32_t h, uint32_t topK, uint32_t experts, uint8_t dtype,
@@ -115,7 +123,9 @@ public:
     {
         if (enableDedup_) {
 
+            profile_.Mark(CombineProfile::StageBegin);
             CopyLocalPendingTokens();
+            profile_.Mark(CombineProfile::StageEnd);
 
         }
         if (core_ >= sendCores_) {
@@ -133,18 +143,24 @@ public:
 
                 ReturnPartialTokens();
 
+                profile_.Mark(CombineProfile::FinalBegin);
                 const uint32_t retiredOutputs = AggregateSourceTokens();
+                profile_.Mark(CombineProfile::FinalEnd);
 
                 DrainSharedOutputs(retiredOutputs);
+                profile_.Mark(CombineProfile::DrainEnd);
 
             } else {
 
+                profile_.Mark(CombineProfile::FinalBegin);
                 AggregateSourceTokensM6();
 
             }
         } else {
 
+            profile_.Mark(CombineProfile::DirectBegin);
             ReturnDirectTokens();
+            profile_.Mark(CombineProfile::DirectEnd);
 
         }
         // Retires prepare publication, both zero sources and server notification;
@@ -153,13 +169,18 @@ public:
         PipeBarrier<PIPE_ALL>();
         // All resident control sources and output lanes have retired. Pending
         // return GM slots are independent of M5 UB and are reclaimed only here.
+        profile_.Mark(CombineProfile::PipeDone);
         returnBatch_.Flush(arena_.Get<uint8_t>());
+        profile_.Mark(CombineProfile::FlushDone);
     }
 
 private:
     __aicore__ inline void AggregateSourceTokensM6()
     {
         ServerDedupSourceAggregate aggregate;
+#ifdef DEEPEP_LL_COMBINE_PROFILE
+        aggregate.SetProfile(profileOwner_);
+#endif
         // Count DMA has retired. Auto uses the same final-stage scratch view as
         // M5, but owns its output events because M4 did not run on this launch.
         aggregate.InitDirectShared(
@@ -167,17 +188,24 @@ private:
             args_->peerMems[args_->rank] + window_ + COMBINE_DEDUP_EP_SERVER_DEDUP_SHARED_DATA_OFFSET, weightsAddr_,
             outputAddr_, bs_, h_, topK_, dtype_, core_ - sendCores_,
             recvCores_, workspace_, LlTransport::Rdma(args_));
+        profile_.Mark(CombineProfile::FinalInitEnd);
         aggregate.Process();
+        profile_.Mark(CombineProfile::FinalEnd);
         aggregate.DrainM6();
+        profile_.Mark(CombineProfile::DrainEnd);
     }
     __aicore__ inline uint32_t AggregateSourceTokens()
     {
         ServerDedupSourceAggregate aggregate;
+#ifdef DEEPEP_LL_COMBINE_PROFILE
+        aggregate.SetProfile(profileOwner_);
+#endif
         aggregate.Init(arena_.Get<uint8_t>()[kEpServerDedupCombineResidentUbBytes],
                        args_->peerMems[args_->rank] + window_ + COMBINE_DEDUP_EP_SERVER_DEDUP_SHARED_DATA_OFFSET,
                        masksAddr_, weightsAddr_, outputAddr_, bs_, h_, topK_, dtype_,
                        core_ - sendCores_, recvCores_, workspace_,
                        partialTasks_, enableDedup_, LlTransport::Rdma(args_));
+        profile_.Mark(CombineProfile::FinalInitEnd);
         return aggregate.Process();
     }
     __aicore__ inline void DrainSharedOutputs(uint32_t retiredOutputs = 0U)
@@ -233,6 +261,7 @@ private:
         const uint32_t base = uint32_t(selected_) / coreNum_, extra = uint32_t(selected_) % coreNum_;
         const uint32_t count = base + (core_ < extra ? 1U : 0U);
         const uint32_t start = core_ * base + (core_ < extra ? core_ : extra);
+        profile_.Set(CombineProfile::StageRows, count);
 #ifdef DEEPEP_LL_COMBINE_SMALL_BATCH
         const uint32_t activeLanes = count < lanes_ ? count : lanes_;
 #else
@@ -344,6 +373,7 @@ private:
     __aicore__ inline void ReturnDirectTokens()
     {
         PrepareDirectRows();
+        profile_.Mark(CombineProfile::DirectPrepared);
         if (selected_ == 0U) return;
         if (LlTransport::Rdma(args_)) returnBatch_.Init(args_, resultStride_);
         const uint32_t servers = uint32_t(args_->rankSize) / Group;
@@ -366,10 +396,13 @@ private:
         }
         PipeBarrier<PIPE_V>();
         for (uint32_t step = 1U; step <= servers; ++step) {
+            const uint64_t scanStart = profile_.DetailClock();
             const uint32_t count = SelectDirectServer(ServerDedupHalfOrder(servers, ownServer, step - 1U));
+            profile_.Elapsed(CombineProfile::DirectScanTicks, scanStart);
             const uint32_t first = ServerDedupFirstOwned(core_, owner, sendCores_);
             owner = (owner + count) % sendCores_;
             for (uint32_t task = first; task < count; task += sendCores_) {
+                const uint64_t metadataStart = profile_.DetailClock();
                 const uint32_t row = uint32_t(indexUb_.GetValue(task));
                 // Only owned rows reload a routing triple. The persistent rank
                 // and original-row arrays are untouched between server rounds.
@@ -379,15 +412,21 @@ private:
                 const uint32_t token = uint32_t(tableUb_.GetValue(1U));
                 const uint32_t topk = uint32_t(tableUb_.GetValue(2U));
                 const uint32_t lane = sendSequence++ % activeLanes;
+                profile_.Elapsed(CombineProfile::DirectMetadataTicks, metadataStart);
                 // Input lifetime ends after Vector has consumed its last block.
+                const uint64_t inputStart = profile_.DetailClock();
                 WaitFlag<HardEvent::V_MTE2>(lane);
                 auto input = payloadUb_[lane * laneBytes_ / 2U];
                 DataCopyPad(input, expert_[uint64_t(row) * h_], {1U, h_ * 2U, 0U, 0U, 0U},
                             {false, 0U, 0U, uint16_t(0)});
                 SetFlag<HardEvent::MTE2_V>(lane);
                 WaitFlag<HardEvent::MTE2_V>(lane);
+                profile_.Elapsed(CombineProfile::DirectInputWaitTicks, inputStart);
                 // Output lifetime ends only after the previous send has read it.
+                const uint64_t outputStart = profile_.DetailClock();
                 WaitFlag<HardEvent::MTE3_V>(lane);
+                profile_.Elapsed(CombineProfile::DirectOutputWaitTicks, outputStart);
+                const uint64_t packStart = profile_.DetailClock();
                 auto output = resultUb_[lane * resultStride_];
                 auto dstWords = output.ReinterpretCast<int32_t>();
                 auto srcWords = input.ReinterpretCast<int32_t>();
@@ -399,6 +438,7 @@ private:
                 SetFlag<HardEvent::V_MTE3>(lane);
                 WaitFlag<HardEvent::V_MTE3>(lane);
 
+                profile_.Elapsed(CombineProfile::DirectPackTicks, packStart);
                 // One destination owns this output. Its body is overwritten on
                 // the next lane use, so SDK scratch need not be restored.
                 const uint64_t offset = window_ + COMBINE_DEDUP_EP_SERVER_DEDUP_SHARED_DATA_OFFSET +
@@ -408,6 +448,7 @@ private:
             }
             // No server fence: the next scan can overlap pending output DMA.
         }
+        profile_.Set(CombineProfile::DirectRows, sendSequence);
         returnBatch_.SubmitPending();
         // Final retirement includes unused seeded lanes, never a per-token drain.
         for (uint32_t lane = 0; lane < activeLanes; ++lane) {
@@ -419,6 +460,7 @@ private:
     // 修改此处同步必须联查Partial与SourceAggregate的槽位生命周期，避免提前覆盖发送数据。
     __aicore__ inline void ReturnPartialTokens()
     {
+        profile_.Mark(CombineProfile::PartialBegin);
         // M1 payload lanes are retired; complete this core's M2 publications
         // before reusing scratch. Independent control buffers remain resident.
         PipeBarrier<PIPE_ALL>();
@@ -431,14 +473,20 @@ private:
 #ifdef DEEPEP_LL_COMBINE_SMALL_BATCH
         // Metadata is already immutable. Plan while peers finish staging;
         // payload loads still begin strictly after the existing ready wait.
+        profile_.Mark(CombineProfile::PlanBegin);
         partial.PrepareTasks();
+        profile_.Mark(CombineProfile::PlanEnd);
         WaitServerReady();
 #endif
+        profile_.Mark(CombineProfile::PartialRunBegin);
         partialTasks_ = partial.Process();
+        profile_.Mark(CombineProfile::PartialRunEnd);
+        profile_.Set(CombineProfile::PartialRows, partialTasks_);
         // Retire only input and Vector users before scalar metadata reuse.
         // M4 output slots and MTE3_V events stay live for M5's per-slot waits.
         Sync<HardEvent::MTE2_S>();
         Sync<HardEvent::V_S>();
+        profile_.Mark(CombineProfile::PartialEnd);
     }
     __aicore__ inline void WaitFlags(GlobalTensor<float> gm, LocalTensor<float> input, LocalTensor<float> work,
                                      LocalTensor<float> sum, uint32_t flags)
@@ -455,6 +503,7 @@ private:
     }
     __aicore__ inline void NotifyServerCard()
     {
+        profile_.Mark(CombineProfile::NotifyBegin);
         auto done = Control(args_->rank,
                             COMBINE_DEDUP_EP_SERVER_DEDUP_COMBINE_PREPARE_DONE_OFFSET + uint64_t(core_ - notifyBegin_) * kCombinePrepareRowBytes);
         WaitFlags(done, prepareInput_, prepareWork_, prepareSum_, coreNum_);
@@ -476,17 +525,24 @@ private:
                 notifyUb_.ReinterpretCast<uint8_t>(), recvCores_, 512U, false,
                 prepareInput_.ReinterpretCast<uint8_t>());
         }
+        profile_.Mark(CombineProfile::NotifyEnd);
     }
     __aicore__ inline void WaitServerReady()
     {
+        profile_.Mark(CombineProfile::ReadyBegin);
         auto ready = Control(args_->rank, COMBINE_DEDUP_EP_SERVER_DEDUP_COMBINE_SERVER_READY_OFFSET +
                                               uint64_t(core_ - sendCores_) * 512U);
         WaitFlags(ready, readyInput_, readyWork_, readySum_, Group);
         Duplicate<float>(readyZero_, 0.0f, 128U);
         Sync<HardEvent::V_MTE3>();
         DataCopyPad(ready, readyZero_, {1U, 512U, 0U, 0U, 0U});
+        profile_.Mark(CombineProfile::ReadyEnd);
     }
 
+    CombineProfile::View profile_;
+#ifdef DEEPEP_LL_COMBINE_PROFILE
+    CombineProfile::DeviceProfile* profileOwner_ = nullptr;
+#endif
     EpCombineM45WorkspaceLayout workspace_{};
     LlTransport::DispatchRdmaBatch returnBatch_;
     uint32_t partialTasks_ = 0U;

@@ -109,6 +109,13 @@ template<class T> void Check(uint32_t bs,uint32_t h,uint32_t k,uint32_t particip
         SetFlag<HardEvent::MTE3_V>(lane);
     }
     ServerDedupSourceAggregate op;
+#ifdef DEEPEP_LL_COMBINE_PROFILE
+    std::vector<uint64_t> profileData(CombineProfile::kWords, 0);
+    CombineProfile::DeviceProfile profile;
+    core = 0;
+    profile.Init(reinterpret_cast<GM_ADDR>(profileData.data()), 2);
+    op.SetProfile(&profile);
+#endif
     const uint8_t dtype=std::is_same_v<T,half>?DispatchDedup::DISPATCH_DEDUP_DATA_TYPE_FP16:DispatchDedup::DISPATCH_DEDUP_DATA_TYPE_BFP16;
     if(dedup)op.Init({scratch},packets,reinterpret_cast<GM_ADDR>(masks.data()),reinterpret_cast<GM_ADDR>(weights.data()),
         reinterpret_cast<GM_ADDR>(output.data()),bs,h,k,dtype,participant,recv,layout,partialTasks,true,true);
@@ -122,6 +129,16 @@ template<class T> void Check(uint32_t bs,uint32_t h,uint32_t k,uint32_t particip
     for(auto& direction:events)for(bool live:direction)assert(!live);
     assert(deferredMte3.empty());
     const uint32_t count=bs/recv+(participant<bs%recv),begin=participant*(bs/recv)+std::min(participant,bs%recv);
+#ifdef DEEPEP_LL_COMBINE_PROFILE
+    profile.Finish(0, 16, bs);
+    assert(profileData[CombineProfile::FinalTokens] == count);
+    uint32_t expectedContributions = 0;
+    for (uint32_t t=begin; t<begin+count; ++t)
+        expectedContributions += dedup ? __builtin_popcount(masks[t]) : k;
+    assert(profileData[CombineProfile::Contributions] == expectedContributions);
+    assert(profileData[CombineProfile::ProbeCalls] >= count);
+    assert(profileData[CombineProfile::ProbeMisses] <= profileData[CombineProfile::ProbeCalls]);
+#endif
     for(uint32_t t=0;t<bs;++t)for(uint32_t x=0;x<h;++x){
         if(t<begin || t>=begin+count){assert(output[t*h+x]==0x6a6a);continue;}
         float sum=0;bool first=true;

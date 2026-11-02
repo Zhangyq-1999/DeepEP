@@ -5,6 +5,7 @@
 #define COMBINE_DEDUP_EP_SERVER_DEDUP_SOURCE_AGGREGATE_H
 
 #include "kernel_operator.h"
+#include "combine_profile_device.h"
 #include "ep_memory_server_dedup_combine_config.h"
 #include "../../dispatch/low_latency/common/dispatch_dedup_types.h"
 
@@ -17,6 +18,7 @@ using namespace AscendC;
 // are handed off after MTE2/Vector completion, while M4 MTE3 may still run.
 class ServerDedupSourceAggregate {
 public:
+    __aicore__ inline void SetProfile(CombineProfile::DeviceProfile* profile) { profile_.Bind(profile); }
     __aicore__ inline void Init(LocalTensor<uint8_t> scratch, GM_ADDR result, GM_ADDR masks, GM_ADDR weights,
                                 GM_ADDR yOut, uint32_t bs, uint32_t h, uint32_t k, uint8_t dtype, uint32_t participant,
                                 uint32_t participants, const EpCombineM45WorkspaceLayout& layout, uint32_t partialTasks,
@@ -62,6 +64,9 @@ public:
 
     __aicore__ inline uint32_t Process()
     {
+        profile_.Set(CombineProfile::FinalTokens, count_);
+        profile_.Set(CombineProfile::InputLanes, inputLanes_);
+        profile_.Set(CombineProfile::OutputLanes, outputLanes_);
         if (count_ == 0U) return 0U;
         for (uint32_t lane = 0; lane < inputLanes_; ++lane) SetFlag<HardEvent::V_MTE2>(lane);
 #ifdef DEEPEP_LL_COMBINE_EARLY_REDUCE
@@ -173,6 +178,7 @@ private:
         // The previous probe's V_S retired its flag-buffer reader. This UB is
         // independent of payload compute/output, so do not wait for that Vector
         // work before issuing the next flag read. Inactive slot flags stay zero.
+        const uint64_t start = profile_.DetailClock();
         const uint32_t flags = k_ * blocks_;
         // Include each packet's final flag block: RoCE SO makes its arrival
         // a whole-message prerequisite. MTE and mask-inactive slot rules stay unchanged.
@@ -181,10 +187,16 @@ private:
         Sync<HardEvent::MTE2_V>();
         ReduceSum(probeSum_, flags_, work_, 1U, flags, 1U);
         Sync<HardEvent::V_S>();
-        return probeSum_.GetValue(0U) == float(expected);
+        const bool ready = probeSum_.GetValue(0U) == float(expected);
+        profile_.Elapsed(CombineProfile::ProbeTicks, start);
+        profile_.Add(CombineProfile::ProbeCalls);
+        profile_.Add(CombineProfile::ProbeMisses, ready ? 0U : 1U);
+        profile_.Add(CombineProfile::ProbeFlagBlocks, flags);
+        return ready;
     }
     __aicore__ inline void ClearFlags()
     {
+        const uint64_t start = profile_.DetailClock();
         const uint32_t flags = k_ * blocks_;
         Duplicate<float>(flags_, 0.0f, flags * 8U);
         // M4 may still own an unconsumed V_MTE3(7) publication for slot 7.
@@ -196,9 +208,11 @@ private:
             auto target = resultFlags_[uint64_t(p) * k_ * packetBytes_ / 4U + 120U];
             DataCopyPad(target, flags_, {uint16_t(flags), 32U, 0U, 480U, 0U});
         }
+        profile_.Elapsed(CombineProfile::ClearTicks, start);
     }
     __aicore__ inline void Load(uint32_t token, uint32_t k, uint32_t member)
     {
+        const uint64_t start = profile_.DetailClock();
         const uint32_t lane = (inputSequence_ + member) % inputLanes_;
         WaitFlag<HardEvent::V_MTE2>(lane);
         const uint32_t retire = enableDedup_ ? finalLayout_.inputRetireMasks[lane] & ~retiredOutputs_ : 0U;
@@ -211,6 +225,8 @@ private:
             WaitFlag<HardEvent::V_MTE2>(lane);
             retiredOutputs_ |= retire;
         }
+        profile_.Elapsed(CombineProfile::FinalReuseWaitTicks, start);
+        profile_.Add(CombineProfile::Contributions);
         DataCopy(inputs_[finalLayout_.inputOffsets[lane] / 2U], result_[(uint64_t(token) * k_ + k) * packetBytes_ / 2U],
                  {uint16_t(blocks_), 15U, 1U, 0U});
         SetFlag<HardEvent::MTE2_V>(lane);
@@ -221,6 +237,7 @@ private:
     };
     __aicore__ inline bool ProbeContribution(uint32_t token, uint32_t k)
     {
+        const uint64_t start = profile_.DetailClock();
         // A contribution is usable only after every 512B block is present,
         // including the final block of a cross-host return packet.
         auto src = resultFlags_[(uint64_t(token) * k_ + k) * packetBytes_ / 4U + 120U];
@@ -228,7 +245,12 @@ private:
         Sync<HardEvent::MTE2_V>();
         ReduceSum(probeSum_, flags_, work_, 1U, blocks_, 1U);
         Sync<HardEvent::V_S>();
-        return probeSum_.GetValue(0U) == float(blocks_);
+        const bool ready = probeSum_.GetValue(0U) == float(blocks_);
+        profile_.Elapsed(CombineProfile::ProbeTicks, start);
+        profile_.Add(CombineProfile::ProbeCalls);
+        profile_.Add(CombineProfile::ProbeMisses, ready ? 0U : 1U);
+        profile_.Add(CombineProfile::ProbeFlagBlocks, blocks_);
+        return ready;
     }
     template<class T>
     __aicore__ inline bool AdvanceToken(TokenProgress& state, uint32_t accumulator, uint32_t completed)
@@ -243,7 +265,9 @@ private:
             // retains M4 output retirement and input-lane ownership checks.
             Load(state.token, k, 0U);
             const uint32_t lane = inputSequence_ % inputLanes_;
+            const uint64_t inputStart = profile_.DetailClock();
             WaitFlag<HardEvent::MTE2_V>(lane);
+            profile_.Elapsed(CombineProfile::FinalInputWaitTicks, inputStart);
             Cast(cast_, inputs_[finalLayout_.inputOffsets[lane] / 2U].template ReinterpretCast<T>(),
                  RoundMode::CAST_NONE, h_);
             SetFlag<HardEvent::V_MTE2>(lane);
@@ -261,7 +285,9 @@ private:
             ++inputSequence_;
         }
         const uint32_t outputLane = finalLayout_.outputSlots[completed % outputLanes_];
+        const uint64_t outputStart = profile_.DetailClock();
         WaitFlag<HardEvent::MTE3_V>(outputLane);
+        profile_.Elapsed(CombineProfile::FinalOutputWaitTicks, outputStart);
         auto output = outputs_[outputLane * outputBytes_ / 2U];
         Cast(output.template ReinterpretCast<T>(), sum, RoundMode::CAST_RINT, h_);
         SetFlag<HardEvent::V_MTE3>(outputLane);
@@ -306,7 +332,9 @@ private:
         for (uint32_t k = 0U; k < k_; ++k)
             if (!enableDedup_ || ((mask >> k) & 1U)) {
                 const uint32_t lane = (inputSequence_ + member) % inputLanes_;
+                const uint64_t inputStart = profile_.DetailClock();
                 WaitFlag<HardEvent::MTE2_V>(lane);
+                profile_.Elapsed(CombineProfile::FinalInputWaitTicks, inputStart);
                 Cast(cast_, inputs_[finalLayout_.inputOffsets[lane] / 2U].template ReinterpretCast<T>(),
                      RoundMode::CAST_NONE, h_);
                 SetFlag<HardEvent::V_MTE2>(lane);
@@ -326,7 +354,9 @@ private:
             }
         inputSequence_ += member;
         const uint32_t outputLane = finalLayout_.outputSlots[completed % outputLanes_];
+        const uint64_t outputStart = profile_.DetailClock();
         WaitFlag<HardEvent::MTE3_V>(outputLane);
+        profile_.Elapsed(CombineProfile::FinalOutputWaitTicks, outputStart);
         auto output = outputs_[outputLane * outputBytes_ / 2U];
         Cast(output.template ReinterpretCast<T>(), sum_, RoundMode::CAST_RINT, h_);
         SetFlag<HardEvent::V_MTE3>(outputLane);
@@ -335,6 +365,7 @@ private:
         SetFlag<HardEvent::MTE3_V>(outputLane);
     }
 
+    CombineProfile::View profile_;
     bool enableDedup_ = false;
     bool uncached_ = false;
     LocalTensor<uint8_t> scratch_;
