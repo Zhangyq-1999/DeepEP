@@ -12,6 +12,10 @@
 
 可以复用此前编译 LL 算子时生成的 SHMEM SDK。这个 SDK 独立于 Conda。没有现成 SDK 时，下面的 Shell/CMake 脚本会编译仓库锁定的 SHMEM 子模块，并登记 SDK 信息。
 
+一次运行中的所有版本共用一个 MPI 作业和一套 ACL、SHMEM 资源。程序初始化一次，按顺序完成各版本测试，最后统一释放资源。切换版本前，所有 rank 等待上一版结束，再清零测试工作区。清理、输入准备和预热均在 Event 计时之外。
+
+各版本仍使用独立编译的 kernel。base 保留冻结的上游源码，实验开关只进入实验版。每版都单独检查精度、采样并输出结果。
+
 ## 一次编译并运行当前实验
 
 已有配套 SHMEM SDK 时，两台机器各执行以下命令。脚本默认使用 `/usr/local/Ascend/cann-9.2.T101`、`/usr/local/mpich-3.2.1` 和当前仓库的 `third-party/shmem/install/shmem`。已设置的 `ASCEND_HOME_PATH`、`MPI_HOME`、`SHMEM_ROOT` 优先于这些路径。脚本自动加载所选 CANN 的 `set_env.sh`，并配置 MPI、SHMEM 的库路径。
@@ -23,7 +27,7 @@ git pull --ff-only origin perf/ll-combine-small-batch
 bash tests/ll_cpp_bench/build_all.sh
 ```
 
-`build_all.sh` 默认只更新以下 5 个构建目录，每个构建使用 4 个编译任务。所有开关都显式传入，重复编译会覆盖旧的 CMake 选项。已有构建目录继续用于增量编译。
+`build_all.sh` 默认只更新以下 5 个构建目录，每个构建使用 4 个编译任务。所有开关都显式传入，重复编译会覆盖旧的 CMake 选项。已有构建目录继续用于增量编译。升级到单次初始化入口后，需要重编本轮选择的全部版本，生成各自的 `libll_bench_variant.so`。
 
 | 构建名 | 启用的实验 | 打点 |
 | --- | --- | --- |
@@ -128,7 +132,9 @@ bash tests/ll_cpp_bench/build.sh \
     --build-dir "$PWD/build/ll-cpp-base"
 ```
 
-`build.sh` 编译独立可执行文件和 LL kernel 库。CANN 的 Device 编译器与 Host C++ 编译器使用各自的构建目录。构建结果保存在 `build/ll-cpp-base`，其中 `bench-build.txt` 记录源码摘要和实验开关。
+`build.sh` 编译统一入口 `ll_combine_bench`、版本模块 `libll_bench_variant.so` 和 LL kernel 库。程序按模块路径加载各版本。每个构建目录生成不同名称的 kernel 库，避免同名函数串用。
+
+CANN 的 Device 编译器与 Host C++ 编译器使用各自的构建目录。构建结果保存在 `build/ll-cpp-base`，其中 `bench-build.txt` 记录源码摘要和实验开关。
 
 如果已有其他目录下的配套 SDK，可以跳过 `prepare_shmem.sh`，直接设置实际的 `SHMEM_ROOT`。脚本会保留已有构建；如果子模块中存在尚未登记的 `build/install`，它会停止并提示使用现成 SDK 或新 checkout。
 
@@ -196,9 +202,9 @@ bash tests/ll_cpp_bench/launch.sh \
     --warmup 10 --iters 100
 ```
 
-`base` 使用 `build/ll-cpp-base/ll_combine_bench`，`opt` 使用 `build/ll-cpp-opt/ll_combine_bench`。脚本按指定顺序运行，前一版成功退出后再启动后一版。也可以用 `--variants base,opt,base` 做 A/B/A 对照。
+脚本用第一个版本目录中的 `ll_combine_bench` 启动一次 MPI 作业。入口加载各目录的 `libll_bench_variant.so`，随后按指定顺序测试。`base,opt` 会先测 base，再测 opt，两版共用同一次 SHMEM 初始化。也可以用 `--variants base,opt,base` 做 A/B/A 对照。每次切换都会清理共享的数据和标记，保留 SHMEM 已建立的通信资源。
 
-单机测试每次都会在 `results/ll-cpp/<run-id>/` 下创建带时间戳和随机后缀的子目录。同一条命令可以重复执行，之前的 CSV、日志和汇总都会保留。脚本开头的 `Results:` 显示本次目录。`--variants` 也支持自定义构建名：例如 `ref-profile` 对应 `build/ll-cpp-ref-profile/ll_combine_bench`。
+单机测试每次都会在 `results/ll-cpp/<run-id>/` 下创建带时间戳和随机后缀的子目录。同一条命令可以重复执行，之前的 CSV、日志和汇总都会保留。脚本开头的 `Results:` 显示本次目录。`--variants` 也支持自定义构建名：例如 `ref-profile` 对应 `build/ll-cpp-ref-profile/libll_bench_variant.so`。
 
 EP2 使用新增的 G2 Plain16 特化，支持 BF16 和 FP16；EP4、EP8、EP16 使用 G4。单机数据走 MTE。EP32 沿用 G16，跨主机回传走 RDMA；FIRST_HOP 汇集保留 Get 方案。
 
@@ -233,7 +239,7 @@ bash tests/ll_cpp_bench/launch.sh \
 
 用例参数以第一台 `--` 后面的配置为准，MPI 将这些参数传给全部 rank。两边都启动后，脚本先运行原版，再运行优化版。第二台可以先启动，默认等待第一台最多 300 秒。
 
-`--master-port` 是首轮测试的 MPI 控制端口，后续每版递增 1。例如，`base,opt` 使用 29671 和 29672。MPI 数据连接使用其正常端口分配；两台机器需要允许 MPI 通信。SHMEM 通过 MPI bootstrap 初始化。
+`--master-port` 指定本次 MPI 作业的控制端口，所有版本共用这个端口。MPI 数据连接使用其正常端口分配；两台机器需要允许 MPI 通信。SHMEM 通过 MPI bootstrap 初始化一次。
 
 `--join-timeout` 默认 300 秒，`--job-timeout` 默认 3600 秒。脚本在超时或失败时退出，并清理本次启动的进程。第一台的退出码反映 MPI 作业的整体状态，各节点同时检查本机 rank 的 PASS 文件。启动前可加 `--dry-run` 查看命令。
 
@@ -241,7 +247,7 @@ bash tests/ll_cpp_bench/launch.sh \
 
 MPICH 3.2.1 的内置 `manual` 模式在关闭 autofork 后，可能在打印 `HYDRA_LAUNCH_END` 后报 `free(): invalid pointer`。当前脚本通过 `-launcher-exec` 调用仓库中的 `hydra_proxy_command.sh`，由它打印代理命令，再由每台机器的启动脚本运行本机代理。这样可以保留手动会合方式，系统 MPI 和 kernel 构建继续复用。该辅助脚本只打印命令，不建立 SSH 连接。
 
-如果遇到 controller 异常退出，脚本会同时打印代理日志和 `.log.controller` 日志。优先查看 controller 的首个错误；随后出现的 `Connection refused` 可能只是 controller 退出后的结果。
+所有版本的运行日志保存在 `node-N/suite.log`，第一台另有 `node-0/suite.log.controller`。如果 controller 异常退出，脚本会同时打印这两份日志。优先查看 controller 的首个错误；随后出现的 `Connection refused` 可能只是 controller 退出后的结果。
 
 Linux 上，`launch.sh` 会将当前进程的文件描述符软上限提高到至少 65,536，并打印软、硬上限。每台机器的 MPI 代理和测试进程会继承这个额度。脚本保留原硬上限；硬上限不足时，先退出并提示调整启动环境。此设置只影响本次脚本及其子进程。
 
@@ -267,7 +273,9 @@ EP32 默认沿用 Host MPI Barrier，结果记录为 `entry_sync=host`。设备�
 
 单机 `--run-id ep4-ab --variants base,opt` 的结果目录形如 `results/ll-cpp/ep4-ab/20261102-153000-Ab12Cd/`，其中 `0-base`、`1-opt` 保存两版结果，`node-0` 保存启动日志。双机仍使用 `results/ll-cpp/<run-id>/`，其中 `node-0`、`node-1` 保存各节点的日志。
 
-全部采样、精度检查和 SHMEM finalize 成功后，各 rank 写出 `rank-N.PASS`。单 rank 异常会调用 `MPI_Abort`，结束本次 MPI 作业。本用例用于功能冒烟和性能对照，完整的随机权重、路由元数据与独立 CPU golden 检查仍由原 Python 精度用例覆盖。
+每版通过精度检查和采样后，各 rank 在该版目录写出 `rank-N.SAMPLED`。全部版本完成且共享 SHMEM finalize 成功后，程序才为各版写出 `rank-N.PASS`。后续版本或释放过程失败时，已完成的采样文件继续保留，整次运行记为失败。
+
+单 rank 异常会调用 `MPI_Abort`，结束本次 MPI 作业。本用例用于功能冒烟和性能对照，完整的随机权重、路由元数据与独立 CPU golden 检查仍由原 Python 精度用例覆盖。
 
 ## 分阶段打点
 

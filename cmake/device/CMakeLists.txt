@@ -67,6 +67,14 @@ else()
     set(_ll_variant deepep_kernel_ll_plain)
 endif()
 add_library(deepep_kernels SHARED $<TARGET_OBJECTS:${_ll_variant}>)
+if(DEEPEP_DEVICE_OUTPUT_NAME)
+    set_target_properties(deepep_kernels PROPERTIES OUTPUT_NAME "${DEEPEP_DEVICE_OUTPUT_NAME}")
+endif()
+if(DEEPEP_DEVICE_LOCAL_SYMBOLS)
+    # Several independently compiled kernels coexist in the benchmark process.
+    # Keep each library's launch stubs and registration data bound to that library.
+    target_link_options(deepep_kernels PRIVATE -Wl,-Bsymbolic)
+endif()
 
 add_library(deepep_kernel_options INTERFACE)
 if(NOT DEFINED DEEPEP_LL_COMBINE_RECV_CORES)

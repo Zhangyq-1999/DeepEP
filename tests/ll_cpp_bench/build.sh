@@ -59,4 +59,4 @@ cmake -S "$root/tests/ll_cpp_bench" -B "$build" -G 'Unix Makefiles' \
     "-DDEEPEP_LL_COMBINE_RECV_CORES=$recv" "-DDEEPEP_LL_COMBINE_EARLY_REDUCE=$early" \
     "-DDEEPEP_LL_COMBINE_REMOTE_FIRST=$remote_first" "-DDEEPEP_LL_COMBINE_DEFER_RETURN=$defer_return"
 cmake --build "$build" --parallel "$jobs"
-printf 'Built: %s/ll_combine_bench\n' "$build"
+printf 'Built runner: %s/ll_combine_bench\nVariant module: %s/libll_bench_variant.so\n' "$build" "$build"

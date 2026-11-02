@@ -29,6 +29,7 @@ Benchmark options (with or without a preceding --):
 Defaults: EP32, hosts 90.90.93.84,90.90.93.184, port 29671.
           Four diagnostic versions; BS 32,48,64,72,256; H3584/K8/E384/BF16.
           Warmup 10, samples 10, profile 2; Host MPI sync for EP32.
+All selected variants share one MPI/ACL/SHMEM initialization.
 Single-host EP2/4/8/16 defaults to device entry sync.
 Node is detected from local addresses; --node-rank overrides detection.
 Node 0 generates a new run-id on every invocation unless --run-id is supplied.

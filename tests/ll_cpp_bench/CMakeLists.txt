@@ -43,6 +43,10 @@ else()
     set(DEEPEP_LL_COMBINE_SOURCE "${DEEPEP_SOURCE_DIR}/csrc/kernels/combine/low_latency.cpp")
 endif()
 set(DEEPEP_LL_BENCH_GATE ON)
+string(SHA256 _variant_tag "${CMAKE_BINARY_DIR}")
+string(SUBSTRING "${_variant_tag}" 0 12 _variant_tag)
+set(DEEPEP_DEVICE_OUTPUT_NAME "deepep_bench_${_variant_tag}")
+set(DEEPEP_DEVICE_LOCAL_SYMBOLS ON)
 include("${DEEPEP_SOURCE_DIR}/cmake/Device.cmake")
 find_path(DEEPEP_PLATFORM_INCLUDE tiling/platform/platform_ascendc.h
     HINTS "${ASCEND_HOME_PATH}/asc/include" "${ASCEND_HOME_PATH}/include/op_common"
@@ -52,27 +56,30 @@ if(DEEPEP_LL_OPS_BASE)
 else()
     set(_bench_main main.cpp)
 endif()
-add_executable(ll_combine_bench ${_bench_main} "${DEEPEP_SOURCE_DIR}/csrc/runtime/session.cpp")
+add_library(ll_bench_variant MODULE ${_bench_main})
+set_target_properties(ll_bench_variant PROPERTIES CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN YES
+    NO_SONAME TRUE)
+target_link_options(ll_bench_variant PRIVATE -Wl,-Bsymbolic)
 if(DEEPEP_LL_OPS_BASE)
-    target_compile_definitions(ll_combine_bench PRIVATE LL_OPS_REV="${LL_OPS_REV}")
+    target_compile_definitions(ll_bench_variant PRIVATE LL_OPS_REV="${LL_OPS_REV}")
 endif()
 if(DEEPEP_LL_COMBINE_ORIGINAL)
-    target_sources(ll_combine_bench PRIVATE baseline_queries.cpp)
+    target_sources(ll_bench_variant PRIVATE baseline_queries.cpp)
 endif()
-target_include_directories(ll_combine_bench PRIVATE "${DEEPEP_SOURCE_DIR}/csrc"
+target_include_directories(ll_bench_variant PRIVATE "${DEEPEP_SOURCE_DIR}/csrc"
     "${DEEPEP_PLATFORM_INCLUDE}" "${ASCEND_HOME_PATH}/include" "${SHMEM_ROOT}/include")
-target_link_directories(ll_combine_bench PRIVATE "${ASCEND_HOME_PATH}/lib64"
+target_link_directories(ll_bench_variant PRIVATE "${ASCEND_HOME_PATH}/lib64"
     "${ASCEND_HOME_PATH}/${CMAKE_SYSTEM_PROCESSOR}-linux/lib64")
 # tiling_api is static in CANN 9.2 and uses platform symbols. Keep its provider
 # afterwards so --as-needed retains libplatform when linking the executable.
-target_link_libraries(ll_combine_bench PRIVATE MPI::MPI_CXX ascendcl shmem deepep_device
+target_link_libraries(ll_bench_variant PRIVATE MPI::MPI_CXX ascendcl shmem deepep_device
     tiling_api platform unified_dlog ${CMAKE_DL_LIBS} pthread)
-target_compile_definitions(ll_combine_bench PRIVATE DEEPEP_LL_RDMA=1 DEEPEP_LL_METADATA_CORES=4
+target_compile_definitions(ll_bench_variant PRIVATE DEEPEP_LL_RDMA=1 DEEPEP_LL_METADATA_CORES=4
     DEEPEP_LL_COMBINE_ORIGINAL=$<BOOL:${DEEPEP_LL_COMBINE_ORIGINAL}>
     DEEPEP_LL_COMBINE_RECV_CORES=${DEEPEP_LL_COMBINE_RECV_CORES}
     $<$<BOOL:${DEEPEP_LL_COMBINE_SMALL_BATCH}>:DEEPEP_LL_COMBINE_SMALL_BATCH=1>
     $<$<BOOL:${DEEPEP_LL_COMBINE_EARLY_REDUCE}>:DEEPEP_LL_COMBINE_EARLY_REDUCE=1>)
-target_compile_definitions(ll_combine_bench PRIVATE
+target_compile_definitions(ll_bench_variant PRIVATE
     DEEPEP_BENCH_REMOTE_FIRST=$<BOOL:${DEEPEP_LL_COMBINE_REMOTE_FIRST}>
     DEEPEP_BENCH_DEFER_RETURN=$<BOOL:${DEEPEP_LL_COMBINE_DEFER_RETURN}>)
 # Hash the compiled source tree, including uncommitted edits, for cross-rank checks.
@@ -87,7 +94,16 @@ foreach(_file IN LISTS _identity_files)
 endforeach()
 string(SHA256 _source_id "${_source_hashes}")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${_identity_files})
-target_compile_definitions(ll_combine_bench PRIVATE DEEPEP_BENCH_SOURCE_ID="${_source_id}")
+target_compile_definitions(ll_bench_variant PRIVATE DEEPEP_BENCH_SOURCE_ID="${_source_id}")
+add_executable(ll_combine_bench runner.cpp "${DEEPEP_SOURCE_DIR}/csrc/runtime/session.cpp")
+target_include_directories(ll_combine_bench PRIVATE "${DEEPEP_SOURCE_DIR}/csrc"
+    "${DEEPEP_PLATFORM_INCLUDE}" "${ASCEND_HOME_PATH}/include" "${SHMEM_ROOT}/include")
+target_link_directories(ll_combine_bench PRIVATE "${ASCEND_HOME_PATH}/lib64"
+    "${ASCEND_HOME_PATH}/${CMAKE_SYSTEM_PROCESSOR}-linux/lib64")
+target_link_libraries(ll_combine_bench PRIVATE MPI::MPI_CXX ascendcl shmem
+    tiling_api platform unified_dlog ${CMAKE_DL_LIBS} pthread)
+target_compile_definitions(ll_combine_bench PRIVATE DEEPEP_LL_RDMA=1 DEEPEP_LL_METADATA_CORES=4)
+add_dependencies(ll_combine_bench ll_bench_variant)
 if(DEEPEP_LL_OPS_BASE)
     file(WRITE "${CMAKE_BINARY_DIR}/ops-baseline.txt"
         "implementation=ops-shmem-base\nupstream=${LL_OPS_REV}\ntransport=SHMEM QP Put; quiet at upstream batch boundary\n")

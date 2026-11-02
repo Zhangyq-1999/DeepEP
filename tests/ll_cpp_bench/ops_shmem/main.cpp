@@ -1,6 +1,6 @@
 #include "fixture.hpp"
 #include "../mpi_coordinator.hpp"
-#include "runtime/session.hpp"
+#include "../variant_api.hpp"
 #include "runtime/ll_core_config.hpp"
 #include "host/mem/shmem_host_heap.h"
 #include "host/data_plane/shmem_host_rma.h"
@@ -128,20 +128,20 @@ struct DeviceCase {
         return worst;
     }
 };
-opsbench::Context context_for(deepep::Session& session)
+opsbench::Context context_for(const llbench::Runtime& session)
 {
     opsbench::Context c{};
-    c.rank = session.rank();
-    c.ranksPerServer = std::min(session.world(), 16);
-    const uint32_t server = c.rank / c.ranksPerServer, servers = session.world() / c.ranksPerServer;
+    c.rank = session.options.rank;
+    c.ranksPerServer = std::min(session.options.world, 16U);
+    const uint32_t server = c.rank / c.ranksPerServer, servers = session.options.world / c.ranksPerServer;
     for (uint32_t peer = server * c.ranksPerServer; peer < (server + 1) * c.ranksPerServer; ++peer) {
-        void* address = peer == c.rank ? session.workspace() : aclshmem_ptr(session.workspace(), peer);
+        void* address = peer == c.rank ? session.workspace : aclshmem_ptr(session.workspace, peer);
         if (!address) throw std::runtime_error("Missing SHMEM local mapping");
         c.localWindows[peer] = reinterpret_cast<uint64_t>(address);
     }
     for (uint32_t s = 0, channel = 0; s < servers; ++s) {
         // Local symmetric addresses are intentional: SHMEM translates the target.
-        c.remoteWindows[s] = reinterpret_cast<uint64_t>(session.workspace()) + opsbench::windowBytes;
+        c.remoteWindows[s] = reinterpret_cast<uint64_t>(session.workspace) + opsbench::windowBytes;
         if (s != server) {
             c.peers[channel] = s * c.ranksPerServer + c.rank % c.ranksPerServer;
             channel += 2;  // Preserve the upstream context's two entries per server.
@@ -152,130 +152,101 @@ opsbench::Context context_for(deepep::Session& session)
 }
 }  // namespace
 
-int main(int argc, char** argv)
+LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
 {
-    if (argc == 2 && std::string(argv[1]) == "--help") {
-        std::cout << "ops-shmem-base: same case arguments as ll_combine_bench; --profile 0 only.\n";
-        return 0;
-    }
-    if (MPI_Init(&argc, &argv) != MPI_SUCCESS) return 1;
-    try {
-        llbench::Coordinator peers;
-        auto o = llbench::Options::parse(argc, argv, peers.rank, peers.world, peers.localRank);
-        if (o.profile) throw std::runtime_error("ops-shmem-base is a clean kernel; use --profile 0");
-        if ((o.hidden != 3584 && o.hidden != 7168) || o.topk != 8 || o.experts != 384)
-            throw std::runtime_error("Initial ops-shmem baseline supports H3584/H7168, TopK8, E384");
-        check(aclInit(nullptr), "aclInit");
-        check(aclrtSetDevice(o.device), "set device");
-        aclrtStream stream = nullptr;
-        check(aclrtCreateStream(&stream), "create stream");
-        const uint32_t cores = deepep::query_ll_core_config().active;
-        uint64_t ub = 0;
-        platform_ascendc::PlatformAscendCManager::GetInstance()->GetCoreMemSize(platform_ascendc::CoreMemType::UB, ub);
-        if (ub < 128 * 1024) throw std::runtime_error("Cannot query sufficient UB capacity");
-        peers.verify(llbench::hash(o.signature() + "/ops-shmem/" + DEEPEP_BENCH_SOURCE_ID + "/" +
-                                   std::to_string(cores) + "/" + std::to_string(ub)));
-        setenv("DEEPEP_LL_BACKEND", "rdma", 1);
-        std::filesystem::create_directories(o.output);
-        const auto directory = std::filesystem::path(o.output);
-        const auto rankPath = directory / ("rank-" + std::to_string(o.rank) + ".csv");
-        if (std::filesystem::exists(rankPath)) throw std::runtime_error("Result exists; choose a fresh run-id");
-        std::ofstream samples(rankPath), summary;
-        if (!samples) throw std::runtime_error("Cannot open samples");
-        samples << "tokens,iteration,combine_event_us,implementation,entry_sync\n";
-        if (o.rank == 0) {
-            summary.open(directory / "summary.csv");
-            if (!summary) throw std::runtime_error("Cannot open summary");
-            summary
-                << "ep,tokens,hidden,topk,experts,dtype,route,seed,capacity,warmup,samples,active_aiv,implementation,"
+    static_assert(llbench::workspaceBytes == opsbench::workspaceBytes);
+    const auto& session = *shared;
+    const auto& peers = *shared->peers;
+    const auto& o = shared->options;
+    const auto stream = shared->stream;
+    const auto cores = shared->cores;
+    if (o.profile) throw std::runtime_error("ops-shmem-base is a clean kernel; use --profile 0");
+    if ((o.hidden != 3584 && o.hidden != 7168) || o.topk != 8 || o.experts != 384)
+        throw std::runtime_error("Initial ops-shmem baseline supports H3584/H7168, TopK8, E384");
+    uint64_t ub = 0;
+    platform_ascendc::PlatformAscendCManager::GetInstance()->GetCoreMemSize(platform_ascendc::CoreMemType::UB, ub);
+    if (ub < 128 * 1024) throw std::runtime_error("Cannot query sufficient UB capacity");
+    peers.verify(llbench::hash(o.signature() + "/ops-shmem/" + DEEPEP_BENCH_SOURCE_ID + "/" + std::to_string(cores) +
+                               "/" + std::to_string(ub)));
+    std::filesystem::create_directories(o.output);
+    const auto directory = std::filesystem::path(o.output);
+    const auto rankPath = directory / ("rank-" + std::to_string(o.rank) + ".csv");
+    if (std::filesystem::exists(rankPath)) throw std::runtime_error("Result exists; choose a fresh run-id");
+    std::ofstream samples(rankPath), summary;
+    if (!samples) throw std::runtime_error("Cannot open samples");
+    samples << "tokens,iteration,combine_event_us,implementation,entry_sync\n";
+    if (o.rank == 0) {
+        summary.open(directory / "summary.csv");
+        if (!summary) throw std::runtime_error("Cannot open summary");
+        summary << "ep,tokens,hidden,topk,experts,dtype,route,seed,capacity,warmup,samples,active_aiv,implementation,"
                    "source_id,upstream_revision,entry_sync,rank_max_mean_us,rank_max_min_us,rank_max_max_us,p50_us,p99_"
                    "us\n";
-        }
-        {
-            deepep::Session session(o.rank, o.world, opsbench::workspaceBytes, "", o.timeout, false, false, true);
-            auto c = context_for(session);
-            Buffer context(sizeof(c));
-            context.upload(&c, sizeof(c));
-            std::unique_ptr<Gate> gate;
-            if (o.entrySync == "device") {
-                check(aclshmemx_barrier_on_stream(ACLSHMEM_TEAM_WORLD, stream), "prime entry barrier");
-                check(aclrtSynchronizeStream(stream), "entry barrier preparation");
-                gate = std::make_unique<Gate>();
-            }
-            if (!o.rank)
-                std::cout << "ops-shmem-base: upstream " << LL_OPS_REV
-                          << "; SHMEM QP Put + batch-boundary quiet; entry_sync=" << o.entrySync << std::endl;
-            for (auto bs : o.tokens) {
-                DeviceCase item(o, bs, cores, ub, context.p);
-                auto launch = [&] { ops_shmem_combine_do(stream, &item.args); };
-                peers.barrier();
-                launch();
-                check(aclrtSynchronizeStream(stream), "correctness Combine");
-                double error = item.precision(o.dtype == "bf16");
-                peers.barrier();
-                Event start, end;
-                std::vector<float> times;
-                for (uint32_t i = 0; i < o.warmup + o.iterations; ++i) {
-                    if (gate)
-                        gate->enqueue(stream);
-                    else
-                        peers.barrier();
-                    if (i >= o.warmup) start.record(stream);
-                    launch();
-                    if (i >= o.warmup) end.record(stream);
-                    if (gate) {
-                        peers.barrier();
-                        gate->release();
-                    }
-                    check(aclrtSynchronizeStream(stream), "Combine completion");
-                    if (i >= o.warmup) {
-                        float ms = 0;
-                        check(aclrtEventElapsedTime(&ms, start.value, end.value), "elapsed Event");
-                        if (!std::isfinite(ms) || ms <= 0) throw std::runtime_error("Invalid Event duration");
-                        times.push_back(ms * 1000);
-                        samples << bs << ',' << i - o.warmup << ',' << times.back() << ",ops-shmem-base," << o.entrySync
-                                << '\n';
-                    }
-                }
-                item.precision(o.dtype == "bf16");
-                samples.flush();
-                auto gathered = peers.gather(times.data(), times.size() * sizeof(float));
-                if (!o.rank) {
-                    std::vector<float> rankMax(o.iterations, 0);
-                    for (uint32_t rank = 0; rank < o.world; ++rank)
-                        for (uint32_t i = 0; i < o.iterations; ++i) {
-                            float value;
-                            std::memcpy(&value, gathered.data() + (rank * o.iterations + i) * sizeof(float),
-                                        sizeof(float));
-                            rankMax[i] = std::max(rankMax[i], value);
-                        }
-                    auto s = llbench::stats(rankMax);
-                    summary << o.world << ',' << bs << ',' << o.hidden << ',' << o.topk << ',' << o.experts << ','
-                            << o.dtype << ',' << o.route << ',' << o.seed << ',' << o.capacity << ',' << o.warmup << ','
-                            << o.iterations << ',' << cores << ",ops-shmem-base," << DEEPEP_BENCH_SOURCE_ID << ','
-                            << LL_OPS_REV << ',' << o.entrySync << ',' << s.mean << ',' << s.min << ',' << s.max << ','
-                            << s.p50 << ',' << s.p99 << '\n';
-                    summary.flush();
-                    std::cout << "BS=" << bs << " rank-MAX Event us: mean=" << s.mean << " range=[" << s.min << ','
-                              << s.max << "] p99=" << s.p99 << " rank0_max_abs_error=" << error << std::endl;
-                }
-                peers.barrier();
-            }
-            peers.barrier();
-            session.close(true);
-            peers.barrier();
-        }
-        check(aclrtDestroyStream(stream), "destroy stream");
-        check(aclrtResetDevice(o.device), "reset device context");
-        check(aclFinalize(), "aclFinalize");
+    }
+    auto c = context_for(session);
+    Buffer context(sizeof(c));
+    context.upload(&c, sizeof(c));
+    std::unique_ptr<Gate> gate;
+    if (o.entrySync == "device") {
+        check(aclshmemx_barrier_on_stream(ACLSHMEM_TEAM_WORLD, stream), "prime entry barrier");
+        check(aclrtSynchronizeStream(stream), "entry barrier preparation");
+        gate = std::make_unique<Gate>();
+    }
+    if (!o.rank)
+        std::cout << "ops-shmem-base: upstream " << LL_OPS_REV
+                  << "; SHMEM QP Put + batch-boundary quiet; entry_sync=" << o.entrySync << std::endl;
+    for (auto bs : o.tokens) {
+        DeviceCase item(o, bs, cores, ub, context.p);
+        auto launch = [&] { ops_shmem_combine_do(stream, &item.args); };
         peers.barrier();
-        std::ofstream(directory / ("rank-" + std::to_string(o.rank) + ".PASS"))
-            << "precision, sampling and SHMEM finalize passed\n";
-        llbench::mpi_check(MPI_Finalize(), "MPI_Finalize");
-        return 0;
-    } catch (const std::exception& e) {
-        std::cerr << "FAIL: " << e.what() << std::endl;
-        MPI_Abort(MPI_COMM_WORLD, 1);
-        return 1;
+        launch();
+        check(aclrtSynchronizeStream(stream), "correctness Combine");
+        double error = item.precision(o.dtype == "bf16");
+        peers.barrier();
+        Event start, end;
+        std::vector<float> times;
+        for (uint32_t i = 0; i < o.warmup + o.iterations; ++i) {
+            if (gate)
+                gate->enqueue(stream);
+            else
+                peers.barrier();
+            if (i >= o.warmup) start.record(stream);
+            launch();
+            if (i >= o.warmup) end.record(stream);
+            if (gate) {
+                peers.barrier();
+                gate->release();
+            }
+            check(aclrtSynchronizeStream(stream), "Combine completion");
+            if (i >= o.warmup) {
+                float ms = 0;
+                check(aclrtEventElapsedTime(&ms, start.value, end.value), "elapsed Event");
+                if (!std::isfinite(ms) || ms <= 0) throw std::runtime_error("Invalid Event duration");
+                times.push_back(ms * 1000);
+                samples << bs << ',' << i - o.warmup << ',' << times.back() << ",ops-shmem-base," << o.entrySync
+                        << '\n';
+            }
+        }
+        item.precision(o.dtype == "bf16");
+        samples.flush();
+        auto gathered = peers.gather(times.data(), times.size() * sizeof(float));
+        if (!o.rank) {
+            std::vector<float> rankMax(o.iterations, 0);
+            for (uint32_t rank = 0; rank < o.world; ++rank)
+                for (uint32_t i = 0; i < o.iterations; ++i) {
+                    float value;
+                    std::memcpy(&value, gathered.data() + (rank * o.iterations + i) * sizeof(float), sizeof(float));
+                    rankMax[i] = std::max(rankMax[i], value);
+                }
+            auto s = llbench::stats(rankMax);
+            summary << o.world << ',' << bs << ',' << o.hidden << ',' << o.topk << ',' << o.experts << ',' << o.dtype
+                    << ',' << o.route << ',' << o.seed << ',' << o.capacity << ',' << o.warmup << ',' << o.iterations
+                    << ',' << cores << ",ops-shmem-base," << DEEPEP_BENCH_SOURCE_ID << ',' << LL_OPS_REV << ','
+                    << o.entrySync << ',' << s.mean << ',' << s.min << ',' << s.max << ',' << s.p50 << ',' << s.p99
+                    << '\n';
+            summary.flush();
+            std::cout << "BS=" << bs << " rank-MAX Event us: mean=" << s.mean << " range=[" << s.min << ',' << s.max
+                      << "] p99=" << s.p99 << " rank0_max_abs_error=" << error << std::endl;
+        }
+        peers.barrier();
     }
 }
