@@ -20,7 +20,8 @@ def function_body(source, marker):
     return source[start:cursor]
 
 
-def test_production_plan_matches_original_scan(tmp_path):
+@pytest.mark.parametrize("receive_cores", [0, 8, 16, 24])
+def test_production_plan_matches_original_scan(tmp_path, receive_cores):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
     if not zig:
         pytest.skip("Set DEEPEP_TEST_ZIG for the C++ CPU check")
@@ -56,7 +57,7 @@ template<uint32_t Group>struct Original {
 ''' + original + r'''
 };
 template<uint32_t Group>void Check(uint32_t world,uint32_t rank,uint32_t c,uint32_t n,uint32_t h,uint32_t k,uint32_t pattern){
- cores=c;const uint32_t recv=c/2;
+ cores=c;const uint32_t recv=EpCombineRecvCoreCount(c);if(!recv)return;
  std::mt19937 rng(n*137+world+pattern);
  std::vector<int32_t> types(n),routes(n*3),hits(n,0);
  for(uint32_t i=0;i<n;++i){
@@ -68,7 +69,7 @@ template<uint32_t Group>void Check(uint32_t world,uint32_t rank,uint32_t c,uint3
  assert(layout.inputLanes && layout.outputLanes);
  const uint32_t bytes=layout.phaseOffset,ownedBytes=EpCombineM4TaskBytes(n,recv);
  for(uint32_t worker=0;worker<recv;++worker){
-  core=recv+worker;
+  core=c-recv+worker;
   std::vector<uint64_t> arena((bytes+ownedBytes+64)/8,0x5b5b5b5b5b5b5b5bULL);
   auto raw=reinterpret_cast<uint8_t*>(arena.data());
   LocalTensor<int32_t> owned{reinterpret_cast<int32_t*>(raw+bytes)};
@@ -123,6 +124,9 @@ int main(){
  for(uint32_t c:{16,32,56,64,72})for(uint32_t n:{0,1,7,63,64,65,255,256,257,576,577,1024,10000})
   for(uint32_t pattern=0;pattern<4;++pattern){
    Check<4>(16,pattern*4,c,n,3584,8,pattern);
+   Check<2>(2,pattern%2,c,n,3584,8,pattern);
+   Check<4>(4,pattern,c,n,3584,8,pattern);
+   Check<4>(8,pattern,c,n,3584,8,pattern);
    Check<16>(128,pattern*31,c,n,7168,16,pattern);
   }
  for(uint32_t world:{32,64,256})for(uint32_t n:{0,1,65,576})
@@ -135,7 +139,7 @@ int main(){
     cpp = tmp_path / "partial-plan.cpp"
     cpp.write_text(source, encoding="utf-8")
     exe = tmp_path / "partial-plan.exe"
-    subprocess.run([zig, "c++", "-std=c++17", "-O1", "-UNDEBUG", "-I" + str(tmp_path),
+    subprocess.run([zig, "c++", "-std=c++17", "-O1", "-UNDEBUG", f"-DDEEPEP_LL_COMBINE_RECV_CORES={receive_cores}", "-I" + str(tmp_path),
                     "-I" + str(ROOT / "csrc"), str(cpp), "-o", str(exe)], check=True, timeout=180)
     result = subprocess.run([str(exe)], check=True, capture_output=True, text=True, timeout=90)
     assert "PASS production partial plan" in result.stdout

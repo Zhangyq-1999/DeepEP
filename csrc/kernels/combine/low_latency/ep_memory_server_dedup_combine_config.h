@@ -41,6 +41,31 @@ COMBINE_DEDUP_EP_COMBINE_CONSTEXPR uint32_t EpCombineAlign(uint32_t n, uint32_t 
 {
     return (n + a - 1U) / a * a;
 }
+// 0 keeps the original half/half split. The count is fixed across ranks,
+// including launches with different local BS, so ready-row coverage agrees.
+// The last eight cores still publish group readiness. Positive values select
+// an explicit receive count; zero return means unsupported at this launch size.
+#ifndef DEEPEP_LL_COMBINE_RECV_CORES
+#define DEEPEP_LL_COMBINE_RECV_CORES 0
+#endif
+COMBINE_DEDUP_EP_COMBINE_CONSTEXPR uint32_t EpCombineRecvCoreCount(uint32_t cores)
+{
+    const uint32_t half = cores / 2U;
+#if DEEPEP_LL_COMBINE_RECV_CORES > 0
+    return DEEPEP_LL_COMBINE_RECV_CORES >= DispatchDedup::kLlNotifyCoreNum &&
+           DEEPEP_LL_COMBINE_RECV_CORES <= half ? DEEPEP_LL_COMBINE_RECV_CORES : 0U;
+#else
+    return half;
+#endif
+}
+COMBINE_DEDUP_EP_COMBINE_CONSTEXPR bool EpCombineEarlyReduce(uint32_t bs)
+{
+#ifdef DEEPEP_LL_COMBINE_EARLY_REDUCE
+    return bs <= 72U;
+#else
+    return false;
+#endif
+}
 COMBINE_DEDUP_EP_COMBINE_CONSTEXPR uint32_t EpCombineRowUbBytes(uint32_t tokens)
 {
     return 3U * EpCombineAlign(tokens == 0U ? 4U : tokens * 4U, 256U) + EpCombineAlign((tokens + 7U) / 8U + 32U, 256U);
@@ -122,7 +147,9 @@ COMBINE_DEDUP_EP_COMBINE_CONSTEXPR EpCombineM45WorkspaceLayout EpCombineM45Layou
                            EpCombineM5FlagBytes(h, k) + EpCombineM5WorkBytes(h, k) + 32U;
     const uint64_t phase = partial > final ? partial : final;
     const uint32_t compute = EpCombineAlign(h * 4U, 256U);
-    const uint64_t fixed = kEpServerDedupCombineResidentUbBytes + 3U * compute + phase;
+    // Early reduction retains two independent token sums, plus cast/product.
+    const uint32_t computeBuffers = EpCombineEarlyReduce(bs) && owned > 1U ? 4U : 3U;
+    const uint64_t fixed = kEpServerDedupCombineResidentUbBytes + computeBuffers * compute + phase;
     const uint32_t input = ((h * 2U + 479U) / 480U) * 480U;
     const uint32_t output = ((h * 2U + 479U) / 480U) * 512U;
     if (fixed + input + output > kEpServerDedupCombineRecvUbBytes) return result;
@@ -134,7 +161,7 @@ COMBINE_DEDUP_EP_COMBINE_CONSTEXPR EpCombineM45WorkspaceLayout EpCombineM45Layou
                                   ? kEpServerDedupCombineM5MaxOutputLanes
                                   : result.outputLanes;
     result.computeBytes = compute;
-    result.phaseOffset = 3U * compute;
+    result.phaseOffset = computeBuffers * compute;
     result.phaseBytes = uint32_t(phase);
     result.inputOffset = result.phaseOffset + result.phaseBytes;
     result.finalInputOffset = result.phaseOffset + uint32_t(final);

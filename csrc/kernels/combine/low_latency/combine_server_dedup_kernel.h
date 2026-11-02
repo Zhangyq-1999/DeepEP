@@ -32,7 +32,9 @@ public:
 
         core_ = GetBlockIdx();
         coreNum_ = GetBlockNum();
-        sendCores_ = recvCores_ = coreNum_ / 2U;
+        recvCores_ = EpCombineRecvCoreCount(coreNum_);
+        if (recvCores_ == 0U) { Trap(); return; }
+        sendCores_ = coreNum_ - recvCores_;
         notifyBegin_ = coreNum_ - DispatchDedup::kLlNotifyCoreNum;
         args_ = reinterpret_cast<const __gm__ DispatchDedup::CommArgs*>(commArgs);
         enableDedup_ = enableDedup;

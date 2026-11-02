@@ -5,7 +5,6 @@
 #define COMBINE_DEDUP_EP_SERVER_DEDUP_SOURCE_AGGREGATE_H
 
 #include "kernel_operator.h"
-#include "../../dispatch/low_latency/device/ll_transport.h"
 #include "ep_memory_server_dedup_combine_config.h"
 #include "../../dispatch/low_latency/common/dispatch_dedup_types.h"
 
@@ -65,6 +64,9 @@ public:
     {
         if (count_ == 0U) return 0U;
         for (uint32_t lane = 0; lane < inputLanes_; ++lane) SetFlag<HardEvent::V_MTE2>(lane);
+#ifdef DEEPEP_LL_COMBINE_EARLY_REDUCE
+        if (earlyReduce_) return ProcessEarly();
+#endif
         uint32_t remaining = count_, scan = 0U, completed = 0U;
         while (remaining != 0U) {
             const uint32_t task = pending_.GetValue(scan);
@@ -103,6 +105,10 @@ private:
         h_ = h;
         k_ = k;
         dtype_ = dtype;
+#ifdef DEEPEP_LL_COMBINE_EARLY_REDUCE
+        earlyReduce_ = EpCombineEarlyReduce(bs);
+        computeElements_ = computeBytes / sizeof(float);
+#endif
         const uint32_t base = bs / participants, extra = bs % participants;
         count_ = base + (participant < extra ? 1U : 0U);
         begin_ = participant * base + (participant < extra ? participant : extra);
@@ -209,6 +215,87 @@ private:
                  {uint16_t(blocks_), 15U, 1U, 0U});
         SetFlag<HardEvent::MTE2_V>(lane);
     }
+#ifdef DEEPEP_LL_COMBINE_EARLY_REDUCE
+    struct TokenProgress {
+        uint32_t token = 0U, nextK = 0U, members = 0U;
+    };
+    __aicore__ inline bool ProbeContribution(uint32_t token, uint32_t k)
+    {
+        // A contribution is usable only after every 512B block is present,
+        // including the final block of a cross-host return packet.
+        auto src = resultFlags_[(uint64_t(token) * k_ + k) * packetBytes_ / 4U + 120U];
+        DataCopy(flags_, src, {uint16_t(blocks_), 1U, 15U, 0U});
+        Sync<HardEvent::MTE2_V>();
+        ReduceSum(probeSum_, flags_, work_, 1U, blocks_, 1U);
+        Sync<HardEvent::V_S>();
+        return probeSum_.GetValue(0U) == float(blocks_);
+    }
+    template<class T>
+    __aicore__ inline bool AdvanceToken(TokenProgress& state, uint32_t accumulator, uint32_t completed)
+    {
+        const uint32_t mask = enableDedup_ ? masks_.GetValue(state.token - begin_) : 0U;
+        auto sum = sum_[accumulator * computeElements_];
+        for (; state.nextK < k_; ++state.nextK) {
+            const uint32_t k = state.nextK;
+            if (enableDedup_ && ((mask >> k) & 1U) == 0U) continue;
+            if (!ProbeContribution(state.token, k)) return false;
+            // Keep the original ascending-slot FP32 accumulation order. Load
+            // retains M4 output retirement and input-lane ownership checks.
+            Load(state.token, k, 0U);
+            const uint32_t lane = inputSequence_ % inputLanes_;
+            WaitFlag<HardEvent::MTE2_V>(lane);
+            Cast(cast_, inputs_[finalLayout_.inputOffsets[lane] / 2U].template ReinterpretCast<T>(),
+                 RoundMode::CAST_NONE, h_);
+            SetFlag<HardEvent::V_MTE2>(lane);
+            PipeBarrier<PIPE_V>();
+            const float weight = weights_.GetValue((state.token - begin_) * k_ + k);
+            if (state.members == 0U) {
+                Muls(sum, cast_, weight, h_);
+            } else {
+                Muls(product_, cast_, weight, h_);
+                PipeBarrier<PIPE_V>();
+                Add(sum, sum, product_, h_);
+            }
+            PipeBarrier<PIPE_V>();
+            ++state.members;
+            ++inputSequence_;
+        }
+        const uint32_t outputLane = finalLayout_.outputSlots[completed % outputLanes_];
+        WaitFlag<HardEvent::MTE3_V>(outputLane);
+        auto output = outputs_[outputLane * outputBytes_ / 2U];
+        Cast(output.template ReinterpretCast<T>(), sum, RoundMode::CAST_RINT, h_);
+        SetFlag<HardEvent::V_MTE3>(outputLane);
+        WaitFlag<HardEvent::V_MTE3>(outputLane);
+        DataCopyPad(output_[uint64_t(state.token) * h_], output, {1U, h_ * 2U, 0U, 0U, 0U});
+        SetFlag<HardEvent::MTE3_V>(outputLane);
+        return true;
+    }
+    __aicore__ inline uint32_t ProcessEarly()
+    {
+        const uint32_t active = count_ < 2U ? count_ : 2U;
+        TokenProgress state[2];
+        for (uint32_t i = 0U; i < active; ++i) state[i].token = begin_ + i;
+        uint32_t next = active, completed = 0U;
+        while (completed < count_) {
+            for (uint32_t i = 0U; i < active; ++i) {
+                if (state[i].token >= begin_ + count_) continue;
+                const bool done = dtype_ == DispatchDedup::DISPATCH_DEDUP_DATA_TYPE_FP16
+                    ? AdvanceToken<half>(state[i], i, completed)
+                    : AdvanceToken<bfloat16_t>(state[i], i, completed);
+                if (done) {
+                    ++completed;
+                    state[i].token = begin_ + next++;
+                    state[i].nextK = state[i].members = 0U;
+                }
+            }
+        }
+        // Both token states have consumed all their contributions. Clear the
+        // same full token ranges as the baseline; no probe reuses flags_ now.
+        ClearFlags();
+        for (uint32_t lane = 0; lane < inputLanes_; ++lane) WaitFlag<HardEvent::V_MTE2>(lane);
+        return retiredOutputs_;
+    }
+#endif
     template <class T>
     __aicore__ inline void Aggregate(uint32_t token, uint32_t mask, uint32_t completed)
     {
@@ -261,6 +348,10 @@ private:
     EpCombineM5WorkspaceLayout finalLayout_{};
     uint32_t inputLanes_ = 0U, outputLanes_ = 0U, inputSequence_ = 0U;
     uint32_t sharedOutputLanes_ = 0U, retiredOutputs_ = 0U;
+#ifdef DEEPEP_LL_COMBINE_EARLY_REDUCE
+    bool earlyReduce_ = false;
+    uint32_t computeElements_ = 0U;
+#endif
 };
 }  // namespace CombineDedup
 #endif

@@ -32,7 +32,7 @@ int main() {
     static_assert(sizeof(EpServerDedupTilingData)==32);
     static_assert(sizeof(CombineDedup::EpServerDedupCombineTilingData)==16);
     for(unsigned p : {2U,4U,8U,16U,32U,64U,128U,256U}) {
-        unsigned group=p<=16?4:16;
+        unsigned group=p==2?2:(p<=16?4:16);
         assert(LlGroupForWorld(p)==group && LlTilingKeyForWorld(p)==group);
         assert(LlTilingKeyValid(p,group));
         assert(!LlTilingKeyValid(p,group==4?16:4) && !LlTilingKeyValid(p,0));
@@ -43,8 +43,13 @@ int main() {
         }
         EpMemoryServerDedupLayout d; CombineDedup::Layout c;
         if(p<16) {
-            assert(BuildDispatchServerDedupLayout(p,4,256,4,128,&d)!=0);
-            assert(!CombineDedup::BuildLayout(p,4,256,4,128,c));
+            assert(BuildDispatchServerDedupLayout(p,4,256,4,128,&d)==0);
+            assert(CombineDedup::BuildLayout(p,4,256,4,128,c));
+            for(unsigned b:{1U,8U,72U})for(unsigned h:{3584U,7168U}){
+                assert(BuildDispatchServerDedupLayout(p,b,h,8,384,&d)==0);
+                assert(DispatchDedupPacketUbFits(d,b,8,384,p));
+                assert(CombineDedup::BuildLayout(p,b,h,8,384,c));
+            }
         }
     }
     assert(LlSameHost(15,0) && !LlSameHost(15,16) && LlSameHost(16,31));

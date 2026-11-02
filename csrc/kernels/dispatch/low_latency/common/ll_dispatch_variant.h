@@ -13,10 +13,11 @@ constexpr uint8_t kLlDispatchPlain16 = 0;
 constexpr uint8_t kLlDispatchQuantize16 = 1;
 constexpr uint8_t kLlDispatchPrequantized = 2;
 constexpr uint32_t kLlDispatchInvalidVariant = 0xffffffffU;
-constexpr uint32_t kLlDispatchVariantCount = 14U;
+constexpr uint32_t kLlDispatchVariantCount = 16U;
 
 // mode: prequant E4M3, FP16 plain/E4M3/E5M2, BF16 plain/E4M3/E5M2.
-// variant = mode * 2 + (group == 16); no unsupported format falls through.
+// Existing variants 0..13 retain their mapping. EP2 Plain16 appends FP16/BF16
+// as 14/15 for the standalone single-host smoke test.
 #if defined(__CCE__) && defined(__CCE_IS_AICORE__)
 __aicore__ inline
 #else
@@ -26,6 +27,11 @@ constexpr uint32_t LlDispatchVariantForTiling(uint8_t dtype, uint8_t quantMode,
                                              uint8_t expandXOutDtype, uint8_t inputMode,
                                              uint8_t group)
 {
+    if (group == 2U) {
+        if (quantMode != 0U || inputMode != kLlDispatchPlain16 ||
+            (expandXOutDtype != dtype && expandXOutDtype != 255U)) return kLlDispatchInvalidVariant;
+        return dtype == kLlDispatchFp16 ? 14U : (dtype == kLlDispatchBf16 ? 15U : kLlDispatchInvalidVariant);
+    }
     if (group != 4U && group != 16U) return kLlDispatchInvalidVariant;
     uint32_t mode = kLlDispatchInvalidVariant;
     if (dtype == kLlDispatchE4M3 && quantMode == 4U &&

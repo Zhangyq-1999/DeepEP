@@ -194,6 +194,7 @@ def test_installed_check_rejects_stale_or_mixed_builds(tmp_path, monkeypatch, mo
     monkeypatch.setattr(launch, "ROOT", root)
     monkeypatch.setitem(sys.modules, "build_support", SimpleNamespace(
         validate_shmem_sdk=lambda *args: sdk, source_fingerprint=lambda: "source", metadata_cores=lambda: 4,
+        combine_recv_cores=lambda: 0,
         enabled=lambda name, env: env.get(name, 'OFF') == 'ON'))
     monkeypatch.setitem(sys.modules, "deep_ep._native", SimpleNamespace(require_native=lambda _: native))
     monkeypatch.setattr(launch.runpy, "run_path", lambda _: {"_import_installed_deep_ep":

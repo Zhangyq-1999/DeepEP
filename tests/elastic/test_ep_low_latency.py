@@ -231,6 +231,10 @@ def make_parser():
     parser.add_argument("--dispatch-only", action="store_true")
     parser.add_argument("--combine-variant", choices=("baseline", "optimized"),
                         help="Require the corresponding compiled Combine variant; does not change the installed kernel")
+    parser.add_argument("--combine-recv-cores", type=int,
+                        help="Check compiled Combine receive-core setting (0=half); rebuild to change it")
+    parser.add_argument("--combine-early-reduce", type=int, choices=(0, 1),
+                        help="Check compiled early-reduction switch; rebuild to change it")
     parser.add_argument("--repeat-combine", type=int, default=2)
     parser.add_argument("--correctness-repeats", type=int, default=3, help="Fresh routes on the same Buffer; outside profiling")
     parser.add_argument("--use-1g-huge-pages", type=int, choices=(0, 1), default=0, help="LL defaults to 0; explicit 1 is MTE-only")
@@ -356,7 +360,10 @@ def write_reports(directory, report):
             perf = result[operation]
             identity=result.get('comparison') or {}
             base = {"case_id": result["case_id"], **result["config"], "route": result["route"], "operation": operation,
-                    "combine_variant": "optimized" if identity.get("combine_small_batch") else "baseline",
+                    "combine_variant": "optimized" if (identity.get("combine_small_batch") or
+                        identity.get("combine_recv_cores", 0) or identity.get("combine_early_reduce")) else "baseline",
+                    "combine_recv_cores": identity.get("combine_recv_cores", 0),
+                    "combine_early_reduce": identity.get("combine_early_reduce", False),
                     **{key:identity.get(key) for key in ('implementation','transport','logical_group','active_aiv','core_protocol','source_revision')}}
             summaries.append(
                 {
@@ -1256,6 +1263,8 @@ def worker(local_rank, args):
                       "logical_group": compiled_group(native,world),
                       "implementation": implementation,
                       "combine_small_batch": bool(getattr(native, "low_latency_combine_small_batch", False)),
+                      "combine_recv_cores": int(getattr(native, "low_latency_combine_recv_cores", 0)),
+                      "combine_early_reduce": bool(getattr(native, "low_latency_combine_early_reduce", False)),
                       "combine_host_protocol": getattr(deep_ep.ElasticBuffer, "ll_combine_host_protocol", 0),
                       "core_protocol": native.low_latency_core_protocol,
                       "stage_timer": bool(getattr(native, "low_latency_stage_timer_enabled", False)),
@@ -1272,8 +1281,14 @@ def worker(local_rank, args):
         trace_call(args, "capability.all_gather", dist.all_gather_object, capabilities, capability)
         if any(item != capabilities[0] for item in capabilities):
             raise RuntimeError("LL AIV/group/protocol/timer build differs across ranks")
-        if args.combine_variant is not None and capability["combine_small_batch"] != (args.combine_variant == "optimized"):
+        combine_optimized = bool(capability["combine_small_batch"] or capability["combine_recv_cores"] or
+                                 capability["combine_early_reduce"])
+        if args.combine_variant is not None and combine_optimized != (args.combine_variant == "optimized"):
             raise RuntimeError("Installed Combine variant differs from --combine-variant; rebuild and install the selected wheel")
+        if args.combine_recv_cores is not None and capability["combine_recv_cores"] != args.combine_recv_cores:
+            raise RuntimeError("Installed Combine receive-core setting differs from --combine-recv-cores")
+        if args.combine_early_reduce is not None and capability["combine_early_reduce"] != bool(args.combine_early_reduce):
+            raise RuntimeError("Installed Combine early-reduction setting differs from --combine-early-reduce")
         if capability['implementation'] not in ('ndr-hns1825','configurable-groups'):
             raise RuntimeError('Rebuild the wheel with the shared experiment implementation identity')
         requested_impl=os.environ.get('DEEPEP_LL_EXPECT_IMPLEMENTATION')

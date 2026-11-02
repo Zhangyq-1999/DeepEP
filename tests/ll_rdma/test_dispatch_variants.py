@@ -30,6 +30,10 @@ constexpr uint8_t formats[7][4] = {
     {11,0,11,0}, {11,4,15,1}, {11,4,16,1}
 };
 uint32_t expected(const uint8_t* fields, uint8_t group) {
+    if (group==2) {
+        if(fields[1]!=0 || fields[3]!=0 || (fields[2]!=fields[0] && fields[2]!=255))return 0xffffffffU;
+        return fields[0]==3?14:(fields[0]==11?15:0xffffffffU);
+    }
     if (group != 4 && group != 16) return 0xffffffffU;
     for (unsigned mode=0; mode<7; ++mode) {
         bool matches = true;
@@ -48,7 +52,7 @@ void check(const uint8_t* fields, uint8_t group) {
 }
 int main() {
     static_assert(sizeof(deepep::EpServerDedupKernelArgs)==152);
-    static_assert(kLlDispatchVariantCount==14);
+    static_assert(kLlDispatchVariantCount==16);
     static_assert(kLlDispatchFp16==DISPATCH_DEDUP_DATA_TYPE_FP16);
     static_assert(kLlDispatchBf16==DISPATCH_DEDUP_DATA_TYPE_BFP16);
     static_assert(kLlDispatchE4M3==DISPATCH_DEDUP_DATA_TYPE_FP8E4M3);
@@ -77,7 +81,7 @@ int main() {
     for (uint8_t dtype:dtypes) for (uint8_t output:dtypes)
         for (uint8_t quant:quants) for (uint8_t input:modes) {
             uint8_t fields[]={dtype,quant,output,input};
-            check(fields,4); check(fields,16); check(fields,8);
+            check(fields,2); check(fields,4); check(fields,16); check(fields,8);
         }
 }
 ''', encoding="utf-8")
@@ -137,6 +141,8 @@ STUB(bf16_e4m3_g4, 5, 4)
 STUB(bf16_e4m3_g16, 5, 16)
 STUB(bf16_e5m2_g4, 6, 4)
 STUB(bf16_e5m2_g16, 6, 16)
+STUB(fp16_g2, 1, 2)
+STUB(bf16_g2, 4, 2)
 #undef STUB
 void rejects(const deepep::EpServerDedupKernelArgs* args, uint32_t variant) {
     calls = 0;
@@ -169,7 +175,13 @@ int main() {
         assert(calls == 1 && calledMode == variant / 2 && calledGroup == (variant % 2 ? 16U : 4U));
         rejects(nullptr, variant);
     }
-    for (uint32_t variant : {14U, 15U, 255U, 0xffffffffU}) {
+    for (uint32_t variant : {14U, 15U}) {
+        calls=0;
+        dispatch_server_dedup_kernel_do_v2(expectedStream,&args,variant);
+        assert(calls==1 && calledGroup==2 && calledMode==(variant==14?1:4));
+    }
+    assert(deepep_ll_ranks_per_group(2)==2);
+    for (uint32_t variant : {16U, 17U, 255U, 0xffffffffU}) {
         rejects(&args, variant);
         rejects(nullptr, variant);
     }

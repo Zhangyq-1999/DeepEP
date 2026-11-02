@@ -24,6 +24,16 @@ extern "C" DEEPEP_EXPORT uint32_t deepep_ll_combine_small_batch_enabled()
 #endif
 }
 
+extern "C" DEEPEP_EXPORT int32_t deepep_ll_combine_recv_cores()
+{
+    return DEEPEP_LL_COMBINE_RECV_CORES;
+}
+
+extern "C" DEEPEP_EXPORT uint32_t deepep_ll_combine_early_reduce_enabled()
+{
+    return CombineDedup::EpCombineEarlyReduce(1U) ? 1U : 0U;
+}
+
 // 中文审计：ElasticBuffer._combine_low_latency → csrc/ops/low_latency.cpp
 // → combine_server_dedup_kernel_do → 本入口。输入依赖匹配dispatch handle的路由/计数/权重。
 // profiler中的combine_server_dedup_kernel包含下层准备、控制通知、回传与最终归约。
@@ -51,7 +61,8 @@ extern "C" [[bisheng::core_ratio(0, 1)]] __global__ __aicore__ void combine_serv
     kernel.Init(commArgs, expertOut, destinationIndex, sendCounts, expertScales, tokenType, relayReadIndex, sourceMask, \
                 yOut, td->bs, td->h, td->topK, td->moeExpertNum, td->dtype, 0, magic, enableDedup); \
     kernel.Process()
-    if (td->tilingKey == uint8_t(DispatchDedup::LlTilingKey::Group4)) { COMBINE_RUN(4U); }
+    if (td->tilingKey == uint8_t(DispatchDedup::LlTilingKey::Group2)) { COMBINE_RUN(2U); }
+    else if (td->tilingKey == uint8_t(DispatchDedup::LlTilingKey::Group4)) { COMBINE_RUN(4U); }
     else { COMBINE_RUN(16U); }
 #undef COMBINE_RUN
 

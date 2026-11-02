@@ -42,8 +42,11 @@ constexpr bool kWireFp8 = true, kE4M3 = false, kPrequantized = false;
 #else
 #error Invalid LL dispatch variant
 #endif
-static_assert(DEEPEP_LL_VARIANT_GROUP == 4 || DEEPEP_LL_VARIANT_GROUP == 16, "Invalid LL group");
-constexpr uint32_t kDispatchVariant = DEEPEP_LL_VARIANT_MODE * 2U + (DEEPEP_LL_VARIANT_GROUP == 16 ? 1U : 0U);
+static_assert(DEEPEP_LL_VARIANT_GROUP == 2 || DEEPEP_LL_VARIANT_GROUP == 4 || DEEPEP_LL_VARIANT_GROUP == 16, "Invalid LL group");
+static_assert(DEEPEP_LL_VARIANT_GROUP != 2 || DEEPEP_LL_VARIANT_MODE == 1 || DEEPEP_LL_VARIANT_MODE == 4, "EP2 supports Plain16");
+constexpr uint32_t kDispatchVariant = DEEPEP_LL_VARIANT_GROUP == 2
+    ? (DEEPEP_LL_VARIANT_MODE == 1 ? 14U : 15U)
+    : DEEPEP_LL_VARIANT_MODE * 2U + (DEEPEP_LL_VARIANT_GROUP == 16 ? 1U : 0U);
 }
 
 extern "C" [[bisheng::core_ratio(0, 1)]] __global__ __aicore__ void DEEPEP_LL_VARIANT_KERNEL(

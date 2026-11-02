@@ -13,8 +13,9 @@ static void rememberSource(void*,const void* source,uint32_t bytes) {
     countSources.push_back({source,std::vector<uint8_t>(p,p+bytes)});
 }
 int main(){
-    constexpr uint32_t P=16,C=72,K=4;
+    constexpr uint32_t C=72,K=4;
     unsigned cases=0;
+    for(uint32_t P:{2U,4U,8U,16U}) {
     std::vector<std::vector<uint8_t>> memories(P,std::vector<uint8_t>(2U<<20));
     for(uint32_t E:{16U,32U,1024U,16U,384U,32U})for(uint32_t B:{1U,8U,32U}){
         const uint32_t L=E/P,R=PayloadCores(C);
@@ -70,6 +71,7 @@ int main(){
             }
             ++cases;
         }
+    }
     }
     std::cout<<"PASS metadata count exchange, prefix, balanced tasks "<<cases<<" cases\n";
 }

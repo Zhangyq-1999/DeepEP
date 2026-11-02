@@ -183,9 +183,14 @@ def installed_identity(a):
         raise RuntimeError("Installed wheel and current SHMEM SDK identity differ; rebuild the wheel")
     histogram = os.environ.get("DEEPEP_LL_COUNT_HISTOGRAM", "OFF") == "ON"
     combine_small_batch = build_support.enabled("DEEPEP_LL_COMBINE_SMALL_BATCH", os.environ)
+    combine_recv_cores = build_support.combine_recv_cores()
+    combine_early_reduce = build_support.enabled("DEEPEP_LL_COMBINE_EARLY_REDUCE", os.environ)
     if (bool(getattr(native, "low_latency_combine_small_batch", False)) != combine_small_batch
             or info.get("ll_combine_small_batch", False) != combine_small_batch):
         raise RuntimeError("Installed Combine variant differs from DEEPEP_LL_COMBINE_SMALL_BATCH; rebuild the wheel")
+    for name, expected in (("combine_recv_cores", combine_recv_cores), ("combine_early_reduce", combine_early_reduce)):
+        if getattr(native, "low_latency_" + name, 0) != expected or info.get("ll_" + name, 0) != expected:
+            raise RuntimeError(f"Installed {name} differs from the requested build; rebuild the wheel")
     metadata = build_support.metadata_cores()
     expected_protocol = 41000 + 2 * metadata + int(histogram)
     if (getattr(native, "low_latency_dispatch_metadata_cores", None) != metadata
@@ -229,6 +234,7 @@ def installed_identity(a):
             "source_sha256": fingerprint, "sdk_revision": lock["revision"], "sdk_build": sdk["build"],
             "core_protocol": expected_protocol, "count_histogram": histogram, "metadata_cores": metadata,
             "combine_small_batch": combine_small_batch,
+            "combine_recv_cores": combine_recv_cores, "combine_early_reduce": combine_early_reduce,
             "roce_qps_per_peer": native.low_latency_core_config()["active_aiv"], "timer_schema": 3, "reference_profile": reference,
             "reference_profile_schema": 5 if reference else None, "mode": a.mode, "arguments": shared_args}
 

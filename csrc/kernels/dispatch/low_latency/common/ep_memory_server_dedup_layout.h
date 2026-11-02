@@ -82,7 +82,9 @@ inline int BuildDispatchServerDedupLayout(int64_t rankSize, int64_t bs, int64_t 
     *out = EpMemoryServerDedupLayout{};
     if ((mode != EpServerDedupInputMode::Plain16 && mode != EpServerDedupInputMode::Quantize16 &&
          mode != EpServerDedupInputMode::PrequantizedFp8Packs) ||
-        rankSize < 16 || rankSize > DispatchDedup::DISPATCH_DEDUP_MAX_RANK_SIZE ||
+        rankSize < 2 || (rankSize < 16 && rankSize != 2 && rankSize != 4 && rankSize != 8) ||
+        (rankSize == 2 && mode != EpServerDedupInputMode::Plain16) ||
+        rankSize > DispatchDedup::DISPATCH_DEDUP_MAX_RANK_SIZE ||
         rankSize % LlGroupForWorld(uint32_t(rankSize)) != 0 || bs <= 0 || h <= 0 || h > UINT32_MAX || topK <= 0 ||
         topK > kEpServerDedupMaxTopK || moeExpertNum <= 0 || moeExpertNum > kEpServerDedupMaxExperts ||
         topK > moeExpertNum || moeExpertNum % rankSize != 0 || bs > UINT32_MAX / topK) {

@@ -14,7 +14,7 @@ def test_real_metadata_counts(tmp_path,metadata):
         '-I'+str(ROOT/'tests/ll_rdma/metadata_stubs'),'-I'+str(ROOT/'csrc'),
         str(Path(__file__).with_name('metadata_counts_test.cpp')),'-o',str(exe)],check=True,timeout=180)
     result=subprocess.run([str(exe)],check=True,capture_output=True,text=True,timeout=60)
-    assert 'PASS metadata count exchange, prefix, balanced tasks 54 cases' in result.stdout
+    assert 'PASS metadata count exchange, prefix, balanced tasks 216 cases' in result.stdout
 
 @pytest.mark.parametrize('profile',[False,True])
 @pytest.mark.parametrize('aiv',[16,72])

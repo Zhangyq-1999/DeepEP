@@ -50,6 +50,15 @@ def metadata_cores(environment=None):
     return int(raw)
 
 
+def combine_recv_cores(environment=None):
+    env = os.environ if environment is None else environment
+    raw = env.get("DEEPEP_LL_COMBINE_RECV_CORES", "0")
+    allowed = {"0", *(str(n) for n in range(8, 37))}
+    if raw not in allowed:
+        raise ValueError("DEEPEP_LL_COMBINE_RECV_CORES must be 0 (half), or 8..36")
+    return int(raw)
+
+
 def ndr_rdma_enabled(environment=None):
     """NDR has one binary capability; MTE is a runtime selection."""
     env = os.environ if environment is None else environment
@@ -269,6 +278,8 @@ def build_configuration(environment=None):
     result["ll_stage_timer"] = enabled("DEEPEP_LL_STAGE_TIMER", env)
     result["ll_reference_profile"] = enabled("DEEPEP_LL_REFERENCE_PROFILE", env)
     result["ll_combine_small_batch"] = enabled("DEEPEP_LL_COMBINE_SMALL_BATCH", env)
+    result["ll_combine_recv_cores"] = combine_recv_cores(env)
+    result["ll_combine_early_reduce"] = enabled("DEEPEP_LL_COMBINE_EARLY_REDUCE", env)
     result["ll_count_histogram"] = enabled("DEEPEP_LL_COUNT_HISTOGRAM", env)
     result["ll_metadata_cores"] = metadata_cores(env)
     if result["ll_stage_timer"] and result["ll_reference_profile"]:
@@ -482,6 +493,8 @@ class CMakeBuild(build_ext):
             f"-DDEEPEP_LL_STAGE_TIMER={'ON' if configuration.get('ll_stage_timer', False) else 'OFF'}",
             f"-DDEEPEP_LL_REFERENCE_PROFILE={'ON' if configuration.get('ll_reference_profile', False) else 'OFF'}",
             f"-DDEEPEP_LL_COMBINE_SMALL_BATCH={'ON' if configuration.get('ll_combine_small_batch', False) else 'OFF'}",
+            f"-DDEEPEP_LL_COMBINE_RECV_CORES={configuration.get('ll_combine_recv_cores', 0)}",
+            f"-DDEEPEP_LL_COMBINE_EARLY_REDUCE={'ON' if configuration.get('ll_combine_early_reduce', False) else 'OFF'}",
             f"-DDEEPEP_LL_COUNT_HISTOGRAM={'ON' if configuration.get('ll_count_histogram', False) else 'OFF'}",
             f"-DDEEPEP_LL_METADATA_CORES={configuration.get('ll_metadata_cores', 4)}",
             f"-DPython_EXECUTABLE={sys.executable}",

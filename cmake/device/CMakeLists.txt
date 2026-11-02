@@ -40,6 +40,9 @@ foreach(_mode prequant_e4m3 fp16 fp16_e4m3 fp16_e5m2 bf16 bf16_e4m3 bf16_e5m2)
             "${DEEPEP_SOURCE_DIR}/csrc/kernels/dispatch/low_latency/variants/${_mode}_g${_group}.cpp")
     endforeach()
 endforeach()
+list(APPEND _ll_sources
+    "${DEEPEP_SOURCE_DIR}/csrc/kernels/dispatch/low_latency/variants/fp16_g2.cpp"
+    "${DEEPEP_SOURCE_DIR}/csrc/kernels/dispatch/low_latency/variants/bf16_g2.cpp")
 add_library(deepep_kernel_ll_plain OBJECT ${_ll_sources})
 add_library(deepep_kernel_ll_reference OBJECT ${_ll_sources})
 set_target_properties(deepep_kernel_ll_plain deepep_kernel_ll_reference PROPERTIES EXCLUDE_FROM_ALL TRUE)
@@ -55,6 +58,15 @@ endif()
 add_library(deepep_kernels SHARED $<TARGET_OBJECTS:${_ll_variant}>)
 
 add_library(deepep_kernel_options INTERFACE)
+if(NOT DEFINED DEEPEP_LL_COMBINE_RECV_CORES)
+    set(DEEPEP_LL_COMBINE_RECV_CORES 0)
+endif()
+set_property(SOURCE "${DEEPEP_SOURCE_DIR}/csrc/kernels/combine/low_latency.cpp"
+    APPEND PROPERTY COMPILE_DEFINITIONS DEEPEP_LL_COMBINE_RECV_CORES=${DEEPEP_LL_COMBINE_RECV_CORES})
+if(DEEPEP_LL_COMBINE_EARLY_REDUCE)
+    set_property(SOURCE "${DEEPEP_SOURCE_DIR}/csrc/kernels/combine/low_latency.cpp"
+        APPEND PROPERTY COMPILE_DEFINITIONS DEEPEP_LL_COMBINE_EARLY_REDUCE=1)
+endif()
 if(DEEPEP_LL_COMBINE_SMALL_BATCH)
     # Keep the Dispatch translation units identical in the A/B builds.
     set_property(SOURCE "${DEEPEP_SOURCE_DIR}/csrc/kernels/combine/low_latency.cpp"

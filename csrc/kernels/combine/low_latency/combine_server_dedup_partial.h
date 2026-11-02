@@ -35,7 +35,7 @@ public:
         args_ = args;
         rdmaBatch_ = batch;
 
-        recvCores_ = GetBlockNum() / 2U;
+        recvCores_ = EpCombineRecvCoreCount(GetBlockNum());
         pipe_ = pipe;
         scratch_ = scratch[layout.phaseOffset];
         tokens_ = tokens;
@@ -82,7 +82,7 @@ public:
     {
         planned_ = plan_.Prepare(planScratch_, planScratchBytes_, rows_, types_, table2_, tokens_,
                                  uint32_t(args_->rankSize), uint32_t(args_->rank),
-                                 GetBlockIdx() - recvCores_, recvCores_);
+                                 GetBlockIdx() - (GetBlockNum() - recvCores_), recvCores_);
     }
 #endif
 
@@ -156,7 +156,7 @@ private:
     __aicore__ inline uint32_t SelectServer(uint32_t server, uint32_t& owner, bool validateRanks)
     {
         uint32_t count = 0U;
-        const uint32_t localCore = GetBlockIdx() - recvCores_;
+        const uint32_t localCore = GetBlockIdx() - (GetBlockNum() - recvCores_);
         const uint32_t vectorBytes = EpCombineAlign(scanRows_ * 4U, 256U);
         const uint32_t maskBytes = EpCombineAlign((scanRows_ + 7U) / 8U, 32U);
         auto table = scan_.ReinterpretCast<int32_t>();

@@ -4,6 +4,8 @@
 
 分支 `perf/ll-combine-small-batch` 保留原版 Combine，新增可选的优化路径。编译开关 `DEEPEP_LL_COMBINE_SMALL_BATCH` 默认为 `OFF`；设为 `ON` 后重新编译安装，才会启用优化。
 
+无需 Python 或 Conda 时，可使用 [MPI + C++ 用例](../ll_cpp_bench/README.md)，直接编译并运行单机 EP2/4/8/16 或双机 EP32。
+
 这轮优化面向 BS 不超过 72 的场景，主要减少任务准备和空闲缓冲槽的处理开销。
 
 | 位置 | 原版 | 优化版 |
@@ -22,6 +24,17 @@
 
 ## 单机 16 卡 A/B/A
 
+除任务列表优化外，当前分支还提供两个独立的编译开关：
+
+| 开关 | 默认值 | 优化内容 |
+| --- | --- | --- |
+| `DEEPEP_LL_COMBINE_RECV_CORES` | 0 | 0 保持原均分；8～36 指定接收核数，且不超过实际核数的一半，其余核执行暂存和 DIRECT 回传 |
+| `DEEPEP_LL_COMBINE_EARLY_REDUCE` | OFF | BS ≤ 72 时，在下一个有效 slot 到齐后立即归约，保留两个 token 的独立 FP32 累加值，等待其一时推进另一个 |
+
+提前归约保持单 token 内原有 slot 累加顺序，仍检查每个传输块的尾标记。BS 大于 72 时使用原归约路径。两路累加会占用额外 UB，Host 和 Device 使用相同的预算，缓冲槽数可能随之减少，实际收益需通过对照测试判断。
+
+接收核数由编译选项固定，各 rank 保持一致。内核仍由最后 8 核发布组内就绪通知。原 Get 汇集、部分归约、回传和源端最终归约流程均保留。
+
 在独立的 Conda 环境中操作。以下命令假定已经加载 CANN 环境，且当前仓库已按 `dependencies.lock.json` 编译 SHMEM。
 
 ```bash
@@ -34,6 +47,8 @@ export DEEPEP_LL_STAGE_TIMER=OFF
 export DEEPEP_LL_REFERENCE_PROFILE=OFF
 export DEEPEP_LL_COUNT_HISTOGRAM=OFF
 export DEEPEP_LL_METADATA_CORES=4
+export DEEPEP_LL_COMBINE_RECV_CORES=0
+export DEEPEP_LL_COMBINE_EARLY_REDUCE=OFF
 export DEEPEP_NPU_ARCH=Ascend950
 export DEEPEP_BUILD_TYPE=Release
 
@@ -67,6 +82,8 @@ run_variant baseline combine-a2
 ```
 
 这里的 `rdma` 表示使用原分支的混合通信后端；单机 16 卡之间仍走 MTE。`--combine-variant` 核对已安装的实现，结果文件也会记录变体。构建缓存按编译开关区分两版。
+
+测试另外两项优化时，先修改对应环境变量并重新编译，再在用例中设置 `--combine-variant optimized`。可追加 `--combine-recv-cores 8`、`--combine-early-reduce 1` 核对安装结果。这两个参数检查已编译的配置，运行时仍使用编译选定的实现。建议先分别测试各项，再测试组合。
 
 用例先检查精度，再分别采集 Dispatch 和 Combine。三轮对照固定形状、路由种子、预热和采样参数，沿用原有采样流程。第一次正式采样前执行原有 Exp 预备计算，采样循环内保持连续调用。
 

@@ -66,7 +66,7 @@ template<uint32_t Group> struct Test {
  uint32_t coreNum_,recvCores_,core_,notifyBegin_; Args a{0}; Args* args_=&a; uint64_t control_=0;
  std::vector<float> done,zero,notification,input,work,sum;
  LocalTensor<float> prepareZero_,notifyUb_,prepareInput_,prepareWork_,prepareSum_;
- Test(uint32_t n):coreNum_(n),recvCores_(n/2),notifyBegin_(n-8),done(8*72*8,13),zero(72*8),notification(36*8),input(72*8),work(128),sum(8){
+ Test(uint32_t n,uint32_t recv):coreNum_(n),recvCores_(recv),notifyBegin_(n-8),done(8*72*8,13),zero(72*8),notification(36*8),input(72*8),work(128),sum(8){
   prepareZero_={zero.data()};notifyUb_={notification.data()};prepareInput_={input.data()};prepareWork_={work.data()};prepareSum_={sum.data()};
   for(uint32_t row=0;row<8;++row)for(uint32_t c=0;c<n;++c)done[row*72*8+c*8]=1;
  }
@@ -85,7 +85,7 @@ template<uint32_t Group> struct Test {
   }
  }
 };
-int main(){for(uint32_t n=16;n<=72;n+=2){Test<4>(n).Run();Test<16>(n).Run();}}
+int main(){for(uint32_t n=16;n<=72;n+=2)for(uint32_t recv=8;recv<=n/2;++recv){Test<4>(n,recv).Run();Test<16>(n,recv).Run();}}
 ''', 'combine-control')
 
 
