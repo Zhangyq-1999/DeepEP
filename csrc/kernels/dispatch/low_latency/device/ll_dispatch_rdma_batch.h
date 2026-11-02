@@ -1,5 +1,8 @@
 #pragma once
 #include "ll_transport.h"
+#ifdef DEEPEP_LL_COMBINE_PROFILE
+#include "../../../combine/low_latency/combine_profile_device.h"
+#endif
 #include "../common/ll_reference_profile_device.h"
 
 namespace LlTransport {
@@ -16,6 +19,9 @@ class DispatchRdmaBatch {
     uint32_t peerMask_[kPeerWords]{};
     LocalTensor<uint8_t> pendingScratch_;
     bool staged_ = false;
+#ifdef DEEPEP_LL_COMBINE_PROFILE
+    CombineProfile::View combineProfile_;
+#endif
 #ifdef DEEPEP_LL_REFERENCE_PROFILE
     LlReferenceProfile::DeviceProfile* profile_ = nullptr;
     bool pendingSecond_ = false;
@@ -32,7 +38,17 @@ class DispatchRdmaBatch {
             if (!mask) continue;
             for (uint32_t bit = 0; bit < 32U; ++bit) if (mask & (1U << bit)) {
                 const uint32_t peer = word * 32U + bit;
+#ifdef DEEPEP_LL_COMBINE_PROFILE
+                const uint64_t begin = combineProfile_.DetailClock();
+#endif
                 Quiet(peer, scratch);
+#ifdef DEEPEP_LL_COMBINE_PROFILE
+                // The same peer occupies both ID arguments; no unused record field.
+                combineProfile_.SampleMax(CombineProfile::RdmaQuietTicks, CombineProfile::RdmaQuietMaxTicks,
+                                          CombineProfile::RdmaQuietMaxPeer, CombineProfile::RdmaQuietMaxPeer, begin,
+                                          peer, peer);
+                combineProfile_.Add(CombineProfile::RdmaQuietCalls);
+#endif
             }
             peerMask_[word] = 0U;
         }
@@ -42,6 +58,12 @@ class DispatchRdmaBatch {
         count_ = 0;
     }
 public:
+#ifdef DEEPEP_LL_COMBINE_PROFILE
+    __aicore__ inline void SetCombineProfile(CombineProfile::DeviceProfile* p)
+    {
+        combineProfile_.Bind(p);
+    }
+#endif
 #ifdef DEEPEP_LL_REFERENCE_PROFILE
     __aicore__ inline void SetProfile(LlReferenceProfile::DeviceProfile* p) { profile_ = p; }
 #endif
@@ -68,8 +90,14 @@ public:
         Check(args_, peer, offset, bytes_);
         pendingStage_ = stageBase_ + uint64_t(count_) * bytes_;
         pendingPeer_ = peer; pendingOffset_ = offset; pendingScratch_ = packet;
+#ifdef DEEPEP_LL_COMBINE_PROFILE
+        const uint64_t stageBegin = combineProfile_.DetailClock();
+#endif
         DataCopy(Tensor(pendingStage_, true), packet, bytes_);
         SetFlag<HardEvent::MTE3_S>(7U); // same event as the old immediate Sync
+#ifdef DEEPEP_LL_COMBINE_PROFILE
+        combineProfile_.Elapsed(CombineProfile::RdmaStageIssueTicks, stageBegin);
+#endif
         peerMask_[peer / 32U] |= 1U << (peer % 32U);
         ++count_; staged_ = true;
 #ifdef DEEPEP_LL_REFERENCE_PROFILE
@@ -82,13 +110,26 @@ public:
 #ifdef DEEPEP_LL_REFERENCE_PROFILE
         if (profile_) profile_->StageWaitBegin(pendingSecond_);
 #endif
+#ifdef DEEPEP_LL_COMBINE_PROFILE
+        const uint64_t stageWait = combineProfile_.DetailClock();
+#endif
         WaitFlag<HardEvent::MTE3_S>(7U);
+#ifdef DEEPEP_LL_COMBINE_PROFILE
+        combineProfile_.Elapsed(CombineProfile::RdmaStageWaitTicks, stageWait);
+#endif
 #ifdef DEEPEP_LL_REFERENCE_PROFILE
         if (profile_) { profile_->StageWaitEnd(pendingSecond_); profile_->SecondPutBegin(pendingSecond_); }
 #endif
         // Only after the wait may NIC read GM and SDK overwrite the old UB lane.
+#ifdef DEEPEP_LL_COMBINE_PROFILE
+        const uint64_t putBegin = combineProfile_.DetailClock();
+#endif
         Put(args_, pendingPeer_, RemoteAddress(args_, pendingPeer_, pendingOffset_),
             pendingStage_, bytes_, pendingScratch_);
+#ifdef DEEPEP_LL_COMBINE_PROFILE
+        combineProfile_.Elapsed(CombineProfile::RdmaPutTicks, putBegin);
+        combineProfile_.Add(CombineProfile::RdmaPackets);
+#endif
 #ifdef DEEPEP_LL_REFERENCE_PROFILE
         if (profile_) profile_->PutReturned(pendingSecond_);
 #endif

@@ -1,6 +1,7 @@
 // Copyright (c) 2026, Lu Lu
 #pragma once
 
+#include "combine_profile_device.h"
 #include "ep_memory_server_dedup_combine_config.h"
 #include "combine_server_dedup_select.h"
 
@@ -11,6 +12,10 @@ namespace CombineDedup {
 template<uint32_t Group>
 class PartialTaskPlan {
 public:
+    __aicore__ inline void SetProfile(CombineProfile::DeviceProfile* p)
+    {
+        profile_.Bind(p);
+    }
     static constexpr uint32_t kMaxGroups = 16U;
 
     __aicore__ inline bool Prepare(AscendC::LocalTensor<uint8_t> scratch, uint32_t scratchBytes,
@@ -35,10 +40,13 @@ public:
         auto indices = scratch[rows * 12U + vectorBytes].ReinterpretCast<int32_t>();
         auto typeMask = scratch[rows * 12U + 2U * vectorBytes];
         auto mask = typeMask[maskBytes], upper = mask[maskBytes];
+        const uint64_t loadStart = profile_.DetailClock();
         DataCopyPad(ranks, types, {1U, tokens * 4U, 0U, 0U, 0U}, {false, 0U, 0U, 0});
         DataCopyPad(table, routes, {1U, tokens * 12U, 0U, 0U, 0U}, {false, 0U, 0U, 0});
         SetFlag<HardEvent::MTE2_V>(7U);
         WaitFlag<HardEvent::MTE2_V>(7U);
+        profile_.Elapsed(CombineProfile::PlanLoadTicks, loadStart);
+        const uint64_t selectStart = profile_.DetailClock();
         Compares(typeMask, ranks, int32_t(2), CMPMODE::EQ, rows);
         CreateVecIndex(indices, int32_t(0), tokens);
         PipeBarrier<PIPE_V>();
@@ -79,12 +87,14 @@ public:
                 ownedRows.SetValue(count++, table.GetValue(task));
             ends_[step] = count;
         }
+        profile_.Elapsed(CombineProfile::PlanSelectTicks, selectStart);
         return true;
     }
 
     __aicore__ inline uint32_t End(uint32_t step) const { return ends_[step]; }
 
 private:
+    CombineProfile::View profile_;
     uint32_t ends_[kMaxGroups] = {};
 };
 }  // namespace CombineDedup

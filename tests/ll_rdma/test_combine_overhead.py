@@ -31,6 +31,7 @@ def run_cpp(tmp_path, source, name):
     cpp.write_text('''#include "kernels/combine/low_latency/combine_profile_layout.h"
 struct NoProfile {
  void Mark(CombineProfile::Word) {} void Set(CombineProfile::Word, uint64_t) {}
+ uint64_t DetailClock() { return 0; } void Elapsed(CombineProfile::Word, uint64_t) {}
 } profile_;
 ''' + source, encoding='utf-8')
     subprocess.run([zig, 'c++', '-std=c++17', '-O1', '-UNDEBUG',
@@ -78,7 +79,7 @@ template<uint32_t Group> struct Test {
  }
  template<HardEvent>void Sync(){}
  GlobalTensor<float> Control(uint32_t,uint64_t off){return {done.data()+off/4};}
- void WaitFlags(GlobalTensor<float> gm,LocalTensor<float>,LocalTensor<float>,LocalTensor<float>,uint32_t n){for(uint32_t i=0;i<n;++i)assert(gm.p[i*8]==1);}
+ void WaitFlags(GlobalTensor<float> gm,LocalTensor<float>,LocalTensor<float>,LocalTensor<float>,uint32_t n,bool incoming){assert(!incoming);for(uint32_t i=0;i<n;++i)assert(gm.p[i*8]==1);}
 ''' + notify + r'''
  void Run(){
   ready.assign(Group,std::vector<uint8_t>(36*512,0x5b));

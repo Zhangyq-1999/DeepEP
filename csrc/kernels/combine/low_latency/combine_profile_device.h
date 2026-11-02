@@ -10,7 +10,7 @@ namespace CombineProfile {
 // and export once, after the original kernel's final drain/flush.
 class DeviceProfile {
 public:
-    __aicore__ inline void Init(GM_ADDR address, uint32_t level)
+    __aicore__ inline void Init(__gm__ uint8_t* address, uint32_t level)
     {
 #ifdef DEEPEP_LL_COMBINE_PROFILE
         record_ =
@@ -21,6 +21,7 @@ public:
             for (uint32_t i = 0; i < kWords; ++i) values_[i] = 0U;
             values_[Entry] = entry;
             values_[Valid] = 1U;
+            Mark(ProfileInitEnd);
         }
 #endif
     }
@@ -37,6 +38,51 @@ public:
         if (record_) {
             values_[word] = AscendC::GetSystemCycle();
             values_[Valid] |= uint64_t(1) << word;
+        }
+#endif
+    }
+    __aicore__ inline void MarkOnce(Word word)
+    {
+#ifdef DEEPEP_LL_COMBINE_PROFILE
+        if (record_ && !(values_[Valid] & (uint64_t(1) << word))) Mark(word);
+#endif
+    }
+    __aicore__ inline void SampleMax(Word total, Word maximum, Word id0, Word id1, uint64_t begin, uint32_t a,
+                                     uint32_t b)
+    {
+#ifdef DEEPEP_LL_COMBINE_PROFILE
+        if (level_ < 2U) return;
+        const uint64_t ticks = AscendC::GetSystemCycle() - begin;
+        values_[total] += ticks;
+        if (ticks > values_[maximum]) {
+            values_[maximum] = ticks;
+            values_[id0] = a;
+            values_[id1] = b;
+        }
+#endif
+    }
+    __aicore__ inline void Probe(bool ready, uint32_t token, uint32_t slot, uint32_t blocks, uint64_t begin)
+    {
+#ifdef DEEPEP_LL_COMBINE_PROFILE
+        if (!record_) return;
+        if (level_ >= 2U) {
+            const uint64_t ticks = AscendC::GetSystemCycle() - begin;
+            values_[ProbeTicks] += ticks;
+            ++values_[ProbeCalls];
+            values_[ProbeFlagBlocks] += blocks;
+            if (!ready) {
+                ++values_[ProbeMisses];
+                values_[ProbeMissTicks] += ticks;
+            }
+            if (ticks > values_[ProbeMaxTicks]) {
+                values_[ProbeMaxTicks] = ticks;
+                values_[ProbeMaxToken] = token;
+                values_[ProbeMaxSlot] = slot;
+            }
+        }
+        if (ready) {
+            MarkOnce(FinalFirstReady);
+            Mark(FinalLastReady);
         }
 #endif
     }
@@ -104,6 +150,25 @@ public:
     {
 #ifdef DEEPEP_LL_COMBINE_PROFILE
         if (profile_) profile_->Mark(word);
+#endif
+    }
+    __aicore__ inline void MarkOnce(Word word)
+    {
+#ifdef DEEPEP_LL_COMBINE_PROFILE
+        if (profile_) profile_->MarkOnce(word);
+#endif
+    }
+    __aicore__ inline void SampleMax(Word total, Word maximum, Word id0, Word id1, uint64_t begin, uint32_t a,
+                                     uint32_t b)
+    {
+#ifdef DEEPEP_LL_COMBINE_PROFILE
+        if (profile_) profile_->SampleMax(total, maximum, id0, id1, begin, a, b);
+#endif
+    }
+    __aicore__ inline void Probe(bool ready, uint32_t token, uint32_t slot, uint32_t blocks, uint64_t begin)
+    {
+#ifdef DEEPEP_LL_COMBINE_PROFILE
+        if (profile_) profile_->Probe(ready, token, slot, blocks, begin);
 #endif
     }
     __aicore__ inline void Set(Word word, uint64_t value)

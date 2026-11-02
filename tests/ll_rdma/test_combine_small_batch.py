@@ -49,6 +49,7 @@ template<class T>void Gather(LocalTensor<T> d,LocalTensor<T> s,LocalTensor<uint3
 using namespace AscendC;
 using namespace CombineDedup;
 template<uint32_t Group>struct Original {
+ CombineProfile::View profile_;
  struct Args{uint32_t rankSize;};Args a;Args* args_=&a;
  uint32_t recvCores_,tokens_,scanRows_;
  LocalTensor<uint8_t> scan_;LocalTensor<int32_t> rows_;
@@ -86,7 +87,7 @@ template<uint32_t Group>void Check(uint32_t world,uint32_t rank,uint32_t c,uint3
   const uint32_t scanRows=EpCombineM4ScanRows(h,k);
   std::vector<uint64_t> scan((EpCombineM4ScanBytes(scanRows)+64)/8,0);
   std::vector<int32_t> selected((n+recv-1)/recv+8,-99);
-  Original<Group> old{{world},nullptr,recv,n,scanRows,{reinterpret_cast<uint8_t*>(scan.data())},
+  Original<Group> old{{},{world},nullptr,recv,n,scanRows,{reinterpret_cast<uint8_t*>(scan.data())},
                        {selected.data()},{types.data()},{routes.data()}};
   old.args_=&old.a;
   uint32_t owner=0;
@@ -177,10 +178,11 @@ def test_production_lane_events_and_payloads(tmp_path, optimized):
 #include <algorithm>
 #include <numeric>
 #include "kernels/combine/low_latency/combine_server_dedup_select.h"
+#include "kernels/combine/low_latency/combine_profile_device.h"
 using namespace AscendC;
 using namespace CombineDedup;
 struct Args{uint32_t rank=0,rankSize=16;bool rdma=false;};
-namespace LlTransport {bool Rdma(Args* a){return a->rdma;}}
+namespace LlTransport {bool Rdma(Args* a){return a->rdma;} bool RemoteWrite(Args* a,uint32_t p){return a->rdma && p>=16;}}
 constexpr uint32_t kCombinePrepareRowBytes=72*32;
 constexpr uint64_t COMBINE_DEDUP_EP_SERVER_DEDUP_COMBINE_PREPARE_DONE_OFFSET=0;
 constexpr uint64_t COMBINE_DEDUP_EP_SERVER_DEDUP_SHARED_DATA_OFFSET=0;
@@ -198,6 +200,7 @@ void SendReturnPacket(Batch&,Args*,uint32_t,uint64_t off,LocalTensor<uint8_t> u,
  ++sent;DataCopy(GlobalTensor<uint8_t>{returns.data()+off},u,bytes);
 }
 template<uint32_t Group>struct Test{
+ CombineProfile::View profile_;
  Args a;Args* args_=&a;Batch returnBatch_;
  uint32_t core_,coreNum_,sendCores_,lanes_,selected_,h_=256,blocks_=2,laneBytes_=960,resultStride_=1024;
  uint32_t topK_=1;uint64_t stageStride_=1024,window_=0;

@@ -174,22 +174,35 @@ bash tests/ll_cpp_bench/launch.sh \
 
 需要细分时，改用新的 run-id 和 `--profile 2`。分析某项优化时，保持其余配置相同，只调整对应编译开关。原版性能使用独立的 base 构建测量。
 
-每个 rank 的 `rank-N-profile.csv` 保存每轮、每个 AIV 核的记录。主要字段如下：
+每个 rank 的 `rank-N-profile.csv` 保存每轮、每个 AIV 核的记录。一级打点记录阶段边界和任务量。二级打点进一步区分以下操作：
 
-| 字段 | 观察内容 |
-| --- | --- |
-| `stage_begin/end`、`stage_rows` | TERMINAL 本地暂存与本核任务量 |
-| `notify_begin/end`、`ready_begin/end` | 本卡准备完成后的通知，以及组内就绪等待 |
-| `partial_begin/end`、`plan_begin/end`、`partial_rows` | FIRST_HOP 扫表、汇集、部分归约与回传 |
-| `direct_begin/prepared/end`、`direct_rows` | DIRECT 路由准备和直接回传 |
-| `final_begin/init_end/end`、`final_tokens` | 最终归约的初始化、就绪检查和归约处理 |
-| `drain_end`、`pipe_done`、`flush_done` | 输出回收、管线收尾和 RDMA 批次回收 |
-| `probe_calls/misses/ticks/flag_blocks` | 二级打点中的轮询次数、未就绪次数、累计开销和检查块数 |
-| `direct_*_ticks`、`final_*_ticks`、`contributions` | 二级打点中的扫表、打包、已有等待和实际归约贡献数 |
+| 阶段 | 可以定位的步骤 | 主要字段前缀 |
+| --- | --- | --- |
+| 初始化 | 读取有效行数、计算工作区布局、分配核内缓冲 | `init_prefix`、`init_count_end`、`init_layout_end` |
+| TERMINAL 暂存 | 读取类型表、筛选行、读取路由、等待缓冲复用、搬入数据、写入共享区和等待写完 | `stage_select_*`、`stage_metadata`、`stage_reuse_wait`、`stage_input`、`stage_store_issue`、`stage_drain` |
+| 就绪通知 | 等待本卡所有核准备完成、清理标记、发布组内通知 | `notify_poll_*`、`notify_reset`、`notify_publish` |
+| 组内等待 | 读取各卡 ready、检查标记、清理 ready | `ready_poll_*`、`ready_reset` |
+| DIRECT 回传 | 读取路由、筛选目标、读取输入、等待输出槽、打包、提交回传和收尾 | `direct_route_load`、`direct_scan`、`direct_input_*`、`direct_output_wait`、`direct_pack`、`direct_submit`、`direct_drain` |
+| FIRST_HOP 汇集 | 建立任务表、扫表、读取任务元信息、本地读取、Get 其他卡的数据、部分归约、打包和回传 | `plan_*`、`partial_scan_*`、`partial_metadata`、`partial_local_*`、`partial_get_*`、`partial_compute_issue`、`partial_pack`、`partial_submit` |
+| 最终归约 | 读取 mask 和 weight、建立待处理列表、检查数据到齐、搬入贡献、归约、转换输出格式和写回 | `final_meta_load`、`final_pending_build`、`probe_*`、`final_input_*`、`final_compute_issue`、`final_output_pack`、`final_store_issue` |
+| 跨机 RDMA 回传 | 将 UB 数据暂存到 GM、等待暂存完成、调用 Put、quiet 回收 | `rdma_stage_issue`、`rdma_stage_wait`、`rdma_put`、`rdma_quiet` |
 
-时间字段使用设备原始 tick。`entry_tick` 保留原始值，其余阶段时间戳均减去本核入口时间；缺失阶段留空。一级打点中的二级字段也留空。各核记录在原有收尾完成后集中写出，业务路径沿用原有同步。
+表中的累计耗时字段以 `_ticks` 结尾。`*_calls` 记录调用次数，`*_misses` 记录未就绪次数。`stage_rows`、`direct_rows`、`partial_rows`、`final_tokens` 和 `contributions` 记录本核工作量。`partial_local_contrib` 记录 FIRST_HOP 自身专家行，`partial_get_contrib` 记录按路由从共享区拉取的贡献。EP4 没有跨组 FIRST_HOP 任务，汇集和 RDMA 数据量可能为零。
 
-先对比同一 rank、同一轮的发送核和接收核，再结合任务量判断拖尾。`probe_ticks` 包括标记加载、检查和相关等待；`final_input_wait_ticks` 只统计原有等待指令处剩余的等待。不同核的并行耗时分别分析，跨设备原始时间戳需要先确认时钟对齐，tick 换算为时间也需要确认计数器频率。
+`notify_local_ready` 分开本卡准备等待与通知发布。`direct_first_submit`、`direct_last_submit` 和 `direct_pending_end` 标出首个提交调用、末个调用返回以及待提交任务处理完的位置。`final_first_ready`、`final_last_ready` 标出成功检查数据就绪的位置；`final_last_store` 标出末个输出写回的下发位置。最终输出完成仍以原有 drain 和 kernel 收尾为准。
+
+时间字段使用设备原始 tick。`entry_tick` 保留原始值，其余阶段时间戳均减去本核入口时间；缺失阶段留空。`profile_init_end` 标出诊断记录初始化完成的位置，可据此分开打点初始化与业务初始化。一级打点中的二级字段留空。schema 2 每核使用 1536 B 记录，在原有收尾完成后集中写出。
+
+分析时先选择同一配置、同一轮的记录，比较发送核与接收核的任务量和阶段耗时。常见判断如下：
+
+- `notify_begin` 到 `notify_local_ready` 较长：检查各核的暂存结束时间。`notify_publish_ticks` 较长则关注通知发布本身。
+- `probe_misses` 和 `probe_miss_ticks` 较大：接收核多次检查时数据尚未齐备，需要结合发送侧提交和收尾分析。`probe_load_ticks` 包括标记加载及其等待，`probe_check_ticks` 包括 `ReduceSum` 及原有 `V_S` 等待。
+- `direct_submit_ticks` 较大：先看是否跨机。跨机时继续区分 GM 暂存、Put 调用和 quiet，查看 `rdma_*` 字段；机内则观察提交、输出槽等待与最终 drain。
+- 就绪检查开销较小、归约仍较慢：检查 `final_input_wait_ticks`、`final_compute_issue_ticks` 和 `final_output_pack_ticks`。它们分别反映已有输入等待、计算指令下发和输出转换到可交给 MTE3 的过程。
+
+单次回传调用的最大耗时保存在 `direct_submit_max_ticks` 或 `partial_submit_max_ticks`，并记录对应 peer 和 token。`probe_max_ticks` 记录最慢的一次标记检查及其 token、slot；整 token 检查时 slot 为 `4294967295`。该值反映一次检查的耗时，持续未就绪的情况结合累计次数和耗时判断。`rdma_quiet_max_peer` 标出单次 quiet 等待最久的目标。
+
+计时沿用原有等待指令。`*_issue_ticks` 表示下发指令所花的时间，异步执行的剩余耗时可能体现在后续等待中。`*_wait_ticks` 记录到达等待指令后仍需等待的时间。外层阶段耗时包含内层细分项，例如 `direct_submit_ticks` 可能包含 `rdma_*` 耗时，应分别阅读。不同核的并行耗时也分别分析。跨设备时间戳需要先确认时钟对齐，tick 换算为时间需要确认计数器频率。
 
 诊断记录和导出会影响时延。确认方案后，以 `--profile OFF` 重新编译，再用默认 `--profile 0` 采集最终性能。
 

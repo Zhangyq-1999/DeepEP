@@ -94,7 +94,9 @@ public:
             ++completed;
             if (scan == remaining) scan = 0U;  // re-probe the swapped real TokenId
         }
+        const uint64_t drainStart = profile_.DetailClock();
         for (uint32_t lane = 0; lane < inputLanes_; ++lane) WaitFlag<HardEvent::V_MTE2>(lane);
+        profile_.Elapsed(CombineProfile::FinalInputDrainTicks, drainStart);
         return retiredOutputs_;
     }
 
@@ -144,9 +146,12 @@ private:
         GlobalTensor<float> weightGm;
         if (enableDedup_) maskGm.SetGlobalBuffer(reinterpret_cast<__gm__ uint32_t*>(masks));
         weightGm.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(weights));
+        const uint64_t metaStart = profile_.DetailClock();
         if (enableDedup_) DataCopyPad(masks_, maskGm[begin_], {1U, count_ * 4U, 0U, 0U, 0U}, {false, 0U, 0U, 0U});
         DataCopyPad(weights_, weightGm[uint64_t(begin_) * k], {1U, count_ * k * 4U, 0U, 0U, 0U}, {false, 0U, 0U, 0.0f});
         Sync<HardEvent::MTE2_S>();
+        profile_.Elapsed(CombineProfile::FinalMetaLoadTicks, metaStart);
+        const uint64_t pendingStart = profile_.DetailClock();
         for (uint32_t p = 0; p < count_; ++p) {
             const uint32_t mask = enableDedup_ ? masks_.GetValue(p) : 0U;
             if (enableDedup_ && (mask == 0U || (k_ < 32U && (mask >> k_) != 0U))) {
@@ -159,6 +164,7 @@ private:
             // <=4095. Cache both fields in the original uint32 task slot.
             pending_.SetValue(p, (begin_ + p) | (expected << 16U));
         }
+        profile_.Elapsed(CombineProfile::FinalPendingBuildTicks, pendingStart);
     }
     template <class T>
     __aicore__ inline LocalTensor<T> Allocate(uint32_t bytes)
@@ -185,13 +191,13 @@ private:
         auto src = resultFlags_[uint64_t(token) * k_ * packetBytes_ / 4U + 120U];
         DataCopy(flags_, src, {uint16_t(flags), 1U, 15U, 0U});
         Sync<HardEvent::MTE2_V>();
+        profile_.Elapsed(CombineProfile::ProbeLoadTicks, start);
+        const uint64_t checkStart = profile_.DetailClock();
         ReduceSum(probeSum_, flags_, work_, 1U, flags, 1U);
         Sync<HardEvent::V_S>();
         const bool ready = probeSum_.GetValue(0U) == float(expected);
-        profile_.Elapsed(CombineProfile::ProbeTicks, start);
-        profile_.Add(CombineProfile::ProbeCalls);
-        profile_.Add(CombineProfile::ProbeMisses, ready ? 0U : 1U);
-        profile_.Add(CombineProfile::ProbeFlagBlocks, flags);
+        profile_.Elapsed(CombineProfile::ProbeCheckTicks, checkStart);
+        profile_.Probe(ready, token, 0xffffffffU, flags, start);
         return ready;
     }
     __aicore__ inline void ClearFlags()
@@ -227,9 +233,11 @@ private:
         }
         profile_.Elapsed(CombineProfile::FinalReuseWaitTicks, start);
         profile_.Add(CombineProfile::Contributions);
+        const uint64_t issueStart = profile_.DetailClock();
         DataCopy(inputs_[finalLayout_.inputOffsets[lane] / 2U], result_[(uint64_t(token) * k_ + k) * packetBytes_ / 2U],
                  {uint16_t(blocks_), 15U, 1U, 0U});
         SetFlag<HardEvent::MTE2_V>(lane);
+        profile_.Elapsed(CombineProfile::FinalInputIssueTicks, issueStart);
     }
 #ifdef DEEPEP_LL_COMBINE_EARLY_REDUCE
     struct TokenProgress {
@@ -243,24 +251,28 @@ private:
         auto src = resultFlags_[(uint64_t(token) * k_ + k) * packetBytes_ / 4U + 120U];
         DataCopy(flags_, src, {uint16_t(blocks_), 1U, 15U, 0U});
         Sync<HardEvent::MTE2_V>();
+        profile_.Elapsed(CombineProfile::ProbeLoadTicks, start);
+        const uint64_t checkStart = profile_.DetailClock();
         ReduceSum(probeSum_, flags_, work_, 1U, blocks_, 1U);
         Sync<HardEvent::V_S>();
         const bool ready = probeSum_.GetValue(0U) == float(blocks_);
-        profile_.Elapsed(CombineProfile::ProbeTicks, start);
-        profile_.Add(CombineProfile::ProbeCalls);
-        profile_.Add(CombineProfile::ProbeMisses, ready ? 0U : 1U);
-        profile_.Add(CombineProfile::ProbeFlagBlocks, blocks_);
+        profile_.Elapsed(CombineProfile::ProbeCheckTicks, checkStart);
+        profile_.Probe(ready, token, k, blocks_, start);
         return ready;
     }
     template<class T>
     __aicore__ inline bool AdvanceToken(TokenProgress& state, uint32_t accumulator, uint32_t completed)
     {
+        profile_.Add(CombineProfile::EarlyAdvanceCalls);
         const uint32_t mask = enableDedup_ ? masks_.GetValue(state.token - begin_) : 0U;
         auto sum = sum_[accumulator * computeElements_];
         for (; state.nextK < k_; ++state.nextK) {
             const uint32_t k = state.nextK;
             if (enableDedup_ && ((mask >> k) & 1U) == 0U) continue;
-            if (!ProbeContribution(state.token, k)) return false;
+            if (!ProbeContribution(state.token, k)) {
+                profile_.Add(CombineProfile::EarlyStalls);
+                return false;
+            }
             // Keep the original ascending-slot FP32 accumulation order. Load
             // retains M4 output retirement and input-lane ownership checks.
             Load(state.token, k, 0U);
@@ -268,6 +280,7 @@ private:
             const uint64_t inputStart = profile_.DetailClock();
             WaitFlag<HardEvent::MTE2_V>(lane);
             profile_.Elapsed(CombineProfile::FinalInputWaitTicks, inputStart);
+            const uint64_t computeStart = profile_.DetailClock();
             Cast(cast_, inputs_[finalLayout_.inputOffsets[lane] / 2U].template ReinterpretCast<T>(),
                  RoundMode::CAST_NONE, h_);
             SetFlag<HardEvent::V_MTE2>(lane);
@@ -281,6 +294,7 @@ private:
                 Add(sum, sum, product_, h_);
             }
             PipeBarrier<PIPE_V>();
+            profile_.Elapsed(CombineProfile::FinalComputeIssueTicks, computeStart);
             ++state.members;
             ++inputSequence_;
         }
@@ -288,12 +302,17 @@ private:
         const uint64_t outputStart = profile_.DetailClock();
         WaitFlag<HardEvent::MTE3_V>(outputLane);
         profile_.Elapsed(CombineProfile::FinalOutputWaitTicks, outputStart);
+        const uint64_t packStart = profile_.DetailClock();
         auto output = outputs_[outputLane * outputBytes_ / 2U];
         Cast(output.template ReinterpretCast<T>(), sum, RoundMode::CAST_RINT, h_);
         SetFlag<HardEvent::V_MTE3>(outputLane);
         WaitFlag<HardEvent::V_MTE3>(outputLane);
+        profile_.Elapsed(CombineProfile::FinalOutputPackTicks, packStart);
+        const uint64_t storeStart = profile_.DetailClock();
         DataCopyPad(output_[uint64_t(state.token) * h_], output, {1U, h_ * 2U, 0U, 0U, 0U});
         SetFlag<HardEvent::MTE3_V>(outputLane);
+        profile_.Elapsed(CombineProfile::FinalStoreIssueTicks, storeStart);
+        profile_.Mark(CombineProfile::FinalLastStore);
         return true;
     }
     __aicore__ inline uint32_t ProcessEarly()
@@ -318,7 +337,9 @@ private:
         // Both token states have consumed all their contributions. Clear the
         // same full token ranges as the baseline; no probe reuses flags_ now.
         ClearFlags();
+        const uint64_t drainStart = profile_.DetailClock();
         for (uint32_t lane = 0; lane < inputLanes_; ++lane) WaitFlag<HardEvent::V_MTE2>(lane);
+        profile_.Elapsed(CombineProfile::FinalInputDrainTicks, drainStart);
         return retiredOutputs_;
     }
 #endif
@@ -335,11 +356,14 @@ private:
                 const uint64_t inputStart = profile_.DetailClock();
                 WaitFlag<HardEvent::MTE2_V>(lane);
                 profile_.Elapsed(CombineProfile::FinalInputWaitTicks, inputStart);
+                const uint64_t castStart = profile_.DetailClock();
                 Cast(cast_, inputs_[finalLayout_.inputOffsets[lane] / 2U].template ReinterpretCast<T>(),
                      RoundMode::CAST_NONE, h_);
                 SetFlag<HardEvent::V_MTE2>(lane);
+                profile_.Elapsed(CombineProfile::FinalComputeIssueTicks, castStart);
                 while (enableDedup_ && nextK < k_ && ((mask >> nextK) & 1U) == 0U) ++nextK;
                 if (nextK < k_) Load(token, nextK++, loaded++);
+                const uint64_t computeStart = profile_.DetailClock();
                 PipeBarrier<PIPE_V>();
                 const float weight = weights_.GetValue((token - begin_) * k_ + k);
                 if (member == 0U)
@@ -350,6 +374,7 @@ private:
                     Add(sum_, sum_, product_, h_);
                 }
                 PipeBarrier<PIPE_V>();
+                profile_.Elapsed(CombineProfile::FinalComputeIssueTicks, computeStart);
                 ++member;
             }
         inputSequence_ += member;
@@ -357,12 +382,17 @@ private:
         const uint64_t outputStart = profile_.DetailClock();
         WaitFlag<HardEvent::MTE3_V>(outputLane);
         profile_.Elapsed(CombineProfile::FinalOutputWaitTicks, outputStart);
+        const uint64_t packStart = profile_.DetailClock();
         auto output = outputs_[outputLane * outputBytes_ / 2U];
         Cast(output.template ReinterpretCast<T>(), sum_, RoundMode::CAST_RINT, h_);
         SetFlag<HardEvent::V_MTE3>(outputLane);
         WaitFlag<HardEvent::V_MTE3>(outputLane);
+        profile_.Elapsed(CombineProfile::FinalOutputPackTicks, packStart);
+        const uint64_t storeStart = profile_.DetailClock();
         DataCopyPad(output_[uint64_t(token) * h_], output, {1U, h_ * 2U, 0U, 0U, 0U});
         SetFlag<HardEvent::MTE3_V>(outputLane);
+        profile_.Elapsed(CombineProfile::FinalStoreIssueTicks, storeStart);
+        profile_.Mark(CombineProfile::FinalLastStore);
     }
 
     CombineProfile::View profile_;

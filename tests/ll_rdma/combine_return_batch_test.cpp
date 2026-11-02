@@ -27,6 +27,12 @@ int main(){
    a.reservedAddresses[0]=local.data();a.reservedAddresses[1]=stage.data();a.reservedConfig[0]=LlRdma::kBackend;a.reservedConfig[1]=cores;
    for(unsigned peer=0;peer<16;++peer)a.peerMems[peer]=local.data()+peer*1024;
    LlTransport::DispatchRdmaBatch batch;batch.Init(&a,bytes);
+#ifdef DEEPEP_LL_COMBINE_PROFILE
+   std::vector<uint64_t> record(CombineProfile::kWords);
+   CombineProfile::DeviceProfile profiler;
+   profiler.Init(reinterpret_cast<uint8_t*>(record.data()), 2);
+   batch.SetCombineProfile(&profiler);
+#endif
    Model::before=[&](const Model::Request& r){
     unsigned i=unsigned((r.dst-remote.data()-r.peer*1024)/stride);
     assert(r.bytes==bytes && r.qp==core && r.peer==targets.at(i));
@@ -58,6 +64,12 @@ int main(){
     expectedQuiet+=unique.size();
    }
    assert(Model::puts==remoteTargets.size() && Model::quiets==expectedQuiet);
+#ifdef DEEPEP_LL_COMBINE_PROFILE
+   profiler.Finish(0, 256, n);
+   assert(record[CombineProfile::RdmaPackets] == remoteTargets.size());
+   assert(record[CombineProfile::RdmaQuietCalls] == expectedQuiet);
+   if (expectedQuiet) assert(record[CombineProfile::RdmaQuietTicks] >= record[CombineProfile::RdmaQuietMaxTicks]);
+#endif
    for(unsigned i=0;i<n;++i){
     auto* base=targets[i]>=16?remote.data():local.data();
     assert(std::memcmp(base+targets[i]*1024+i*stride,saved[i].data(),bytes)==0);

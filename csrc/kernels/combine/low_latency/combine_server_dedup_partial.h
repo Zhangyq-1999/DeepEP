@@ -5,6 +5,7 @@
 #define COMBINE_DEDUP_EP_SERVER_DEDUP_PARTIAL_H
 
 #include "kernel_operator.h"
+#include "combine_profile_device.h"
 #include "../../dispatch/low_latency/device/ll_transport.h"
 #include "combine_rdma_return.h"
 #include "combine_stage_wire.h"
@@ -27,6 +28,13 @@ using namespace AscendC;
 template<uint32_t Group>
 class ServerDedupPartial {
 public:
+    __aicore__ inline void SetProfile(CombineProfile::DeviceProfile* p)
+    {
+        profile_.Bind(p);
+#ifdef DEEPEP_LL_COMBINE_SMALL_BATCH
+        plan_.SetProfile(p);
+#endif
+    }
     __aicore__ inline void Init(const __gm__ DispatchDedup::CommArgs* args, TPipe* pipe, LocalTensor<uint8_t> scratch,
                                 GM_ADDR expert, GM_ADDR table2, GM_ADDR table3, GM_ADDR types, uint32_t tokens,
                                 uint32_t bs, uint32_t h, uint32_t k, uint32_t experts, uint8_t dtype, uint64_t window,
@@ -100,17 +108,22 @@ public:
         const uint32_t ownServer = uint32_t(args_->rank) / Group;
         uint32_t owner = 0U, completed = 0U;
         for (uint32_t step = 1U; step <= servers; ++step) {
+            const uint64_t scanStart = profile_.DetailClock();
 #ifdef DEEPEP_LL_COMBINE_SMALL_BATCH
             const uint32_t begin = planned_ && step > 1U ? plan_.End(step - 2U) : 0U;
             const uint32_t end = planned_ ? plan_.End(step - 1U)
                 : SelectServer(ServerDedupHalfOrder(servers, ownServer, step - 1U), owner, step == 1U);
+            profile_.Elapsed(CombineProfile::PartialScanTicks, scanStart);
             for (uint32_t task = begin; task < end; ++task) {
 #else
             const uint32_t count = SelectServer(ServerDedupHalfOrder(servers, ownServer, step - 1U), owner, step == 1U);
+            profile_.Elapsed(CombineProfile::PartialScanTicks, scanStart);
             for (uint32_t task = 0; task < count; ++task) {
 #endif
                 const uint32_t row = uint32_t(rows_.GetValue(task));
+                const uint64_t metaStart = profile_.DetailClock();
                 LoadTask(row);
+                profile_.Elapsed(CombineProfile::PartialMetadataTicks, metaStart);
                 const uint32_t source = uint32_t(table2Ub_.GetValue(0U));
                 const uint32_t token = uint32_t(table2Ub_.GetValue(1U));
                 const uint32_t topk = uint32_t(table2Ub_.GetValue(2U));
@@ -128,7 +141,9 @@ public:
             }
             // Reuse phase scratch with its Vector dependency, not an MTE3 drain.
         }
+        const uint64_t drainStart = profile_.DetailClock();
         for (uint32_t lane = 0; lane < inputLanes_; ++lane) WaitFlag<HardEvent::V_MTE2>(lane);
+        profile_.Elapsed(CombineProfile::PartialInputDrainTicks, drainStart);
         // Post the final staged packet before M5 can wait on peer returns.
         // Isolated GM slots survive M5's UB reuse; tail CQ retirement is owned
         // by the enclosing kernel, after M5, not by this temporary object.
@@ -170,12 +185,15 @@ private:
             // before MTE2 overwrites them; output slots remain independent/live.
             // Input lanes 0..2 keep seeded V_MTE2 events live. Use a distinct
             // event in this direction for phase scratch, never FetchEventID(0).
+            const uint64_t loadStart = profile_.DetailClock();
             SetFlag<HardEvent::V_MTE2>(7U);
             WaitFlag<HardEvent::V_MTE2>(7U);
             DataCopyPad(ranks, types_[begin], {1U, span * 4U, 0U, 0U, 0U}, {false, 0U, 0U, 0});
             DataCopyPad(table, table2_[uint64_t(begin) * 3U], {1U, span * 12U, 0U, 0U, 0U}, {false, 0U, 0U, 0});
             SetFlag<HardEvent::MTE2_V>(7U);
             WaitFlag<HardEvent::MTE2_V>(7U);
+            profile_.Elapsed(CombineProfile::PartialScanLoadTicks, loadStart);
+            const uint64_t selectStart = profile_.DetailClock();
             Compares(typeMask, ranks, int32_t(2), CMPMODE::EQ, (span + 63U) / 64U * 64U);
             CreateVecIndex(indices, int32_t(0), span);
             PipeBarrier<PIPE_V>();
@@ -210,6 +228,7 @@ private:
             owner = (owner + uint32_t(selected)) % recvCores_;
             for (uint32_t task = first; task < uint32_t(selected); task += recvCores_)
                 rows_.SetValue(count++, table.GetValue(task));
+            profile_.Elapsed(CombineProfile::PartialScanVectorTicks, selectStart);
         }
         return count;
     }
@@ -224,7 +243,10 @@ private:
     __aicore__ inline void Load(uint32_t row, uint32_t source, uint32_t member)
     {
         const uint32_t lane = (inputSequence_ + member) % inputLanes_;
+        const uint64_t reuseStart = profile_.DetailClock();
         WaitFlag<HardEvent::V_MTE2>(lane);
+        profile_.Elapsed(CombineProfile::PartialReuseWaitTicks, reuseStart);
+        const uint64_t issueStart = profile_.DetailClock();
         GlobalTensor<uint16_t> data;
         if (member == 0U) {
             data = expert_[uint64_t(row) * h_];
@@ -243,6 +265,9 @@ private:
                 inputs_[lane * inputBytes_ / 2U], h_ * 2U);
         }
         SetFlag<HardEvent::MTE2_V>(lane);
+        profile_.Elapsed(member == 0U ? CombineProfile::PartialLocalIssueTicks : CombineProfile::PartialGetIssueTicks,
+                         issueStart);
+        profile_.Add(member == 0U ? CombineProfile::PartialLocalContrib : CombineProfile::PartialGetContrib);
     }
     template <class T>
     __aicore__ inline void Aggregate(uint32_t row, uint32_t source, uint32_t contributions)
@@ -253,12 +278,18 @@ private:
         for (uint32_t member = 0; member < contributions; ++member) {
             const uint32_t lane = (inputSequence_ + member) % inputLanes_;
             const float weight = weights.GetValue(member * 2U + 1U);
+            const uint64_t waitStart = profile_.DetailClock();
             WaitFlag<HardEvent::MTE2_V>(lane);
+            profile_.Elapsed(member == 0U ? CombineProfile::PartialLocalWaitTicks : CombineProfile::PartialGetWaitTicks,
+                             waitStart);
+            const uint64_t castStart = profile_.DetailClock();
             Cast(cast_, inputs_[lane * inputBytes_ / 2U].template ReinterpretCast<T>(), RoundMode::CAST_NONE, h_);
             SetFlag<HardEvent::V_MTE2>(lane);
+            profile_.Elapsed(CombineProfile::PartialComputeIssueTicks, castStart);
             // Prefetch may reuse this input after Cast, independent of weighted
             // accumulation and the previous token's outstanding partial send.
             if (member + inputLanes_ < contributions) Load(row, source, member + inputLanes_);
+            const uint64_t computeStart = profile_.DetailClock();
             PipeBarrier<PIPE_V>();
             if (member == 0U)
                 Muls(sum_, cast_, weight, h_);
@@ -268,15 +299,21 @@ private:
                 Add(sum_, sum_, product_, h_);
             }
             PipeBarrier<PIPE_V>();
+            profile_.Elapsed(CombineProfile::PartialComputeIssueTicks, computeStart);
         }
         inputSequence_ += contributions;
+        const uint64_t castStart = profile_.DetailClock();
         Cast(low_.template ReinterpretCast<T>(), sum_, RoundMode::CAST_RINT, h_);
         PipeBarrier<PIPE_V>();
+        profile_.Elapsed(CombineProfile::PartialComputeIssueTicks, castStart);
     }
     __aicore__ inline void Send(uint32_t lane, uint32_t source, uint32_t token, uint32_t topk)
     {
         // Only output-lane reuse waits for MTE3; aggregation entry never does.
+        const uint64_t reuseStart = profile_.DetailClock();
         WaitFlag<HardEvent::MTE3_V>(lane);
+        profile_.Elapsed(CombineProfile::PartialOutputWaitTicks, reuseStart);
+        const uint64_t packStart = profile_.DetailClock();
         auto output = outputs_[lane * packetBytes_];
         auto dst = output.ReinterpretCast<int32_t>();
         auto src = low_.ReinterpretCast<int32_t>();
@@ -284,15 +321,23 @@ private:
         Copy(dst[64U], src[64U], uint64_t(56U), uint8_t(blocks_), {1U, 1U, 16U, 15U});
         SetFlag<HardEvent::V_MTE3>(lane);
         WaitFlag<HardEvent::V_MTE3>(lane);
+        profile_.Elapsed(CombineProfile::PartialPackTicks, packStart);
 
         // This reduced output has one destination; the next use rewrites its
         // body and never reads the SDK's borrowed first 128 bytes.
         const uint64_t offset = window_ + COMBINE_DEDUP_EP_SERVER_DEDUP_SHARED_DATA_OFFSET +
             (uint64_t(token) * k_ + topk) * packetBytes_;
+        const uint64_t submitStart = profile_.DetailClock();
         SendReturnPacket(*rdmaBatch_, args_, source, offset, output, packetBytes_, false);
+        profile_.SampleMax(CombineProfile::PartialSubmitTicks, CombineProfile::PartialSubmitMaxTicks,
+                           CombineProfile::PartialSubmitMaxPeer, CombineProfile::PartialSubmitMaxToken, submitStart,
+                           source, token);
+        profile_.Add(CombineProfile::PartialSubmitCalls);
+        profile_.Add(CombineProfile::PartialRemoteCalls, LlTransport::RemoteWrite(args_, source) ? 1U : 0U);
         SetFlag<HardEvent::MTE3_V>(lane);
     }
 
+    CombineProfile::View profile_;
     uint32_t recvCores_ = 0;
     LlTransport::DispatchRdmaBatch* rdmaBatch_ = nullptr;
     const __gm__ DispatchDedup::CommArgs* args_ = nullptr;

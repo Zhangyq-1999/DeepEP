@@ -29,6 +29,7 @@ public:
         profile_.Bind(profile);
 #ifdef DEEPEP_LL_COMBINE_PROFILE
         profileOwner_ = profile;
+        returnBatch_.SetCombineProfile(profile);
 #endif
     }
     __aicore__ inline void Init(GM_ADDR commArgs, GM_ADDR expertOut, GM_ADDR assistInfoForCombine, GM_ADDR sendCounts,
@@ -67,8 +68,11 @@ public:
         GlobalTensor<int32_t> prefix;
         prefix.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t*>(sendCounts));
         auto tokenCount = prepareSum_.ReinterpretCast<int32_t>();
+        const uint64_t prefixStart = profile_.DetailClock();
         DataCopyPad(tokenCount, prefix[experts - 1U], {1U, 4U, 0U, 0U, 0U}, {false, 0U, 0U, 0});
         Sync<HardEvent::MTE2_S>();
+        profile_.Elapsed(CombineProfile::InitPrefixTicks, prefixStart);
+        profile_.Mark(CombineProfile::InitCountEnd);
         const int32_t tokens = tokenCount.GetValue(0U);
         const uint32_t localExperts = experts / uint32_t(args_->rankSize);
         const uint32_t copies = topK < localExperts ? topK : localExperts;
@@ -85,6 +89,7 @@ public:
             return;
         }
 
+        profile_.Mark(CombineProfile::InitLayoutEnd);
         blocks_ = (h_ * 2U + 479U) / 480U;
         laneBytes_ = blocks_ * 480U;
         resultStride_ = blocks_ * 512U;
@@ -240,19 +245,24 @@ private:
     {
         selected_ = 0U;
         if (tokens_ != 0U) {
+            const uint64_t loadStart = profile_.DetailClock();
             DataCopyPad(typeUb_, types_, {1U, tokens_ * 4U, 0U, 0U, 0U}, {false, 0U, 0U, 0});
             Sync<HardEvent::MTE2_V>();
+            profile_.Elapsed(CombineProfile::StageSelectLoadTicks, loadStart);
+            const uint64_t vectorStart = profile_.DetailClock();
             Compares(maskUb_, typeUb_, type, CMPMODE::EQ, tokens_);
             CreateVecIndex(indexUb_, int32_t(0), tokens_);
             PipeBarrier<PIPE_V>();
             GatherMask(packedUb_, indexUb_, maskUb_.ReinterpretCast<uint32_t>(), true, tokens_, {1U, 1U, 0U, 0U},
                        selected_);
             Sync<HardEvent::V_S>();
+            profile_.Elapsed(CombineProfile::StageSelectVectorTicks, vectorStart);
         }
     }
     __aicore__ inline void CopyLocalPendingTokens()
     {
         SelectRows(3);
+        profile_.Mark(CombineProfile::StageSelected);
         // Result lanes have no users in this phase. Keep zero gaps in a source
         // sized by packet blocks, not by the unrelated prepare-core row count.
         auto stageZeros = resultUb_.ReinterpretCast<float>();
@@ -271,26 +281,40 @@ private:
         uint32_t cacheBegin = 0U, cacheEnd = 0U;
         for (uint32_t task = 0; task < count; ++task) {
             const uint32_t row = uint32_t(packedUb_.GetValue(start + task));
+            const uint64_t metaStart = profile_.DetailClock();
             CacheTableRows(row, start, task, count, cacheBegin, cacheEnd);
+            profile_.Elapsed(CombineProfile::StageMetadataTicks, metaStart);
             const uint32_t slot = uint32_t(tableUb_.GetValue((row - cacheBegin) * 3U));
             const uint32_t lane = task % activeLanes;
+            const uint64_t reuseStart = profile_.DetailClock();
             WaitFlag<HardEvent::MTE3_MTE2>(lane);
+            profile_.Elapsed(CombineProfile::StageReuseWaitTicks, reuseStart);
+            const uint64_t inputStart = profile_.DetailClock();
             auto payload = payloadUb_[lane * laneBytes_ / 2U];
             DataCopyPad(payload, expert_[uint64_t(row) * h_], {1U, h_ * 2U, 0U, 0U, 0U}, {false, 0U, 0U, uint16_t(0)});
             SetFlag<HardEvent::MTE2_MTE3>(lane);
             WaitFlag<HardEvent::MTE2_MTE3>(lane);
+            profile_.Elapsed(CombineProfile::StageInputTicks, inputStart);
+            const uint64_t storeStart = profile_.DetailClock();
             StoreStageWire(stage_[uint64_t(slot) * stageStride_ / 2U], payload, stageZeros, h_ * 2U);
             SetFlag<HardEvent::MTE3_MTE2>(lane);
+            profile_.Elapsed(CombineProfile::StageStoreIssueTicks, storeStart);
         }
+        profile_.Mark(CombineProfile::StageCopiesEnd);
+        const uint64_t drainStart = profile_.DetailClock();
         // Also consumes seeded, unused lane events. All stage stores complete
         // before publication; individual tokens never wait immediately after store.
         for (uint32_t lane = 0; lane < activeLanes; ++lane) WaitFlag<HardEvent::MTE3_MTE2>(lane);
+        profile_.Elapsed(CombineProfile::StageDrainTicks, drainStart);
+        profile_.Mark(CombineProfile::StageDrained);
+        const uint64_t publishStart = profile_.DetailClock();
         Duplicate<float>(preparePublish_, 0.0f, 64U);
         Sync<HardEvent::V_S>();
         for (uint32_t j = 0; j < 8U; ++j) preparePublish_.SetValue(j * 8U, 1.0f);
         Sync<HardEvent::S_MTE3>();
         auto done = Control(args_->rank, COMBINE_DEDUP_EP_SERVER_DEDUP_COMBINE_PREPARE_DONE_OFFSET);
         DataCopyPad(done[core_ * 8U], preparePublish_, {8U, 32U, 0U, kCombinePrepareRowBytes - 32U, 0U});
+        profile_.Elapsed(CombineProfile::StagePublishTicks, publishStart);
     }
     __aicore__ inline void CacheTableRows(uint32_t row, uint32_t start, uint32_t task, uint32_t count,
                                           uint32_t& cacheBegin, uint32_t& cacheEnd)
@@ -316,20 +340,25 @@ private:
         selected_ = 0U;
         if (tokens_ == 0U) return;
         if (enableDedup_) {
+            const uint64_t loadStart = profile_.DetailClock();
             DataCopyPad(typeUb_, types_, {1U, tokens_ * 4U, 0U, 0U, 0U}, {false, 0U, 0U, 0});
             Sync<HardEvent::MTE2_V>();
+            profile_.Elapsed(CombineProfile::DirectRouteLoadTicks, loadStart);
+            const uint64_t vectorStart = profile_.DetailClock();
             Compares(maskUb_, typeUb_, int32_t(1), CMPMODE::EQ, (tokens_ + 63U) / 64U * 64U);
             CreateVecIndex(indexUb_, int32_t(0), tokens_);
             PipeBarrier<PIPE_V>();
             GatherMask(packedUb_, indexUb_, maskUb_.ReinterpretCast<uint32_t>(), true, tokens_, {1U, 1U, 0U, 0U},
                        selected_);
             Sync<HardEvent::V_S>();
+            profile_.Elapsed(CombineProfile::DirectSelectVectorTicks, vectorStart);
         } else {
             // Every row is a direct row without the dedup token type table.
             CreateVecIndex(packedUb_, int32_t(0), tokens_);
             selected_ = tokens_;
             Sync<HardEvent::V_S>();
         }
+        profile_.Mark(CombineProfile::DirectTypesEnd);
         if (selected_ == 0U) return;  // no routing reads for a type2/type3-only rank
         const uint32_t chunk = tokens_ < kEpServerDedupCombineTableRows ? tokens_ : kEpServerDedupCombineTableRows;
         CreateVecIndex(typeUb_, int32_t(0), chunk);
@@ -337,11 +366,16 @@ private:
         Muls(typeUb_, typeUb_, int32_t(12), chunk);  // Table2 byte offsets
         for (uint32_t begin = 0U; begin < tokens_; begin += chunk) {
             const uint32_t span = tokens_ - begin < chunk ? tokens_ - begin : chunk;
+            const uint64_t loadStart = profile_.DetailClock();
             Sync<HardEvent::V_MTE2>();  // table cache is no longer a Gather source
             DataCopyPad(tableUb_, table_[uint64_t(begin) * 3U], {1U, span * 12U, 0U, 0U, 0U}, {false, 0U, 0U, 0});
             Sync<HardEvent::MTE2_V>();
+            profile_.Elapsed(CombineProfile::DirectRouteLoadTicks, loadStart);
+            const uint64_t gatherStart = profile_.DetailClock();
             Gather(indexUb_[begin], tableUb_, typeUb_.ReinterpretCast<uint32_t>(), 0U, span);
+            profile_.Elapsed(CombineProfile::DirectGatherTicks, gatherStart);
         }
+        profile_.Mark(CombineProfile::DirectRoutesEnd);
         PipeBarrier<PIPE_V>();
         // Keep two persistent compact arrays: ranks in typeUb_, original rows
         // in packedUb_. indexUb_ becomes the per-server compact output list.
@@ -375,6 +409,7 @@ private:
         PrepareDirectRows();
         profile_.Mark(CombineProfile::DirectPrepared);
         if (selected_ == 0U) return;
+        const uint64_t setupStart = profile_.DetailClock();
         if (LlTransport::Rdma(args_)) returnBatch_.Init(args_, resultStride_);
         const uint32_t servers = uint32_t(args_->rankSize) / Group;
         const uint32_t ownServer = uint32_t(args_->rank) / Group;
@@ -395,6 +430,8 @@ private:
             SetFlag<HardEvent::MTE3_V>(lane);
         }
         PipeBarrier<PIPE_V>();
+        profile_.Elapsed(CombineProfile::DirectSetupTicks, setupStart);
+        profile_.Mark(CombineProfile::DirectSetupEnd);
         for (uint32_t step = 1U; step <= servers; ++step) {
             const uint64_t scanStart = profile_.DetailClock();
             const uint32_t count = SelectDirectServer(ServerDedupHalfOrder(servers, ownServer, step - 1U));
@@ -414,14 +451,18 @@ private:
                 const uint32_t lane = sendSequence++ % activeLanes;
                 profile_.Elapsed(CombineProfile::DirectMetadataTicks, metadataStart);
                 // Input lifetime ends after Vector has consumed its last block.
-                const uint64_t inputStart = profile_.DetailClock();
+                const uint64_t reuseStart = profile_.DetailClock();
                 WaitFlag<HardEvent::V_MTE2>(lane);
+                profile_.Elapsed(CombineProfile::DirectReuseWaitTicks, reuseStart);
+                const uint64_t inputStart = profile_.DetailClock();
                 auto input = payloadUb_[lane * laneBytes_ / 2U];
                 DataCopyPad(input, expert_[uint64_t(row) * h_], {1U, h_ * 2U, 0U, 0U, 0U},
                             {false, 0U, 0U, uint16_t(0)});
                 SetFlag<HardEvent::MTE2_V>(lane);
+                profile_.Elapsed(CombineProfile::DirectInputIssueTicks, inputStart);
+                const uint64_t inputWait = profile_.DetailClock();
                 WaitFlag<HardEvent::MTE2_V>(lane);
-                profile_.Elapsed(CombineProfile::DirectInputWaitTicks, inputStart);
+                profile_.Elapsed(CombineProfile::DirectInputWaitTicks, inputWait);
                 // Output lifetime ends only after the previous send has read it.
                 const uint64_t outputStart = profile_.DetailClock();
                 WaitFlag<HardEvent::MTE3_V>(lane);
@@ -443,18 +484,29 @@ private:
                 // the next lane use, so SDK scratch need not be restored.
                 const uint64_t offset = window_ + COMBINE_DEDUP_EP_SERVER_DEDUP_SHARED_DATA_OFFSET +
                     (uint64_t(token) * topK_ + topk) * resultStride_;
+                profile_.MarkOnce(CombineProfile::DirectFirstSubmit);
+                const uint64_t submitStart = profile_.DetailClock();
                 SendReturnPacket(returnBatch_, args_, source, offset, output, resultStride_, false);
+                profile_.SampleMax(CombineProfile::DirectSubmitTicks, CombineProfile::DirectSubmitMaxTicks,
+                                   CombineProfile::DirectSubmitMaxPeer, CombineProfile::DirectSubmitMaxToken,
+                                   submitStart, source, token);
+                profile_.Add(CombineProfile::DirectSubmitCalls);
+                profile_.Add(CombineProfile::DirectRemoteCalls, LlTransport::RemoteWrite(args_, source) ? 1U : 0U);
+                profile_.Mark(CombineProfile::DirectLastSubmit);
                 SetFlag<HardEvent::MTE3_V>(lane);
             }
             // No server fence: the next scan can overlap pending output DMA.
         }
         profile_.Set(CombineProfile::DirectRows, sendSequence);
         returnBatch_.SubmitPending();
+        profile_.Mark(CombineProfile::DirectPendingEnd);
+        const uint64_t drainStart = profile_.DetailClock();
         // Final retirement includes unused seeded lanes, never a per-token drain.
         for (uint32_t lane = 0; lane < activeLanes; ++lane) {
             WaitFlag<HardEvent::V_MTE2>(lane);
             WaitFlag<HardEvent::MTE3_V>(lane);
         }
+        profile_.Elapsed(CombineProfile::DirectDrainTicks, drainStart);
     }
     // M4→M5交接需保留尚未完成的MTE3输出槽；只等待当前要复用的输入/向量资源。
     // 修改此处同步必须联查Partial与SourceAggregate的槽位生命周期，避免提前覆盖发送数据。
@@ -467,9 +519,13 @@ private:
         // Seed exactly once, including empty M4. M5 inherits these events.
         for (uint32_t lane = 0; lane < workspace_.outputLanes; ++lane) SetFlag<HardEvent::MTE3_V>(lane);
         ServerDedupPartial<Group> partial;
+#ifdef DEEPEP_LL_COMBINE_PROFILE
+        partial.SetProfile(profileOwner_);
+#endif
         partial.Init(args_, &pipe_, arena_.Get<uint8_t>()[kEpServerDedupCombineResidentUbBytes], expertAddr_,
                      tableAddr_, relayAddr_, typesAddr_, tokens_, bs_, h_, topK_, experts_, dtype_, window_,
                      workspace_, &returnBatch_);
+        profile_.Mark(CombineProfile::PartialInitEnd);
 #ifdef DEEPEP_LL_COMBINE_SMALL_BATCH
         // Metadata is already immutable. Plan while peers finish staging;
         // payload loads still begin strictly after the existing ready wait.
@@ -489,16 +545,26 @@ private:
         profile_.Mark(CombineProfile::PartialEnd);
     }
     __aicore__ inline void WaitFlags(GlobalTensor<float> gm, LocalTensor<float> input, LocalTensor<float> work,
-                                     LocalTensor<float> sum, uint32_t flags)
+                                     LocalTensor<float> sum, uint32_t flags, bool incoming)
     {
         while (true) {
+            const uint64_t loadStart = profile_.DetailClock();
             // The previous reduction has completed before MTE2 overwrites input.
             Sync<HardEvent::V_MTE2>();
             DataCopyPad(input, gm, {1U, flags * 32U, 0U, 0U, 0U}, {false, 0U, 0U, 0.0f});
             Sync<HardEvent::MTE2_V>();
+            profile_.Elapsed(incoming ? CombineProfile::ReadyPollLoadTicks : CombineProfile::NotifyPollLoadTicks,
+                             loadStart);
+            const uint64_t checkStart = profile_.DetailClock();
             ReduceSum<float>(sum, input, work, 1U, flags, 1U);
             Sync<HardEvent::V_S>();
-            if (sum.GetValue(0U) == float(flags)) return;
+            const bool ready = sum.GetValue(0U) == float(flags);
+            profile_.Elapsed(incoming ? CombineProfile::ReadyPollCheckTicks : CombineProfile::NotifyPollCheckTicks,
+                             checkStart);
+            profile_.Add(incoming ? CombineProfile::ReadyPollCalls : CombineProfile::NotifyPollCalls);
+            profile_.Add(incoming ? CombineProfile::ReadyPollMisses : CombineProfile::NotifyPollMisses,
+                         ready ? 0U : 1U);
+            if (ready) return;
         }
     }
     __aicore__ inline void NotifyServerCard()
@@ -506,7 +572,9 @@ private:
         profile_.Mark(CombineProfile::NotifyBegin);
         auto done = Control(args_->rank,
                             COMBINE_DEDUP_EP_SERVER_DEDUP_COMBINE_PREPARE_DONE_OFFSET + uint64_t(core_ - notifyBegin_) * kCombinePrepareRowBytes);
-        WaitFlags(done, prepareInput_, prepareWork_, prepareSum_, coreNum_);
+        WaitFlags(done, prepareInput_, prepareWork_, prepareSum_, coreNum_, false);
+        profile_.Mark(CombineProfile::NotifyLocalReady);
+        const uint64_t resetStart = profile_.DetailClock();
         Duplicate<float>(prepareZero_, 0.0f, coreNum_ * 8U);
         Duplicate<float>(notifyUb_, 0.0f, recvCores_ * 8U);
         Sync<HardEvent::V_S>();
@@ -514,6 +582,8 @@ private:
         Sync<HardEvent::V_MTE3>();
         Sync<HardEvent::S_MTE3>();
         DataCopyPad(done, prepareZero_, {1U, coreNum_ * 32U, 0U, 0U, 0U});
+        profile_.Elapsed(CombineProfile::NotifyResetTicks, resetStart);
+        const uint64_t publishStart = profile_.DetailClock();
         // Eight notification cores cover all peers in the logical group.
         // Ready rows retain 512-byte capacity, independent of active group size.
         const uint32_t groupBase = uint32_t(args_->rank) / Group *
@@ -525,6 +595,7 @@ private:
                 notifyUb_.ReinterpretCast<uint8_t>(), recvCores_, 512U, false,
                 prepareInput_.ReinterpretCast<uint8_t>());
         }
+        profile_.Elapsed(CombineProfile::NotifyPublishTicks, publishStart);
         profile_.Mark(CombineProfile::NotifyEnd);
     }
     __aicore__ inline void WaitServerReady()
@@ -532,10 +603,12 @@ private:
         profile_.Mark(CombineProfile::ReadyBegin);
         auto ready = Control(args_->rank, COMBINE_DEDUP_EP_SERVER_DEDUP_COMBINE_SERVER_READY_OFFSET +
                                               uint64_t(core_ - sendCores_) * 512U);
-        WaitFlags(ready, readyInput_, readyWork_, readySum_, Group);
+        WaitFlags(ready, readyInput_, readyWork_, readySum_, Group, true);
+        const uint64_t resetStart = profile_.DetailClock();
         Duplicate<float>(readyZero_, 0.0f, 128U);
         Sync<HardEvent::V_MTE3>();
         DataCopyPad(ready, readyZero_, {1U, 512U, 0U, 0U, 0U});
+        profile_.Elapsed(CombineProfile::ReadyResetTicks, resetStart);
         profile_.Mark(CombineProfile::ReadyEnd);
     }
 

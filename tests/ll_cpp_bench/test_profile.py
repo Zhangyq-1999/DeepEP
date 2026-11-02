@@ -34,7 +34,7 @@ template<MemDsbT> void DataSyncBarrier() { ++fences; }
 #pragma once
 #include <cassert>
 inline uint8_t* flushed = nullptr;
-inline void dcci_cachelines(uint8_t* p, uint64_t n) { assert(n == 511); flushed = p; }
+inline void dcci_cachelines(uint8_t* p, uint64_t n) { assert(n == CombineProfile::kWords * 8 - 1); flushed = p; }
 ''')
     source = tmp_path / "profile.cpp"
     source.write_text(r'''
@@ -63,6 +63,11 @@ int main() {
             view.Elapsed(ProbeTicks, start);
             view.Add(ProbeCalls, 3);
             view.Mark(StageEnd);
+            view.MarkOnce(DirectFirstSubmit);
+            view.MarkOnce(DirectFirstSubmit);
+            const auto submit = view.DetailClock();
+            view.SampleMax(DirectSubmitTicks, DirectSubmitMaxTicks, DirectSubmitMaxPeer, DirectSubmitMaxToken,
+                           submit, 3, 48);
             view.Mark(FlushDone);
             auto row = base + core * kWords;
             for (uint32_t i = 0; i < kWords; ++i) assert(row[i] == 0); // one tail export
@@ -72,6 +77,9 @@ int main() {
                 assert(row[Schema] == kSchema && row[Core] == core && row[StageRows] == 7);
                 assert(row[ProbeTicks] == (level == 2 ? 17U : 0U));
                 assert(row[ProbeCalls] == (level == 2 ? 3U : 0U));
+                assert(row[DirectSubmitTicks] == (level == 2 ? 17U : 0U));
+                assert(row[DirectSubmitMaxPeer] == (level == 2 ? 3U : 0U));
+                assert(row[DirectSubmitMaxToken] == (level == 2 ? 48U : 0U));
                 assert(flushed == reinterpret_cast<uint8_t*>(row));
                 assert(row[Entry] > (uint64_t(1) << 60));
             } else {
@@ -116,6 +124,21 @@ int main() {
     disabled.Mark(FlushDone);
     assert(disabled.DetailClock() == 0);
     disabled.Finish(0, 4, 16);
+#ifdef DEEPEP_LL_COMBINE_PROFILE
+    AscendC::core = 0;
+    uint64_t sample[kWords]{};
+    DeviceProfile probes;
+    probes.Init(reinterpret_cast<uint8_t*>(sample), 2);
+    probes.Probe(false, 32, 0xffffffffU, 120, probes.DetailClock());
+    probes.Probe(true, 48, 2, 15, probes.DetailClock());
+    probes.Mark(FlushDone);
+    probes.Finish(0, 4, 72);
+    assert(sample[ProbeCalls] == 2 && sample[ProbeMisses] == 1);
+    assert(sample[ProbeTicks] == 34 && sample[ProbeMissTicks] == 17);
+    assert(sample[ProbeFlagBlocks] == 135);
+    assert(sample[ProbeMaxToken] == 32 && sample[ProbeMaxSlot] == 0xffffffffU);
+    assert(sample[FinalFirstReady] && sample[FinalLastReady] >= sample[FinalFirstReady]);
+#endif
 }
 ''')
     exe = tmp_path / "profile.exe"
