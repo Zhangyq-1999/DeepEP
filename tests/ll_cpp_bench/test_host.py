@@ -223,7 +223,7 @@ while (($#)); do
     case $1 in --output-dir) root_out=$2;; --variants) variants=$2;; --profile) level=$2;; --entry-sync) sync=$2;; esac
     shift 2
 done
-[[ $level == 2 && $sync == device ]]
+[[ $level == 2 && $sync == host ]]
 echo init >>"$root_out/initializations"
 IFS=, read -r -a phases <<< "$variants"
 for phase in "${!phases[@]}"; do
@@ -243,7 +243,7 @@ done
     env = dict(os.environ, PATH=helper_path + ":" + original_path)
     args = [bash, str(script), "--ep", "4", "--variants", "ref-profile,opt-profile",
             "--mpi-home", mpi.as_posix(), "--run-id", "repeat", "--",
-            "--profile", "2", "--entry-sync", "device"]
+            "--profile", "2", "--entry-sync", "host"]
     for _ in range(2):
         result = subprocess.run(args, env=env, capture_output=True, text=True, timeout=20)
         assert result.returncode == 0, result.stdout + result.stderr

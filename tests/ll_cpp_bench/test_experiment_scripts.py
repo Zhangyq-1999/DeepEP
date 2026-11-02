@@ -143,7 +143,7 @@ def test_host_detection_and_benchmark_overrides(harness):
     assert peer_args[peer_args.index("--master-port") + 1] == "30071"
     local, = call_options(run("run_all.sh", "--ep", "4", "--devices", "6,7,14,15").stdout)
     assert local["--hosts"] == "localhost" and local["--node-rank"] == "0"
-    assert local["--devices"] == "6,7,14,15" and local["--entry-sync"] == "auto"
+    assert local["--devices"] == "6,7,14,15" and local["--entry-sync"] == "host"
     assert call_options(run("run_all.sh", "--ep", "16", "--variants", "base").stdout)[0]["--profile"] == "2"
     clean, = call_options(run("run_all.sh", "--ep", "16", "--variants", "base", "--profile", "0").stdout)
     assert clean["--profile"] == "0"

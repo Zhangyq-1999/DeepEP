@@ -35,9 +35,6 @@ endif()
 set(_ll_sources
     "${DEEPEP_SOURCE_DIR}/csrc/kernels/dispatch/low_latency.cpp"
     "${DEEPEP_LL_COMBINE_SOURCE}")
-if(DEEPEP_LL_BENCH_GATE)
-    list(APPEND _ll_sources "${DEEPEP_SOURCE_DIR}/tests/ll_cpp_bench/entry_gate.cpp")
-endif()
 # One dispatch mode/group per translation unit keeps each device compilation
 # bounded; all supported modes still enter the final production library.
 foreach(_mode prequant_e4m3 fp16 fp16_e4m3 fp16_e5m2 bf16 bf16_e4m3 bf16_e5m2)
@@ -51,8 +48,7 @@ list(APPEND _ll_sources
     "${DEEPEP_SOURCE_DIR}/csrc/kernels/dispatch/low_latency/variants/bf16_g2.cpp")
 if(DEEPEP_LL_OPS_BASE)
     # This independent baseline needs no DeepEP Dispatch or Combine objects.
-    set(_ll_sources "${DEEPEP_SOURCE_DIR}/tests/ll_cpp_bench/ops_shmem/device.cpp"
-                    "${DEEPEP_SOURCE_DIR}/tests/ll_cpp_bench/entry_gate.cpp")
+    set(_ll_sources "${DEEPEP_SOURCE_DIR}/tests/ll_cpp_bench/ops_shmem/device.cpp")
 endif()
 add_library(deepep_kernel_ll_plain OBJECT ${_ll_sources})
 add_library(deepep_kernel_ll_reference OBJECT ${_ll_sources})

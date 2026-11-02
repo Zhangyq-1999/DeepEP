@@ -131,7 +131,7 @@ int main(int argc, char** argv)
                      "--variants base,opt --build-root DIR --output-dir DIR\n"
                      "--tokens 32,48,64,72,256 --hidden 3584 --topk 8 --experts 384 --capacity 256\n"
                      "--dtype bf16|fp16 --route random|hotspot --seed 0 --warmup 10 --iters 100\n"
-                     "--devices LIST --entry-sync auto|host|device --profile 0|1|2 --profile-iters 10 --timeout 300\n";
+                     "--devices LIST --entry-sync host|auto --profile 0|1|2 --profile-iters 10 --timeout 300\n";
         return 0;
     }
     return run_suite(argc, argv, std::filesystem::canonical("/proc/self/exe"));

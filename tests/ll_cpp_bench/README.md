@@ -101,7 +101,7 @@ bash tests/ll_cpp_bench/run_all.sh --hosts HOST0,HOST1 --node-rank 0 \
 bash tests/ll_cpp_bench/build_all.sh --variants base,ops-shmem-base
 ```
 
-首次构建会下载固定版本的 kernel 及依赖，保留上游许可证。已有该版本的干净 checkout 时，可用 `OPS_SOURCE_DIR=/path/to/ops-transformer` 指定源码目录。新基线只编译自身 kernel 和测试门控，不编译 DeepEP Dispatch 的多种特化。
+首次构建会下载固定版本的 kernel 及依赖，保留上游许可证。已有该版本的干净 checkout 时，可用 `OPS_SOURCE_DIR=/path/to/ops-transformer` 指定源码目录。新基线只编译自身 kernel，不编译 DeepEP Dispatch 的多种特化。
 
 第一台执行以下命令，第二台复制第一台打印的加入命令：
 
@@ -266,17 +266,15 @@ EP32 初始化时若出现 `Too many open files`，随后报 `HrtRaBlockGetSocke
 
 每种 BS 先运行一次 Dispatch，生成真实的路由表和专家输入。用例把 Dispatch 输出当作恒等专家的输出，使用均匀权重执行 Combine，并检查结果是否回到原输入。正式采样前后各检查一次精度，检查按 BF16 或 FP16 的舍入误差设置容差。
 
-EP4、EP8、EP16、EP32 默认使用 `--entry-sync device`。用例先在计算流中排好以下任务：
+所有 EP 默认使用 Host MPI 同步。每轮先确认上一轮的设备任务完成，再通过 `MPI_Barrier` 等待所有 rank。Barrier 返回后，各 rank 提交以下任务：
 
 ```text
-本卡启动门控 → SHMEM 设备 barrier → 起始 Event → Combine → 结束 Event
+起始 Event → Combine → 结束 Event
 ```
 
-所有 rank 提交完这组任务后，Host 通过 MPI Barrier 会合，再通过独立控制流释放各卡门控。SHMEM barrier 等待所有卡到达，然后各卡执行已排好的 Combine。设备 barrier 和门控都位于计时区间外，原版 Combine 内部保持不变。预热采用相同的启动方式。
+预热也在每轮提交前执行 MPI Barrier。用例不再插入设备门控或 SHMEM 入口同步 kernel，原版 Combine 内部保持不变。MPI 同步位于 Event 计时之外，只协调 Host 提交；各卡仍可能存在设备启动偏差，分析时需要结合 CANN profiling 确认。
 
-这种安排让设备 barrier 吸收 Host 放行偏差，也避免起始 Event 执行后继续等待 Host 提交 Combine。设备调度仍可能带来少量启动间隔，实际间隔以 CANN profiling 为准。
-
-EP32 在独立的测试 kernel 中调用 `aclshmemx_roce_sync_all`，单机沿用 SHMEM 设备 barrier。入口同步使用现有 SDK，位于起始 Event 之前。`--entry-sync host` 保留此前的 Host MPI 同步方式，可用于检查启动偏差的影响。设备调度和通信收尾仍需实测，入口同步不保证所有轮次时延一致。
+`--entry-sync host` 是默认配置，`auto` 同样选择 Host MPI 同步。旧的 `device` 选项已移除。
 
 `rank-N.csv` 保存每个 rank 的全部采样。rank 0 的 `rank-max.csv` 保留每轮最慢 rank 的编号和 Event 耗时；`summary.csv` 按同轮最慢 rank 汇总，再计算均值、最小值、最大值、p50 和 p99，单位为 μs。汇总也记录实际核数、原版标识、启动同步方式、实验开关和打点状态。双机输出分布在各自主机，完整采样需要保留两边目录。
 
@@ -309,7 +307,7 @@ bash tests/ll_cpp_bench/launch.sh \
     --ep 4 --variants ref-profile,opt-profile --run-id ep4-profile-ab -- \
     --devices 6,7,14,15 --tokens 32,48,64,72 \
     --hidden 3584 --topk 8 --experts 384 --capacity 256 --dtype bf16 \
-    --route random --seed 0 --entry-sync device \
+    --route random --seed 0 --entry-sync host \
     --warmup 10 --profile-iters 10 --profile 2
 ```
 
@@ -387,7 +385,7 @@ bash tests/ll_cpp_bench/summarize.sh results/ll-cpp/RUN_ID/4-ref-profile
 | `--seed` | 0 | 路由随机种子 |
 | `--warmup` / `--iters` | 10 / 100 | 预热轮数与无打点运行的采样轮数 |
 | `--profile-iters` | 10 | 启用打点时的采样轮数 |
-| `--entry-sync` | auto | 使用设备门控与 barrier；显式选择 host 可使用原 Host MPI 同步 |
+| `--entry-sync` | host | 每轮提交前执行 Host MPI Barrier；auto 同样选择 host |
 | `--profile` | 0 | 0 关闭，1 记录阶段边界，2 增加热循环打点；干净构建自动保持关闭 |
 | `--timeout` | 300 | SHMEM 初始化和控制操作超时，单位为秒 |
 

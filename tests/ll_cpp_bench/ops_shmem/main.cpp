@@ -12,8 +12,6 @@
 #include <iostream>
 #include <memory>
 
-extern "C" void ll_bench_entry_gate_do(void* stream, uint8_t* flag);
-extern "C" void ll_bench_roce_entry_sync_do(void* stream);
 namespace {
 void check(int rc, const char* operation)
 {
@@ -50,36 +48,6 @@ struct Event {
     void record(aclrtStream stream)
     {
         check(aclrtRecordEvent(value, stream), "record Event");
-    }
-};
-struct Gate {
-    Buffer flag{64};
-    uint32_t* released = nullptr;
-    aclrtStream control = nullptr;
-    uint32_t world;
-    explicit Gate(uint32_t ranks) : world(ranks)
-    {
-        check(aclrtMallocHost(reinterpret_cast<void**>(&released), 64), "gate Host allocation");
-        std::memset(released, 0, 64);
-        released[0] = 1;
-        check(aclrtCreateStream(&control), "gate control stream");
-    }
-    ~Gate()
-    {
-        if (control) aclrtDestroyStream(control);
-        if (released) aclrtFreeHost(released);
-    }
-    void enqueue(aclrtStream stream)
-    {
-        check(aclrtMemset(flag.p, flag.bytes, 0, flag.bytes), "arm gate");
-        ll_bench_entry_gate_do(stream, flag.p);
-        if (world > 16) ll_bench_roce_entry_sync_do(stream);
-        else check(aclshmemx_barrier_on_stream(ACLSHMEM_TEAM_WORLD, stream), "device entry barrier");
-    }
-    void release()
-    {
-        check(aclrtMemcpyAsync(flag.p, flag.bytes, released, 64, ACL_MEMCPY_HOST_TO_DEVICE, control), "release gate");
-        check(aclrtSynchronizeStream(control), "gate release completion");
     }
 };
 struct DeviceCase {
@@ -189,13 +157,6 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
     auto c = context_for(session);
     Buffer context(sizeof(c));
     context.upload(&c, sizeof(c));
-    std::unique_ptr<Gate> gate;
-    if (o.entrySync == "device") {
-        if (o.world > 16) ll_bench_roce_entry_sync_do(stream);
-        else check(aclshmemx_barrier_on_stream(ACLSHMEM_TEAM_WORLD, stream), "prime device entry barrier");
-        check(aclrtSynchronizeStream(stream), "entry barrier preparation");
-        gate = std::make_unique<Gate>(o.world);
-    }
     if (!o.rank)
         std::cout << "ops-shmem-base: upstream " << LL_OPS_REV
                   << "; SHMEM QP Put + batch-boundary quiet; entry_sync=" << o.entrySync << std::endl;
@@ -210,17 +171,10 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
         Event start, end;
         std::vector<float> times;
         for (uint32_t i = 0; i < o.warmup + o.iterations; ++i) {
-            if (gate)
-                gate->enqueue(stream);
-            else
-                peers.barrier();
+            peers.barrier();
             if (i >= o.warmup) start.record(stream);
             launch();
             if (i >= o.warmup) end.record(stream);
-            if (gate) {
-                peers.barrier();
-                gate->release();
-            }
             check(aclrtSynchronizeStream(stream), "Combine completion");
             if (i >= o.warmup) {
                 float ms = 0;

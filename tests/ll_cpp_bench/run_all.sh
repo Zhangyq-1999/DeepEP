@@ -9,7 +9,7 @@ cann=$ll_bench_cann mpi=$ll_bench_mpi shmem=$ll_bench_shmem
 job_timeout=3600 join_timeout=300
 bench_keys=(tokens hidden topk experts capacity dtype route seed entry-sync warmup iters profile-iters profile timeout)
 declare -A bench=([tokens]=32,48,64,72,256 [hidden]=3584 [topk]=8 [experts]=384
-                  [capacity]=256 [dtype]=bf16 [route]=random [seed]=0 [entry-sync]=auto
+                  [capacity]=256 [dtype]=bf16 [route]=random [seed]=0 [entry-sync]=host
                   [warmup]=10 [iters]=100 [profile-iters]=10 [profile]=2 [timeout]=300)
 fail() { echo "ERROR: $*" >&2; exit 2; }
 while (($#)); do
@@ -24,13 +24,13 @@ Options: --ep 2|4|8|16|32 --node-rank 0|1 --hosts HOST0,HOST1
          --join-timeout SECONDS --job-timeout SECONDS
 Benchmark options (with or without a preceding --):
          --tokens LIST --devices LIST --hidden N --topk N --experts N --capacity N
-         --dtype bf16|fp16 --route random|hotspot --seed N --entry-sync auto|host|device
+         --dtype bf16|fp16 --route random|hotspot --seed N --entry-sync host|auto
          --warmup N --iters N --profile-iters N --profile 0|1|2 --timeout SECONDS
 Defaults: EP32, hosts 90.90.93.84,90.90.93.184, port 29671.
           Four clean and four diagnostic versions; BS 32,48,64,72,256; H3584/K8/E384/BF16.
           Warmup 10; clean samples 100; diagnostic samples 10, level 2.
 All selected variants share one MPI/ACL/SHMEM initialization.
-Device entry sync before Events for EP4/8/16/32; --entry-sync host retains the old mode.
+Host MPI Barrier before each warmup/sample; no benchmark device synchronization kernel.
 Node is detected from local addresses; --node-rank overrides detection.
 Node 0 generates a new run-id on every invocation unless --run-id is supplied.
 For custom hosts, ports or variants, use the printed node-1 command.

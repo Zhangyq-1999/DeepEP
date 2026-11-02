@@ -26,9 +26,6 @@
 #include "kernels/combine/low_latency/ep_memory_server_dedup_combine_tiling.h"
 #include "kernels/combine/low_latency/launch.hpp"
 
-extern "C" void ll_bench_entry_gate_do(void* stream, uint8_t* flag);
-extern "C" void ll_bench_roce_entry_sync_do(void* stream);
-
 namespace {
 void check(int status, const char* operation)
 {
@@ -70,43 +67,6 @@ struct Event {
     void record(aclrtStream stream)
     {
         check(aclrtRecordEvent(value, stream), "record event");
-    }
-};
-struct EntryGate {
-    Buffer flag{64U};
-    uint32_t* released = nullptr;
-    aclrtStream control = nullptr;
-    uint32_t world;
-    explicit EntryGate(uint32_t ranks) : world(ranks)
-    {
-        check(aclrtMallocHost(reinterpret_cast<void**>(&released), 64U), "gate host allocation");
-        std::memset(released, 0, 64U);
-        released[0] = 1U;
-        const auto status = aclrtCreateStream(&control);
-        if (status != ACL_SUCCESS) {
-            aclrtFreeHost(released);
-            released = nullptr;
-            check(status, "gate control stream");
-        }
-    }
-    ~EntryGate()
-    {
-        if (control) aclrtDestroyStream(control);
-        if (released) aclrtFreeHost(released);
-    }
-    void enqueue(aclrtStream stream)
-    {
-        // Previous iteration is complete. The release DMA uses a separate stream.
-        check(aclrtMemset(flag.p, flag.bytes, 0, flag.bytes), "arm entry gate");
-        ll_bench_entry_gate_do(stream, flag.p);
-        if (world > 16) ll_bench_roce_entry_sync_do(stream);
-        else check(aclshmemx_barrier_on_stream(ACLSHMEM_TEAM_WORLD, stream), "device entry barrier");
-    }
-    void release()
-    {
-        check(aclrtMemcpyAsync(flag.p, flag.bytes, released, 64U, ACL_MEMCPY_HOST_TO_DEVICE, control),
-              "release entry gate");
-        check(aclrtSynchronizeStream(control), "gate release completion");
     }
 };
 uint8_t* local_base(const llbench::Runtime& session)
@@ -278,14 +238,6 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
     auto hostComm = comm_args(session);
     Buffer comm(sizeof(hostComm));
     comm.upload(&hostComm, sizeof(hostComm));
-    std::unique_ptr<EntryGate> gate;
-    if (o.entrySync == "device") {
-        // Complete first-use SDK setup before blocking the compute stream.
-        if (o.world > 16) ll_bench_roce_entry_sync_do(stream);
-        else check(aclshmemx_barrier_on_stream(ACLSHMEM_TEAM_WORLD, stream), "prime device entry barrier");
-        check(aclrtSynchronizeStream(stream), "entry barrier preparation");
-        gate = std::make_unique<EntryGate>(o.world);
-    }
     std::filesystem::create_directories(o.output);
     auto rankPath = std::filesystem::path(o.output) / ("rank-" + std::to_string(o.rank) + ".csv");
     if (std::filesystem::exists(rankPath)) throw std::runtime_error("Result exists; choose a new output directory");
@@ -342,15 +294,8 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
             c.combine.timerMode = o.profile;
         }
         for (uint32_t i = 0; i < o.warmup; ++i) {
-            if (gate)
-                gate->enqueue(stream);
-            else
-                peers.barrier();
+            peers.barrier();
             launch();
-            if (gate) {
-                peers.barrier();
-                gate->release();
-            }
             check(aclrtSynchronizeStream(stream), "warmup");
         }
         std::vector<float> times;
@@ -364,20 +309,10 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
                 std::fill(profileData.begin(), profileData.end(), 0U);
                 profileBuffer->upload(profileData.data(), profileBuffer->bytes);
             }
-            if (gate)
-                gate->enqueue(stream);
-            else
-                peers.barrier();
+            peers.barrier();
             start.record(stream);
             launch();
             end.record(stream);
-            // Every rank has queued gate -> device barrier -> both Events
-            // and Combine before Host releases any gate. MPI return skew
-            // is absorbed by the device barrier outside the Event interval.
-            if (gate) {
-                peers.barrier();
-                gate->release();
-            }
             check(aclrtSynchronizeStream(stream), "sample completion");
             float ms = 0;
             check(aclrtEventElapsedTime(&ms, start.value, end.value), "event elapsed");
