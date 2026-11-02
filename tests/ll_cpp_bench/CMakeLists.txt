@@ -29,8 +29,10 @@ target_include_directories(ll_combine_bench PRIVATE "${DEEPEP_SOURCE_DIR}/csrc"
     "${DEEPEP_PLATFORM_INCLUDE}" "${ASCEND_HOME_PATH}/include" "${SHMEM_ROOT}/include")
 target_link_directories(ll_combine_bench PRIVATE "${ASCEND_HOME_PATH}/lib64"
     "${ASCEND_HOME_PATH}/${CMAKE_SYSTEM_PROCESSOR}-linux/lib64")
+# tiling_api is static in CANN 9.2 and uses platform symbols. Keep its provider
+# afterwards so --as-needed retains libplatform when linking the executable.
 target_link_libraries(ll_combine_bench PRIVATE MPI::MPI_CXX ascendcl shmem deepep_device
-    platform tiling_api unified_dlog ${CMAKE_DL_LIBS} pthread)
+    tiling_api platform unified_dlog ${CMAKE_DL_LIBS} pthread)
 target_compile_definitions(ll_combine_bench PRIVATE DEEPEP_LL_RDMA=1 DEEPEP_LL_METADATA_CORES=4
     DEEPEP_LL_COMBINE_RECV_CORES=${DEEPEP_LL_COMBINE_RECV_CORES}
     $<$<BOOL:${DEEPEP_LL_COMBINE_SMALL_BATCH}>:DEEPEP_LL_COMBINE_SMALL_BATCH=1>

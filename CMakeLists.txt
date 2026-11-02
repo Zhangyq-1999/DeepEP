@@ -46,7 +46,8 @@ find_path(DEEPEP_PLATFORM_INCLUDE tiling/platform/platform_ascendc.h
     HINTS "${ASCEND_HOME_PATH}/asc/include" "${ASCEND_HOME_PATH}/include/op_common"
           "${ASCEND_HOME_PATH}/${CMAKE_SYSTEM_PROCESSOR}-linux/asc/include" NO_DEFAULT_PATH REQUIRED)
 target_link_directories(_C PRIVATE "${ASCEND_HOME_PATH}/lib64")
-target_link_libraries(_C PRIVATE platform tiling_api unified_dlog)
+# Resolve static tiling_api references before --as-needed considers libplatform.
+target_link_libraries(_C PRIVATE tiling_api platform unified_dlog)
 target_include_directories(_C PRIVATE "${DEEPEP_PLATFORM_INCLUDE}" csrc "${ASCEND_HOME_PATH}/include" "${SHMEM_ROOT}/include")
 target_link_libraries(_C PRIVATE ascendcl shmem deepep_device ${CMAKE_DL_LIBS})
 target_compile_definitions(_C PRIVATE DEEPEP_LL_RDMA=1 DEEPEP_LL_METADATA_CORES=${DEEPEP_LL_METADATA_CORES})
