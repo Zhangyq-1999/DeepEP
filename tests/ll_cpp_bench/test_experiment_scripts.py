@@ -143,8 +143,19 @@ def test_host_detection_and_benchmark_overrides(harness):
     local, = call_options(run("run_all.sh", "--ep", "4", "--devices", "6,7,14,15").stdout)
     assert local["--hosts"] == "localhost" and local["--node-rank"] == "0"
     assert local["--devices"] == "6,7,14,15" and local["--entry-sync"] == "auto"
-    assert "base is uninstrumented" in run("run_all.sh", "--ep", "16", "--variants", "base", ok=False).stderr
+    assert "uninstrumented" in run("run_all.sh", "--ep", "16", "--variants", "base", ok=False).stderr
     clean, = call_options(run("run_all.sh", "--ep", "16", "--variants", "base", "--profile", "0").stdout)
     assert clean["--profile"] == "0"
     env["TEST_LOCAL_IP"] = "90.90.93.84 90.90.93.184"
     assert "Both hosts match" in run("run_all.sh", ok=False).stderr
+
+
+def test_optional_ops_baseline(harness):
+    run, env = harness
+    commands = call_options(run("build_all.sh", "--variants", "base,ops-shmem-base").stdout)
+    assert len(commands) == 2
+    assert commands[1]["--variant"] == "ops-shmem-base"
+    assert commands[1]["--profile"] == "OFF"
+    assert "uninstrumented" in run("run_all.sh", "--variants", "ops-shmem-base", ok=False).stderr
+    cmd, = call_options(run("run_all.sh", "--variants", "base,ops-shmem-base", "--profile", "0").stdout)
+    assert cmd["--variants"] == "base,ops-shmem-base" and cmd["--profile"] == "0"

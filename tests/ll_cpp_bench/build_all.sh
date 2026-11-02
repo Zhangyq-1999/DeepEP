@@ -16,6 +16,7 @@ With no arguments, build base and the four current diagnostic experiments:
 ref-profile, remote-profile, pipeline-profile, return-profile.
 Previous experiments opt-profile, r36-profile and early-profile remain
 available through --variants but are excluded from the default build.
+ops-shmem-base builds the optional ops-transformer baseline with SHMEM transport.
 Existing build directories are updated in place; all flags are explicit.
 SDK defaults: CANN cann-9.2.T101, MPI /usr/local/mpich-3.2.1,
              SHMEM third-party/shmem/install/shmem in this checkout.
@@ -39,7 +40,7 @@ IFS=, read -r -a names <<< "$variants"
 # Validate the complete selection before starting any build.
 for name in "${names[@]}"; do
     case "$name" in
-        base|ref-profile|opt-profile|r36-profile|early-profile|remote-profile|pipeline-profile|return-profile) ;;
+        base|ops-shmem-base|ref-profile|opt-profile|r36-profile|early-profile|remote-profile|pipeline-profile|return-profile) ;;
         *) fail "Unknown experiment: $name (see --help)";;
     esac
 done
@@ -48,6 +49,7 @@ for name in "${names[@]}"; do
     variant=opt profile=ON small=OFF early=OFF remote=OFF defer=OFF recv=0
     case "$name" in
         base) variant=base; profile=OFF;;
+        ops-shmem-base) variant=ops-shmem-base; profile=OFF;;
         opt-profile) small=ON;;
         r36-profile) recv=36;;
         early-profile) early=ON;;

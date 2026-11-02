@@ -88,8 +88,8 @@ if [[ -z $run_id ]]; then
 fi
 [[ $run_id =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]] || fail 'Use letters, digits, _, . or - for run-id'
 [[ ${bench[profile]} =~ ^[012]$ ]] || fail 'profile must be 0, 1 or 2'
-if [[ ,$variants, == *,base,* && ${bench[profile]} != 0 ]]; then
-    fail 'base is uninstrumented; use --variants base --profile 0, or ref-profile for diagnostics'
+if [[ ( ,$variants, == *,base,* || ,$variants, == *,ops-shmem-base,* ) && ${bench[profile]} != 0 ]]; then
+    fail 'base and ops-shmem-base are uninstrumented; use --profile 0, or ref-profile for diagnostics'
 fi
 printf 'RUN_ID=%s\nnode=%s EP=%s variants=%s\n' "$run_id" "$node_rank" "$ep" "$variants"
 if [[ $node_rank == 0 ]]; then

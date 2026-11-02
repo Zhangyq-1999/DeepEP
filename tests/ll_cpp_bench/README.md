@@ -76,6 +76,33 @@ bash tests/ll_cpp_bench/run_all.sh --hosts HOST0,HOST1 --node-rank 0 \
 
 ## 拉代码和编译
 
+### ops-transformer 的 SHMEM 适配基线
+
+`ops-shmem-base` 使用 [ubx_reserve 的 Combine 实现](https://gitcode.com/zzg_code/ops-transformer/blob/e6c7d2e57dd222e5a774ba3c89392a50a6a26a78/mc2/moe_distribute_combine_v2/op_kernel/arch35/moe_distribute_combine_v2_a5_roce.h)，固定到提交 `e6c7d2e5`。它保留原实现的分核、机内汇集、部分归约、跨机回传和最终归约流程。通信上下文由 SHMEM 内存和 PE 映射组成，测试侧继续使用 MPI 和 SHMEM 初始化，直接启动 kernel。
+
+跨机适配使用 `aclshmemx_roce_qp_put_nbi`，在原有批次边界调用 `aclshmemx_roce_qp_quiet`。这与原仓 Hcomm 的批量提交、CQE 策略有差异，结果用于比较 SHMEM 后端上的算法方案。单机也运行这套分层算法，只执行机内阶段。原来的 `base` 继续使用冻结的 DeepEP kernel。
+
+两边分别按需编译，默认 `build_all.sh` 仍只构建前文的 5 个版本：
+
+```bash
+bash tests/ll_cpp_bench/build_all.sh --variants base,ops-shmem-base
+```
+
+首次构建会下载固定版本的 kernel 及依赖，保留上游许可证。已有该版本的干净 checkout 时，可用 `OPS_SOURCE_DIR=/path/to/ops-transformer` 指定源码目录。新基线只编译自身 kernel 和测试门控，不编译 DeepEP Dispatch 的多种特化。
+
+第一台执行以下命令，第二台复制第一台打印的加入命令：
+
+```bash
+bash tests/ll_cpp_bench/run_all.sh --variants base,ops-shmem-base --profile 0 --iters 100
+# 单机比较：在上面的命令中增加 --ep 16。
+```
+
+初版支持 H3584/H7168、TopK 8、384 个专家、BF16/FP16，BS 和设备选择沿用现有参数。测试在 CPU 上根据相同路由生成 expert 输入、行索引、计数和位图，准备工作在计时外完成。每个 rank 检查输出，汇总仍使用逐轮 rank-MAX Event。构建目录的 `ops-baseline.txt` 和结果 CSV 记录源码版本及通信适配方式。
+
+这份基线关闭算子内打点，使用 `--profile 0`。Host 检查覆盖路由与汇集位图的一致性、构建选择及源码适配范围；CANN 编译和 NPU 精度、性能仍需在目标机器验证。
+
+### DeepEP 基线与实验版
+
 你已经拉取 fork 时，在现有仓库中执行以下命令。双机测试需要两台机器使用相同的绝对路径。
 
 ```bash
