@@ -64,6 +64,12 @@ int main() {
     assert(rejected);
 }
 ''', encoding="utf-8")
+    dispatch = (ROOT / "csrc/kernels/dispatch/low_latency.cpp").read_text(encoding="utf-8")
+    begin = dispatch.index('extern "C" DEEPEP_EXPORT uint32_t deepep_ll_ranks_per_group(')
+    query = dispatch[begin:dispatch.index("\n}", begin) + 2]
+    source.write_text(source.read_text(encoding="utf-8").replace("int main() {",
+                      "#define DEEPEP_EXPORT\n" + query + "\nint main() {\n"
+                      "assert(deepep_ll_ranks_per_group(8)==DispatchDedup::LlGroupForWorld(8));\n"), encoding="utf-8")
     exe = tmp_path / "sparse.exe"
     subprocess.run([zig, "c++", "-std=c++17", "-O1", "-UNDEBUG", "-DDEEPEP_LL_PHYSICAL_RANKS_PER_HOST=4",
                     "-DDEEPEP_LL_RDMA=1", "-I" + str(HERE), "-I" + str(ROOT / "csrc"),
@@ -82,3 +88,35 @@ def test_ep8_launcher_uses_two_nodes_and_four_processes():
         if node == 0:
             assert "-ppn 4 -n 8" in r.stdout
         assert "-launcher fork" not in r.stdout
+
+
+def test_sparse_count_transport_and_receive(tmp_path):
+    """Run the production transport/reader model for four-rank physical hosts."""
+    zig = os.environ.get("DEEPEP_TEST_ZIG")
+    if not zig:
+        pytest.skip("Set DEEPEP_TEST_ZIG")
+    # This model already exercises delayed MTE and RDMA completion, zero-count
+    # rounds, repeated frame reuse and independently computed expert prefixes.
+    source = (ROOT / "tests/ll_rdma/direct_count_test.cpp").read_text()
+    source = source.replace("16U,32U,64U,128U,256U", "4U,8U,16U,32U")
+    source = source.replace("32U,64U,128U,256U", "8U,16U,32U")
+    source = source.replace("32U,64U,384U,1024U", "8U,16U,384U,1024U")
+    source = source.replace("/16", "/4").replace("%16", "%4").replace("-16", "-4")
+    source = source.replace("source/4*16", "source/4*4")
+    source = source.replace("reserved0=16", "reserved0=4")
+    source = source.replace("{0U,16U}", "{0U,4U}")
+    # Concrete UB budgets below describe the original 16-rank host, not EP8.
+    source = "\n".join(line for line in source.splitlines()
+                       if "CountSendUbBytes(1,384,4,32" not in line)
+    cpp = tmp_path / "sparse-count.cpp"
+    cpp.write_text(source)
+    exe = tmp_path / "sparse-count.exe"
+    subprocess.run([zig, "c++", "-std=c++17", "-O1", "-UNDEBUG", "-DDEEPEP_LL_PHYSICAL_RANKS_PER_HOST=4",
+                    "-I" + str(ROOT / "tests/ll_rdma/stubs"), "-I" + str(ROOT / "csrc"),
+                    str(cpp), "-o", str(exe)], check=True, timeout=180)
+    subprocess.run([str(exe)], check=True, timeout=90)
+
+    counts = (ROOT / "csrc/kernels/dispatch/low_latency/device/dispatch_server_dedup_counts.h").read_text(encoding="utf-8")
+    # Both send and receive must select the same frame format at world=8.
+    assert "packedFrames_ = directRanks_;" in counts
+    assert "epWorldSize_ > 16U" not in counts

@@ -2,10 +2,9 @@
 #include "ll_count_frame_layout.h"
 
 namespace DispatchDedup {
-// At most ceil(1024 / 2)=512 logical records per receiver and world>=32.
-// Direct counts can change layout at each 16-source host boundary. A
-// 512-record partition starting mid-host needs at most 33 contiguous runs.
-constexpr uint32_t kLlCountReadMaxRuns = 33U;
+// At most 512 logical records per receiver. Direct counts can change layout
+// at every physical-host boundary, including sparse four-rank hosts.
+constexpr uint32_t kLlCountReadMaxRuns = 512U / kLlPhysicalRanksPerHost + 1U;
 struct LlCountReadRun {
     uint64_t recordOffset = 0, commitOffset = 0;
     uint32_t first = 0, records = 0; // first is relative to this receiver's UB
@@ -25,7 +24,8 @@ bool BuildCountReadPlan(uint32_t experts, uint32_t world, uint32_t countCores,
                        bool directRanks = false)
 {
     out.size = 0;
-    if (world < 32U || world > 256U || experts < world || experts > 1024U || experts % world ||
+    if (world < 2U * kLlPhysicalRanksPerHost || world > 256U || world % kLlPhysicalRanksPerHost ||
+        experts < world || experts > 1024U || experts % world ||
         !countCores || countCores > 72U || destination >= world || first > experts ||
         count > experts - first || count > 512U) return false;
     out.sourceStrideBlocks = (experts / world) * 16U - 1U;

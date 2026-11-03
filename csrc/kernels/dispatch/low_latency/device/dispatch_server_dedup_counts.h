@@ -49,8 +49,8 @@ public:
         rscvStatusNum_ = experts;
         moeExpertNumPerRank_ = experts / epWorldSize_;
         expertTokenNumsType_ = expertTokenNumsType;
-        packedFrames_ = LlTransport::Rdma(args_) && epWorldSize_ > 16U;
         directRanks_ = LlTransport::Rdma(args_) && epWorldSize_ > kLlPhysicalRanksPerHost;
+        packedFrames_ = directRanks_;
         countWindow_ = DispatchServerDedupWindowOffset(magic);
         retirement_.Init(args_);
         layout_ = DispatchServerDedupCountLayout(experts, GetBlockNum());
