@@ -8,7 +8,7 @@ import subprocess
 import pytest
 
 HERE = Path(__file__).resolve().parent
-PROFILES = ("ref-profile", "prepare-profile", "flag-profile", "prepare-flag-profile")
+PROFILES = ("ref-profile", "poll800-profile")
 
 
 @pytest.fixture
@@ -70,8 +70,8 @@ def call_options(output):
 def test_build_all_isolated_matrix_and_failure_stop(harness):
     run, env = harness
     calls = call_options(run("build_all.sh").stdout)
-    assert len(calls) == 8
-    for name, call in zip(("base", "prepare", "flag", "prepare-flag", *PROFILES), calls):
+    assert len(calls) == 4
+    for name, call in zip(("base", "poll800", *PROFILES), calls):
         assert call["--build-dir"].endswith("/build/ll-cpp-" + name)
         assert call["--variant"] == ("base" if name == "base" else "opt")
         assert call["--profile"] == ("ON" if name.endswith("-profile") else "OFF")
@@ -85,11 +85,12 @@ def test_build_all_isolated_matrix_and_failure_stop(harness):
         assert call["--progress-probe"] == ("ON" if name in ("probe", "issue-probe", "probe-profile", "issue-probe-profile") else "OFF")
         assert call["--simt-meta"] == ("ON" if name.startswith("prepare") else "OFF")
         assert call["--prefetch-return"] == ("ON" if name.startswith("prepare") else "OFF")
-        assert call["--simt-flag"] == ("ON" if "flag" in name else "OFF")
+        assert call["--simt-flag"] == "OFF"
+        assert call["--poll-nop"] == ("800" if name.startswith("poll800") else "0")
         assert call["--shmem-root"].endswith("/third-party/shmem/install/shmem")
     env["FAIL_BUILD"] = "ref-profile"
     result = run("build_all.sh", ok=False)
-    assert result.returncode == 17 and len(call_options(result.stdout)) == 5
+    assert result.returncode == 17 and len(call_options(result.stdout)) == 3
     assert "CALL" not in run("build_all.sh", "--variants", "base,typo", ok=False).stdout
 
 
@@ -120,7 +121,7 @@ def test_repeat_default_run_and_second_host_join(harness):
         assert call["--node-rank"] == "0" and call["--ep"] == "8"
         assert call["--devices"] == "12,13,14,15" and call["--ranks-per-host"] == "4"
         assert call["--hosts"] == "90.90.93.84,90.90.93.184"
-        assert call["--variants"] == ",".join(("base", "prepare", "flag", "prepare-flag", *PROFILES))
+        assert call["--variants"] == ",".join(("base", "poll800", *PROFILES))
         assert call["--tokens"] == "32,48,64,72,256"
         assert call["--iters"] == "100" and call["--profile"] == "2"
         assert call["--profile-iters"] == "10"

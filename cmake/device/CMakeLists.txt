@@ -132,6 +132,10 @@ foreach(_option DEEPEP_LL_COMBINE_REMOTE_FIRST DEEPEP_LL_COMBINE_DEFER_RETURN
             APPEND PROPERTY COMPILE_DEFINITIONS ${_option}=1)
     endif()
 endforeach()
+if(DEEPEP_LL_COMBINE_POLL_NOP)
+    set_property(SOURCE "${DEEPEP_SOURCE_DIR}/csrc/kernels/combine/low_latency.cpp"
+        APPEND PROPERTY COMPILE_DEFINITIONS DEEPEP_LL_COMBINE_POLL_NOP=${DEEPEP_LL_COMBINE_POLL_NOP})
+endif()
 target_compile_options(deepep_kernel_options INTERFACE "$<$<NOT:$<CONFIG:Debug>>:-O2>" -xasc --npu-arch=dav-3510
     --cce-auto-infer-kernel-type=false
     "-ffile-prefix-map=${DEEPEP_SOURCE_DIR}=."

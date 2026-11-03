@@ -22,6 +22,13 @@ option(DEEPEP_LL_COMBINE_PROGRESS_PROBE "Remember confirmed result contributions
 option(DEEPEP_LL_COMBINE_SIMT_META "SIMT stable task compaction and batch metadata loads" OFF)
 option(DEEPEP_LL_COMBINE_SIMT_FLAG "SIMT checks of complete UB flag snapshots" OFF)
 option(DEEPEP_LL_COMBINE_PREFETCH_RETURN "Post the previous return after issuing next input reads" OFF)
+set(DEEPEP_LL_COMBINE_POLL_NOP "0" CACHE STRING "Nop cycles after a failed flag probe; 0 disables")
+if(NOT DEEPEP_LL_COMBINE_POLL_NOP MATCHES "^(0|[1-9][0-9]*)$")
+    message(FATAL_ERROR "poll-nop must be an integer in [0,65535]")
+endif()
+if(DEEPEP_LL_COMBINE_POLL_NOP GREATER 65535)
+    message(FATAL_ERROR "poll-nop must be an integer in [0,65535]")
+endif()
 if(DEEPEP_LL_COMBINE_SIMT_FLAG AND (DEEPEP_LL_COMBINE_PROGRESS_PROBE OR DEEPEP_LL_COMBINE_EARLY_REDUCE))
     message(FATAL_ERROR "SIMT flag checks cannot be combined with progress-probe or early-reduce")
 endif()
@@ -49,7 +56,7 @@ if(DEEPEP_LL_OPS_BASE)
        DEEPEP_LL_COMBINE_EARLY_REDUCE OR DEEPEP_LL_COMBINE_REMOTE_FIRST OR DEEPEP_LL_COMBINE_DEFER_RETURN OR
        DEEPEP_LL_COMBINE_EARLY_ISSUE OR DEEPEP_LL_COMBINE_PROGRESS_PROBE OR
        DEEPEP_LL_COMBINE_SIMT_META OR DEEPEP_LL_COMBINE_SIMT_FLAG OR DEEPEP_LL_COMBINE_PREFETCH_RETURN OR
-       NOT DEEPEP_LL_COMBINE_RECV_CORES STREQUAL "0")
+       DEEPEP_LL_COMBINE_POLL_NOP OR NOT DEEPEP_LL_COMBINE_RECV_CORES STREQUAL "0")
         message(FATAL_ERROR "ops-shmem-base has no DeepEP experiment flags or instrumentation")
     endif()
     include("${CMAKE_CURRENT_LIST_DIR}/ops_shmem/source.cmake")
@@ -58,7 +65,7 @@ elseif(DEEPEP_LL_COMBINE_ORIGINAL)
        DEEPEP_LL_COMBINE_REMOTE_FIRST OR DEEPEP_LL_COMBINE_DEFER_RETURN OR
        DEEPEP_LL_COMBINE_EARLY_ISSUE OR DEEPEP_LL_COMBINE_PROGRESS_PROBE OR
        DEEPEP_LL_COMBINE_SIMT_META OR DEEPEP_LL_COMBINE_SIMT_FLAG OR DEEPEP_LL_COMBINE_PREFETCH_RETURN OR
-       NOT DEEPEP_LL_COMBINE_RECV_CORES STREQUAL "0")
+       DEEPEP_LL_COMBINE_POLL_NOP OR NOT DEEPEP_LL_COMBINE_RECV_CORES STREQUAL "0")
         message(FATAL_ERROR "Original Combine cannot enable experimental options or profiling; use --variant opt")
     endif()
     include("${CMAKE_CURRENT_LIST_DIR}/baseline.cmake")
@@ -121,7 +128,8 @@ target_compile_definitions(ll_bench_variant PRIVATE
     DEEPEP_BENCH_PROGRESS_PROBE=$<BOOL:${DEEPEP_LL_COMBINE_PROGRESS_PROBE}>
     DEEPEP_BENCH_SIMT_META=$<BOOL:${DEEPEP_LL_COMBINE_SIMT_META}>
     DEEPEP_BENCH_SIMT_FLAG=$<BOOL:${DEEPEP_LL_COMBINE_SIMT_FLAG}>
-    DEEPEP_BENCH_PREFETCH_RETURN=$<BOOL:${DEEPEP_LL_COMBINE_PREFETCH_RETURN}>)
+    DEEPEP_BENCH_PREFETCH_RETURN=$<BOOL:${DEEPEP_LL_COMBINE_PREFETCH_RETURN}>
+    DEEPEP_BENCH_POLL_NOP=${DEEPEP_LL_COMBINE_POLL_NOP})
 # Hash the compiled source tree, including uncommitted edits, for cross-rank checks.
 file(GLOB_RECURSE _identity_files CONFIGURE_DEPENDS
     "${DEEPEP_SOURCE_DIR}/csrc/*.h" "${DEEPEP_SOURCE_DIR}/csrc/*.hpp" "${DEEPEP_SOURCE_DIR}/csrc/*.cpp"
@@ -149,4 +157,4 @@ if(DEEPEP_LL_OPS_BASE)
         "implementation=ops-shmem-base\nupstream=${LL_OPS_REV}\ntransport=SHMEM QP Put; quiet at upstream batch boundary\n")
 endif()
 file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/bench-build.txt" CONTENT
-    "source=${_source_id}\noriginal=${DEEPEP_LL_COMBINE_ORIGINAL}\nbaseline_revision=${LL_COMBINE_BASELINE_REV}\ncombine_source=${DEEPEP_LL_COMBINE_SOURCE}\nsmall_batch=${DEEPEP_LL_COMBINE_SMALL_BATCH}\nrecv_cores=${DEEPEP_LL_COMBINE_RECV_CORES}\nearly_reduce=${DEEPEP_LL_COMBINE_EARLY_REDUCE}\nremote_first=${DEEPEP_LL_COMBINE_REMOTE_FIRST}\ndefer_return=${DEEPEP_LL_COMBINE_DEFER_RETURN}\nearly_issue=${DEEPEP_LL_COMBINE_EARLY_ISSUE}\nprogress_probe=${DEEPEP_LL_COMBINE_PROGRESS_PROBE}\nsimt_meta=${DEEPEP_LL_COMBINE_SIMT_META}\nsimt_flag=${DEEPEP_LL_COMBINE_SIMT_FLAG}\nprefetch_return=${DEEPEP_LL_COMBINE_PREFETCH_RETURN}\nranks_per_host=${DEEPEP_LL_PHYSICAL_RANKS_PER_HOST}\nprofile=${DEEPEP_LL_COMBINE_PROFILE}\nmpi=${MPI_CXX_COMPILER}\nshmem=${SHMEM_ROOT}\n")
+    "source=${_source_id}\noriginal=${DEEPEP_LL_COMBINE_ORIGINAL}\nbaseline_revision=${LL_COMBINE_BASELINE_REV}\ncombine_source=${DEEPEP_LL_COMBINE_SOURCE}\nsmall_batch=${DEEPEP_LL_COMBINE_SMALL_BATCH}\nrecv_cores=${DEEPEP_LL_COMBINE_RECV_CORES}\nearly_reduce=${DEEPEP_LL_COMBINE_EARLY_REDUCE}\nremote_first=${DEEPEP_LL_COMBINE_REMOTE_FIRST}\ndefer_return=${DEEPEP_LL_COMBINE_DEFER_RETURN}\nearly_issue=${DEEPEP_LL_COMBINE_EARLY_ISSUE}\nprogress_probe=${DEEPEP_LL_COMBINE_PROGRESS_PROBE}\nsimt_meta=${DEEPEP_LL_COMBINE_SIMT_META}\nsimt_flag=${DEEPEP_LL_COMBINE_SIMT_FLAG}\npoll_nop=${DEEPEP_LL_COMBINE_POLL_NOP}\nprefetch_return=${DEEPEP_LL_COMBINE_PREFETCH_RETURN}\nranks_per_host=${DEEPEP_LL_PHYSICAL_RANKS_PER_HOST}\nprofile=${DEEPEP_LL_COMBINE_PROFILE}\nmpi=${MPI_CXX_COMPILER}\nshmem=${SHMEM_ROOT}\n")

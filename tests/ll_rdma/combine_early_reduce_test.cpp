@@ -17,6 +17,8 @@ struct bfloat16_t {
     operator float() const { uint32_t word = uint32_t(bits) << 16U; float value; std::memcpy(&value, &word, 4); return value; }
 };
 namespace AscendC {
+inline uint32_t nopCalls=0;
+template<int Count> void Nop() { static_assert(Count==800); ++nopCalls; }
 enum class RoundMode { CAST_NONE, CAST_RINT };
 template<int> uint32_t GetBitCount(uint64_t bits) { return uint32_t(__builtin_popcountll(bits)); }
 template<class D, class S> void Cast(LocalTensor<D> d, LocalTensor<S> s, RoundMode, uint32_t n) {
@@ -122,7 +124,7 @@ template<class T> void Check(uint32_t bs,uint32_t h,uint32_t k,uint32_t particip
         reinterpret_cast<GM_ADDR>(output.data()),bs,h,k,dtype,participant,recv,layout,partialTasks,true,true);
     else op.InitDirectShared({scratch},packets,reinterpret_cast<GM_ADDR>(weights.data()),reinterpret_cast<GM_ADDR>(output.data()),
         bs,h,k,dtype,participant,recv,layout,true);
-    tick=contributions=earlyObserved=0;
+    tick=contributions=earlyObserved=nopCalls=0;
     uint32_t retired=op.Process();
     if(dedup){for(uint32_t lane=0;lane<layout.outputLanes;++lane)if(!((retired>>lane)&1U))WaitFlag<HardEvent::MTE3_V>(lane);}
     else op.DrainM6();
@@ -142,6 +144,13 @@ template<class T> void Check(uint32_t bs,uint32_t h,uint32_t k,uint32_t particip
 #endif
     assert(profileData[CombineProfile::ProbeCalls] >= count);
     assert(profileData[CombineProfile::ProbeMisses] <= profileData[CombineProfile::ProbeCalls]);
+#if DEEPEP_LL_COMBINE_POLL_NOP > 0
+    // Exactly one pause after each miss, none for first/ready checks.
+    assert(nopCalls==profileData[CombineProfile::ProbeMisses]);
+    assert(profileData[CombineProfile::PollPauseCalls]==nopCalls);
+#else
+    assert(nopCalls==0 && profileData[CombineProfile::PollPauseCalls]==0);
+#endif
 #endif
     for(uint32_t t=0;t<bs;++t)for(uint32_t x=0;x<h;++x){
         if(t<begin || t>=begin+count){assert(output[t*h+x]==0x6a6a);continue;}

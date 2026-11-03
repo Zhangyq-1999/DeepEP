@@ -6,6 +6,7 @@
 
 #include "kernel_operator.h"
 #include "combine_profile_device.h"
+#include "combine_poll.h"
 #ifdef DEEPEP_LL_COMBINE_SIMT_FLAG
 #include "combine_simt.h"
 #endif
@@ -85,6 +86,7 @@ public:
             const bool ready = Probe(token, task >> 16U);
 #endif
             if (!ready) {
+                PauseAfterFlagMiss(profile_);
                 if (++scan == remaining) scan = 0U;
                 continue;
             }
@@ -367,6 +369,7 @@ private:
             const uint32_t k = state.nextK;
             if (enableDedup_ && ((mask >> k) & 1U) == 0U) continue;
             if (!ProbeContribution(state.token, k)) {
+                PauseAfterFlagMiss(profile_);
                 profile_.Add(CombineProfile::EarlyStalls);
                 return false;
             }

@@ -174,6 +174,8 @@ inline void profile_header(std::ostream& out)
         "tail_last_seen",
         "tail_ready",
         "tail_observations",
+        "poll_pause_ticks",
+        "poll_pause_calls",
         "rank",
         "core",
         "tokens",

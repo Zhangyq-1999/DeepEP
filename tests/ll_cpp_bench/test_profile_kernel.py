@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 @pytest.mark.parametrize("profile", [False, True])
 @pytest.mark.parametrize("small", [False, True])
-@pytest.mark.parametrize("returns", [False, True, "new", "simt"])
+@pytest.mark.parametrize("returns", [False, True, "new", "simt", "poll"])
 def test_all_combine_profile_paths_compile(tmp_path, profile, small, returns):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
     if not zig:
@@ -38,7 +38,9 @@ int main() {}
     (tmp_path / "shmem.h").write_text('#pragma once\ninline void dcci_cachelines(uint8_t*, uint64_t) {}\n')
     flags = ["-DDEEPEP_LL_RDMA=1", "-DDEEPEP_LL_COMBINE_EARLY_REDUCE=1",
              "-DDEEPEP_LL_COMBINE_RECV_CORES=36"]
-    if returns == "simt":
+    if returns == "poll":
+        flags += ["-DDEEPEP_LL_COMBINE_POLL_NOP=800", "-DDEEPEP_LL_PHYSICAL_RANKS_PER_HOST=4"]
+    elif returns == "simt":
         flags = ["-DDEEPEP_LL_RDMA=1", "-DDEEPEP_LL_COMBINE_SIMT_META=1", "-DDEEPEP_LL_COMBINE_SIMT_FLAG=1",
                  "-DDEEPEP_LL_COMBINE_PREFETCH_RETURN=1", "-DDEEPEP_LL_PHYSICAL_RANKS_PER_HOST=4"]
     elif returns == "new":

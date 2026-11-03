@@ -576,6 +576,7 @@ private:
             profile_.Add(incoming ? CombineProfile::ReadyPollMisses : CombineProfile::NotifyPollMisses,
                          ready ? 0U : 1U);
             if (ready) return;
+            PauseAfterFlagMiss(profile_);
         }
     }
     __aicore__ inline void NotifyServerCard()

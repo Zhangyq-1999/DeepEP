@@ -3,7 +3,7 @@
 
 namespace CombineProfile {
 // One 1536-byte record per AIV. Timestamps precede StageRows; detail counters
-// are exported only at level 2. Schema 5 adds metadata batches and missing-flag identity.
+// are exported only at level 2. Schema 6 adds the failed-probe pause cost.
 enum Word : uint32_t {
     Entry,
     ProfileInitEnd,
@@ -168,6 +168,8 @@ enum Word : uint32_t {
     TailLastSeen,
     TailReady,
     TailObservations,
+    PollPauseTicks,
+    PollPauseCalls,
     Rank,
     Core,
     Tokens,
@@ -179,8 +181,8 @@ enum Word : uint32_t {
     Count
 };
 constexpr uint32_t kWords = 192U;
-constexpr uint64_t kSchema = 5U;
+constexpr uint64_t kSchema = 6U;
 constexpr Word kDetailBegin = InitPrefixTicks;
-constexpr Word kDetailEnd = TailObservations;
+constexpr Word kDetailEnd = PollPauseCalls;
 static_assert(Count <= kWords && StageRows <= 64U, "profile record bounds");
 }  // namespace CombineProfile

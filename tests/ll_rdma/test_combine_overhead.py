@@ -33,6 +33,7 @@ struct NoProfile {
  void Mark(CombineProfile::Word) {} void Set(CombineProfile::Word, uint64_t) {}
  uint64_t DetailClock() { return 0; } void Elapsed(CombineProfile::Word, uint64_t) {}
 } profile_;
+void PauseAfterFlagMiss(NoProfile&) {}
 ''' + source, encoding='utf-8')
     subprocess.run([zig, 'c++', '-std=c++17', '-O1', '-UNDEBUG',
                     '-I' + str(tmp_path), '-I' + str(ROOT / 'csrc'), str(cpp), '-o', str(exe)],

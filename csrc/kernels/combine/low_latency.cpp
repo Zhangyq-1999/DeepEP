@@ -72,6 +72,9 @@ extern "C" DEEPEP_EXPORT uint32_t deepep_ll_combine_return_options()
 #ifdef DEEPEP_LL_COMBINE_PREFETCH_RETURN
     options |= 64U;
 #endif
+#if defined(DEEPEP_LL_COMBINE_POLL_NOP) && DEEPEP_LL_COMBINE_POLL_NOP > 0
+    options |= uint32_t(DEEPEP_LL_COMBINE_POLL_NOP) << 16U;
+#endif
     return options;
 }
 

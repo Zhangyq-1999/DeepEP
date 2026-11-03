@@ -5,7 +5,7 @@ mpi=${MPI_HOME:-/usr/local/mpich-3.2.1}
 cann=${ASCEND_HOME_PATH:-}
 shmem=${SHMEM_ROOT:-}
 build="$root/build/ll-cpp-base"
-ranks_per_host=16 issue=OFF probe=OFF simt_meta=OFF simt_flag=OFF prefetch_return=OFF
+poll_nop=0 ranks_per_host=16 issue=OFF probe=OFF simt_meta=OFF simt_flag=OFF prefetch_return=OFF
 small=OFF early=OFF profile=OFF remote_first=OFF defer_return=OFF recv=0 jobs=4 variant=auto ops_source=${OPS_SOURCE_DIR:-}
 while (($#)); do
     case "$1" in
@@ -14,9 +14,9 @@ while (($#)); do
             echo '         [--variant base|opt|ops-shmem-base|auto] [--profile ON|OFF] [--small-batch ON|OFF] [--early-reduce ON|OFF] [--recv-cores 0|8..36] [--jobs N]'
             echo '         [--ops-source DIR] optional pinned ops-transformer checkout'
             echo '         [--remote-first ON|OFF] [--defer-return ON|OFF] [--early-issue ON|OFF] [--progress-probe ON|OFF] [--ranks-per-host 4|16]'
-            echo '         [--simt-meta ON|OFF] [--simt-flag ON|OFF] [--prefetch-return ON|OFF]'
+            echo '         [--poll-nop 0..65535] [--simt-meta ON|OFF] [--simt-flag ON|OFF] [--prefetch-return ON|OFF]'
             exit 0;;
-        --shmem-root|--cann-home|--mpi-home|--build-dir|--variant|--profile|--small-batch|--early-reduce|--recv-cores|--jobs|--remote-first|--defer-return|--ops-source|--early-issue|--progress-probe|--ranks-per-host|--simt-meta|--simt-flag|--prefetch-return)
+        --shmem-root|--cann-home|--mpi-home|--build-dir|--variant|--profile|--small-batch|--early-reduce|--recv-cores|--jobs|--remote-first|--defer-return|--ops-source|--early-issue|--progress-probe|--ranks-per-host|--simt-meta|--simt-flag|--prefetch-return|--poll-nop)
             (($# >= 2)) || { echo "Missing value: $1" >&2; exit 2; }
             key=$1 value=$2; shift 2
             case "$key" in
@@ -25,7 +25,7 @@ while (($#)); do
                 --variant) variant=$value;; --profile) profile=$value;; --recv-cores) recv=$value;; --jobs) jobs=$value;;
                 --remote-first) remote_first=$value;; --defer-return) defer_return=$value;;
                 --ops-source) ops_source=$value;; --early-issue) issue=$value;; --progress-probe) probe=$value;; --ranks-per-host) ranks_per_host=$value;;
-                --simt-meta) simt_meta=$value;; --simt-flag) simt_flag=$value;; --prefetch-return) prefetch_return=$value;;
+                --poll-nop) poll_nop=$value;; --simt-meta) simt_meta=$value;; --simt-flag) simt_flag=$value;; --prefetch-return) prefetch_return=$value;;
             esac;;
         *) echo "Unknown build option: $1" >&2; exit 2;;
     esac
@@ -35,6 +35,7 @@ done
 [[ $remote_first =~ ^(ON|OFF)$ && $defer_return =~ ^(ON|OFF)$ ]] || { echo 'Return options must be ON or OFF' >&2; exit 2; }
 [[ $ranks_per_host =~ ^(4|16)$ && $issue =~ ^(ON|OFF)$ && $probe =~ ^(ON|OFF)$ ]] || { echo 'Invalid topology or experiment option' >&2; exit 2; }
 [[ $simt_meta =~ ^(ON|OFF)$ && $simt_flag =~ ^(ON|OFF)$ && $prefetch_return =~ ^(ON|OFF)$ ]] || { echo 'SIMT/prefetch options must be ON or OFF' >&2; exit 2; }
+[[ $poll_nop =~ ^(0|[1-9][0-9]{0,4})$ ]] && ((poll_nop<=65535)) || { echo 'poll-nop must be in [0,65535]' >&2; exit 2; }
 if [[ $simt_flag == ON && ( $probe == ON || $early == ON ) ]]; then
     echo 'SIMT flag checks cannot be combined with progress-probe or early-reduce' >&2; exit 2
 fi
@@ -43,16 +44,16 @@ if [[ $prefetch_return == ON && $issue == ON ]]; then
 fi
 if [[ $variant == auto ]]; then
     variant=base
-    if [[ $profile == ON || $small == ON || $early == ON || $recv != 0 || $remote_first == ON || $defer_return == ON || $issue == ON || $probe == ON || $simt_meta == ON || $simt_flag == ON || $prefetch_return == ON ]]; then variant=opt; fi
+    if [[ $profile == ON || $small == ON || $early == ON || $recv != 0 || $remote_first == ON || $defer_return == ON || $issue == ON || $probe == ON || $simt_meta == ON || $simt_flag == ON || $prefetch_return == ON || $poll_nop != 0 ]]; then variant=opt; fi
 fi
 original=OFF ops_base=OFF
 if [[ $variant == ops-shmem-base ]]; then
-    [[ $profile == OFF && $small == OFF && $early == OFF && $recv == 0 && $remote_first == OFF && $defer_return == OFF && $issue == OFF && $probe == OFF && $simt_meta == OFF && $simt_flag == OFF && $prefetch_return == OFF ]] || { echo 'ops-shmem-base is a clean independent kernel' >&2; exit 2; }
+    [[ $profile == OFF && $small == OFF && $early == OFF && $recv == 0 && $remote_first == OFF && $defer_return == OFF && $issue == OFF && $probe == OFF && $simt_meta == OFF && $simt_flag == OFF && $prefetch_return == OFF && $poll_nop == 0 ]] || { echo 'ops-shmem-base is a clean independent kernel' >&2; exit 2; }
     ops_base=ON
     if [[ $build == "$root/build/ll-cpp-base" ]]; then build="$root/build/ll-cpp-ops-shmem-base"; fi
 fi
 if [[ $variant == base ]]; then
-    [[ $profile == OFF && $small == OFF && $early == OFF && $recv == 0 && $remote_first == OFF && $defer_return == OFF && $issue == OFF && $probe == OFF && $simt_meta == OFF && $simt_flag == OFF && $prefetch_return == OFF ]] || { echo 'Use --variant opt for experimental options' >&2; exit 2; }
+    [[ $profile == OFF && $small == OFF && $early == OFF && $recv == 0 && $remote_first == OFF && $defer_return == OFF && $issue == OFF && $probe == OFF && $simt_meta == OFF && $simt_flag == OFF && $prefetch_return == OFF && $poll_nop == 0 ]] || { echo 'Use --variant opt for experimental options' >&2; exit 2; }
     original=ON
 fi
 [[ $jobs =~ ^[0-9]+$ ]] && ((jobs>=1 && jobs<=64)) || { echo 'jobs must be in [1,64]' >&2; exit 2; }
@@ -72,6 +73,7 @@ cmake -S "$root/tests/ll_cpp_bench" -B "$build" -G 'Unix Makefiles' \
     "-DDEEPEP_LL_PHYSICAL_RANKS_PER_HOST=$ranks_per_host" \
     "-DDEEPEP_LL_COMBINE_EARLY_ISSUE=$issue" "-DDEEPEP_LL_COMBINE_PROGRESS_PROBE=$probe" \
     "-DDEEPEP_LL_COMBINE_SIMT_META=$simt_meta" "-DDEEPEP_LL_COMBINE_SIMT_FLAG=$simt_flag" \
-    "-DDEEPEP_LL_COMBINE_PREFETCH_RETURN=$prefetch_return"
+    "-DDEEPEP_LL_COMBINE_PREFETCH_RETURN=$prefetch_return" \
+    "-DDEEPEP_LL_COMBINE_POLL_NOP=$poll_nop"
 cmake --build "$build" --parallel "$jobs"
 printf 'Built runner: %s/ll_combine_bench\nVariant module: %s/libll_bench_variant.so\n' "$build" "$build"

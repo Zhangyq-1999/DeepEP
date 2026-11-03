@@ -98,6 +98,7 @@ void compact_record(const Record& r)
     }
     std::cout << " early_issue=" << r[EarlyIssueTicks]
               << " meta_batches=" << r[MetadataBatches] << " tail_inspect=" << r[TailInspectTicks]
+              << " pause=calls/ticks:" << r[PollPauseCalls] << '/' << r[PollPauseTicks]
               << " packets/defer/gap=" << r[RdmaPackets] << '/' << r[RdmaDeferredPackets] << '/' << r[RdmaDeferGapTicks] << '\n';
 }
 void suite_report(const fs::path& root)
