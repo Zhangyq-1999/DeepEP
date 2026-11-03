@@ -18,7 +18,7 @@ Optional poll800/poll800-profile: Nop<800>() after each failed flag probe.
 SIMT selection/check experiments prepare, flag, prepare-flag are opt-in only.
 meta/meta-profile selects metadata only; prefetch/prefetch-profile selects overlap only.
 --ranks-per-host 4 (default): cross-host EP8, or single-host EP2/4.
---ranks-per-host 16: single-host EP4/8/16, or cross-host EP32.
+--ranks-per-host 16: single-host EP4/8/16, two-host EP32 or four-host EP64.
 Previous experiments remote, pipeline, return, opt-profile, r36-profile and early-profile remain
 available through --variants but are excluded from the default build.
 ops-shmem-base builds the optional ops-transformer baseline with SHMEM transport.

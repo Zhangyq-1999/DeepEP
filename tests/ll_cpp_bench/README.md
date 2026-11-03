@@ -2,9 +2,9 @@
 
 ## 用途与依赖
 
-本用例直接调用仓库里的 Dispatch 和 Combine kernel，支持单机 EP2、EP4、EP8、EP16，以及双机 EP8、EP32。MPI 负责 SHMEM 初始化、Host 同步和结果汇总，SHMEM 负责设备通信。编译和运行都使用 C++、CMake 与 Shell，无需安装 Python 包或复制 Conda 环境。
+本用例直接调用仓库里的 Dispatch 和 Combine kernel，支持单机 EP2、EP4、EP8、EP16，双机 EP8、EP32，以及四机 EP64。MPI 负责 SHMEM 初始化、Host 同步和结果汇总，SHMEM 负责设备通信。编译和运行都使用 C++、CMake 与 Shell，无需安装 Python 包或复制 Conda 环境。
 
-两台机器需要相同的源码、编译选项和 SDK：
+参与测试的机器需要相同的源码、编译选项和 SDK：
 
 - Ascend950、CANN 9.2.0 或 9.3.0，以及 C++17 编译器和 CMake 3.20 以上版本。
 - `/usr/local/mpich-3.2.1`。用例与 SHMEM 的 MPI 插件需使用这套 MPI。
@@ -104,7 +104,7 @@ bash tests/ll_cpp_bench/run_all.sh --hosts HOST0,HOST1 --node-rank 0 \
 
 编译与运行的 `--ranks-per-host` 必须一致。切回默认双机 EP8 时，两边重新执行不带参数的 `build_all.sh`。`launch.sh` 会在初始化前拒绝拓扑不匹配的旧构建。
 
-用 `--dry-run` 可以查看编译或启动命令。识别不到本机 IP 时，使用 `--node-rank 0` 或 `--node-rank 1` 指定节点。首次准备 SDK、定制编译选项和底层启动方式见下文。
+用 `--dry-run` 可以查看编译或启动命令。识别不到本机 IP 时，使用 `--node-rank` 指定节点；节点编号从 0 开始，与 `--hosts` 中的顺序一致。首次准备 SDK、定制编译选项和底层启动方式见下文。
 
 ## 拉代码和编译
 
@@ -291,6 +291,30 @@ Linux 上，`launch.sh` 会将当前进程的文件描述符软上限提高到�
 
 EP32 初始化时若出现 `Too many open files`，随后报 `HrtRaBlockGetSockets` 超时，应先检查这个额度。已有的用例可在两边终端执行 `ulimit -Sn 65536` 后重试，无需重新编译。提高额度后仍有超时时，再检查设备网络和 SHMEM 建链日志。
 
+## 四机 EP64
+
+四台机器各使用 16 张卡，共 64 个 rank。默认双机配置保持不变；测试 EP64 时，显式指定规模和四个地址。所有机器使用相同的仓库绝对路径，并更新为同一版本。
+
+四台机器分别编译每机 16 个 rank 的版本：
+
+```bash
+bash tests/ll_cpp_bench/build_all.sh --ranks-per-host 16
+```
+
+这套构建也可用于双机 EP32。已经更新并编译完成后，切换 EP32、EP64 无需重新编译。第一台执行以下命令，把 `HOST2`、`HOST3` 换成新增两台机器的地址：
+
+```bash
+bash tests/ll_cpp_bench/run_all.sh \
+    --ep 64 --ranks-per-host 16 --node-rank 0 \
+    --hosts 90.90.93.84,90.90.93.184,HOST2,HOST3
+```
+
+第一台会分别打印节点 1、2、3 的加入命令。其余机器各执行对应的一条命令，使用同一个 `RUN_ID`。每台默认选择设备 0～15；节点 0、1、2、3 分别运行 rank 0～15、16～31、32～47、48～63。全部版本共用一次初始化，第一台汇总全部 64 个 rank 的结果。
+
+`--master-port`、`--variants` 和采样参数仍可配置。例如，第一台命令追加 `--tokens 32,48,64,72,128,256`，即可增加 BS128。`--tokens` 会替换整个 BS 列表；当前 BS 和 `--capacity` 的上限均为 256。
+
+四节点启动编排、rank 映射和结果汇总已通过 Host 模拟测试。四机设备精度和性能尚未实测。
+
 ## 采样与结果
 
 每种 BS 先运行一次 Dispatch，生成真实的路由表和专家输入。用例把 Dispatch 输出当作恒等专家的输出，使用均匀权重执行 Combine，并检查结果是否回到原输入。正式采样前后各检查一次精度，检查按 BF16 或 FP16 的舍入误差设置容差。
@@ -307,7 +331,7 @@ EP32 初始化时若出现 `Too many open files`，随后报 `HrtRaBlockGetSocke
 
 `rank-N.csv` 保存每个 rank 的全部采样。rank 0 的 `rank-max.csv` 保留每轮最慢 rank 的编号和 Event 耗时；`summary.csv` 按同轮最慢 rank 汇总，再计算均值、最小值、最大值、p50 和 p99，单位为 μs。汇总也记录实际核数、原版标识、启动同步方式、实验开关和打点状态。双机输出分布在各自主机，完整采样需要保留两边目录。
 
-单机 `--run-id ep4-ab --variants base,opt` 的结果目录形如 `results/ll-cpp/ep4-ab/20261102-153000-Ab12Cd/`，其中 `0-base`、`1-opt` 保存两版结果，`node-0` 保存启动日志。双机仍使用 `results/ll-cpp/<run-id>/`，其中 `node-0`、`node-1` 保存各节点的日志。
+单机 `--run-id ep4-ab --variants base,opt` 的结果目录形如 `results/ll-cpp/ep4-ab/20261102-153000-Ab12Cd/`，其中 `0-base`、`1-opt` 保存两版结果，`node-0` 保存启动日志。多机使用 `results/ll-cpp/<run-id>/`，各节点的日志保存在对应的 `node-N` 目录。
 
 每版通过精度检查和采样后，各 rank 在该版目录写出 `rank-N.SAMPLED`。全部版本完成且共享 SHMEM finalize 成功后，程序才为各版写出 `rank-N.PASS`。后续版本或释放过程失败时，已完成的采样文件继续保留，整次运行记为失败。
 
@@ -417,10 +441,10 @@ bash tests/ll_cpp_bench/summarize.sh results/ll-cpp/RUN_ID/4-ref-profile
 
 | 参数 | 默认值 | 含义 |
 | --- | --- | --- |
-| `--tokens` | 32,48,64,72,256 | 每卡 token 数，可给多个 BS |
+| `--tokens` | 32,48,64,72,256 | 每卡 token 数，可给多个 BS，每项范围为 1～256 |
 | `--hidden` | 3584 | hidden 维度，可设为 7168 |
 | `--topk` / `--experts` | 8 / 384 | 每 token 专家数与全局专家数 |
-| `--capacity` | 256 | 原算子的每卡最大 token 参数，影响自动去重策略；至少覆盖所有 BS |
+| `--capacity` | 256 | 原算子的每卡最大 token 参数，影响自动去重策略；至少覆盖所有 BS，上限为 256 |
 | `--dtype` | bf16 | 支持 bf16、fp16 |
 | `--route` | random | random 为无重复随机专家，hotspot 集中命中前 TopK 个专家 |
 | `--seed` | 0 | 路由随机种子 |

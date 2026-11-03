@@ -18,7 +18,7 @@ while (($#)); do
             cat <<'USAGE'
 Node 0: run_all.sh
 Node 1: run_all.sh RUN_ID
-Options: --ep 2|4|8|16|32 --ranks-per-host 4|16 --node-rank 0|1 --hosts HOST0,HOST1
+Options: --ep 2|4|8|16|32|64 --ranks-per-host 4|16 --node-rank N --hosts HOST0,HOST1[,HOST2,HOST3]
          --master-addr IP --master-port PORT --run-id ID --variants NAME[,NAME...]
          --cann-home DIR --mpi-home DIR --shmem-root DIR --dry-run
          --join-timeout SECONDS --job-timeout SECONDS
@@ -30,12 +30,12 @@ Benchmark options (with or without a preceding --):
 Defaults: EP8, four ranks/host, devices 12,13,14,15 on each host; hosts 90.90.93.84,90.90.93.184, port 29671.
           base/local-first (clean), ref-profile/local-first-profile (diagnostic); BS 32,48,64,72,256; H3584/K8/E384/BF16.
           Warmup 10; clean samples 100; diagnostic samples 10, level 2.
-Rebuild with the same --ranks-per-host value. Use 16 for single-host EP16 or dual-host EP32.
+Rebuild with the same --ranks-per-host value. Use 16 for EP16/32/64 on one/two/four hosts.
 All selected variants share one MPI/ACL/SHMEM initialization.
 Host MPI Barrier before each warmup/sample; no benchmark device synchronization kernel.
 Node is detected from local addresses; --node-rank overrides detection.
 Node 0 generates a new run-id on every invocation unless --run-id is supplied.
-For custom hosts, ports or variants, use the printed node-1 command.
+For custom hosts, ports or variants, use the command printed for each peer node.
 Benchmark shapes and sampling options are propagated by MPI from node 0.
 USAGE
             exit 0;;
@@ -57,10 +57,11 @@ USAGE
         *) [[ -z $run_id ]] || fail 'Specify only one run-id'; run_id=$1; shift;;
     esac
 done
-[[ $ep =~ ^(2|4|8|16|32)$ ]] || fail 'EP must be 2,4,8,16 or 32'
+[[ $ep =~ ^(2|4|8|16|32|64)$ ]] || fail 'EP must be 2,4,8,16,32 or 64'
 [[ $ranks_per_host =~ ^(4|16)$ ]] || fail 'ranks-per-host must be 4 or 16'
-((ep<=2*ranks_per_host)) || fail 'Rebuild and run with --ranks-per-host 16 for EP16/32'
+((ep<=16 || ranks_per_host==16)) || fail 'EP32/64 requires --ranks-per-host 16 in both build and run'
 per_host=$((ep<ranks_per_host ? ep : ranks_per_host))
+node_count=$((ep/per_host))
 if [[ ! ${bench[devices]+set} ]]; then
     # Both current machines have 16 physical devices; use their last local ranks.
     bench[devices]=
@@ -69,9 +70,14 @@ if [[ ! ${bench[devices]+set} ]]; then
     done
 fi
 if ((ep>ranks_per_host)); then
-    [[ $hosts =~ ^[a-zA-Z0-9_.-]+,[a-zA-Z0-9_.-]+$ ]] || fail 'Cross-host EP requires two hosts'
+    [[ $hosts =~ ^[a-zA-Z0-9_.-]+(,[a-zA-Z0-9_.-]+)*$ ]] || fail 'Provide comma-separated hostnames/IPv4 addresses'
     IFS=, read -r -a nodes <<< "$hosts"
-    [[ ${nodes[0]} != "${nodes[1]}" ]] || fail 'Cross-host EP requires two distinct hosts'
+    ((${#nodes[@]}==node_count)) || fail "EP=$ep with $per_host ranks/host requires $node_count hosts"
+    for ((i=0;i<node_count;++i)); do
+        for ((j=0;j<i;++j)); do
+            [[ ${nodes[i]} != "${nodes[j]}" ]] || fail 'Each host must appear only once'
+        done
+    done
     master=${master:-${nodes[0]}}
     if [[ -z $node_rank ]]; then
         local_ids=$(hostname -I 2>/dev/null || true)
@@ -79,21 +85,21 @@ if ((ep>ranks_per_host)); then
         if command -v ip >/dev/null; then
             local_ids+=" $(ip -o -4 addr show 2>/dev/null | awk '{split($4,a,"/"); print a[1]}' || true)"
         fi
-        for index in 0 1; do
+        for index in "${!nodes[@]}"; do
             for address in $local_ids; do
                 if [[ $address == "${nodes[$index]}" ]]; then
-                    [[ -z $node_rank || $node_rank == "$index" ]] || fail 'Both hosts match local addresses; specify --node-rank'
+                    [[ -z $node_rank || $node_rank == "$index" ]] || fail 'Multiple hosts match local addresses; specify --node-rank'
                     node_rank=$index
                 fi
             done
         done
-        [[ -n $node_rank ]] || fail "Cannot identify this host in $hosts; set --node-rank 0 or 1"
+        [[ -n $node_rank ]] || fail "Cannot identify this host in $hosts; set --node-rank 0..$((node_count-1))"
     fi
 else
     node_rank=${node_rank:-0}
     hosts=localhost
 fi
-[[ $node_rank =~ ^[01]$ ]] || fail 'node-rank must be 0 or 1'
+[[ $node_rank =~ ^[0-3]$ ]] && ((node_rank<node_count)) || fail "node-rank must be in 0..$((node_count-1))"
 [[ $ep -gt $ranks_per_host || $node_rank == 0 ]] || fail 'Single-host EP uses node-rank 0'
 if [[ -z $run_id ]]; then
     [[ $node_rank == 0 ]] || fail 'Copy RUN_ID from node 0: bash tests/ll_cpp_bench/run_all.sh RUN_ID'
@@ -108,10 +114,11 @@ else
     echo 'Benchmark shapes and sampling options come from node 0.'
 fi
 if [[ $ep -gt $ranks_per_host && $node_rank == 0 ]]; then
+  for ((peer=1;peer<node_count;++peer)); do
     peer_cmd=(bash tests/ll_cpp_bench/run_all.sh "$run_id")
     # With defaults this prints only RUN_ID; custom launch settings travel too.
     if [[ $ep != 8 || $ranks_per_host != 4 || $hosts != 90.90.93.84,90.90.93.184 || $master != 90.90.93.84 || $port != 29671 || $variants != "$ll_bench_variants" ]]; then
-        peer_cmd+=(--ep "$ep" --ranks-per-host "$ranks_per_host" --node-rank 1 --hosts "$hosts" --master-addr "$master" --master-port "$port" --variants "$variants")
+        peer_cmd+=(--ep "$ep" --ranks-per-host "$ranks_per_host" --node-rank "$peer" --hosts "$hosts" --master-addr "$master" --master-port "$port" --variants "$variants")
     fi
     if [[ ${bench[profile]} != 2 ]]; then peer_cmd+=(--profile "${bench[profile]}"); fi
     if [[ $job_timeout != 3600 || $join_timeout != 300 ]]; then
@@ -120,7 +127,8 @@ if [[ $ep -gt $ranks_per_host && $node_rank == 0 ]]; then
     if [[ $cann != "$ll_bench_cann" ]]; then peer_cmd+=(--cann-home "$cann"); fi
     if [[ $mpi != "$ll_bench_mpi" ]]; then peer_cmd+=(--mpi-home "$mpi"); fi
     if [[ $shmem != "$ll_bench_shmem" ]]; then peer_cmd+=(--shmem-root "$shmem"); fi
-    printf 'Run on node 1: '; printf '%q ' "${peer_cmd[@]}"; printf '\n'
+    printf 'Run on node %s: ' "$peer"; printf '%q ' "${peer_cmd[@]}"; printf '\n'
+  done
 fi
 if ((!dry)); then ll_bench_environment "$cann" "$mpi" "$shmem"; fi
 args=(--ep "$ep" --ranks-per-host "$ranks_per_host" --node-rank "$node_rank" --hosts "$hosts" --master-port "$port"

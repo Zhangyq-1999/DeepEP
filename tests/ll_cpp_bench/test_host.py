@@ -146,7 +146,8 @@ def test_sdk_manifest_record_and_check(tmp_path, nested):
 
 
 def test_mpi_launch_commands(bash):
-    for hosts, launcher, ranks in (("localhost", "fork", 16), ("node0,node1", "manual", 32)):
+    for hosts, launcher, ranks in (("localhost", "fork", 16), ("node0,node1", "manual", 32),
+                                  ("node0,node1,node2,node3", "manual", 64)):
         result = subprocess.run([bash, str(HERE / "run.sh"), "--hosts", hosts,
                                  "--launcher", launcher, "--master-addr", "node0", "--dry-run", "--",
                                  "--tokens", "72", "--output-dir", "/tmp/test data"],
@@ -179,8 +180,8 @@ def test_per_node_launch_arguments(bash):
         assert result.stdout.count(f"-ppn {ep} -n {ep}") == 1
         assert "-launcher fork" in result.stdout
         assert "0-base" in result.stdout and "1-opt" in result.stdout
-    for node in (0, 1):
-        result = subprocess.run([bash, str(HERE / "launch.sh"), "--ep", "32", "--hosts", "node0,node1",
+    for node in range(4):
+        result = subprocess.run([bash, str(HERE / "launch.sh"), "--ep", "64", "--hosts", "node0,node1,node2,node3",
                                  "--node-rank", str(node), "--master-port", "31000", "--variants", "base,opt",
                                  "--run-id", "trial", "--dry-run", "--", "--tokens", "72"],
                                 capture_output=True, text=True, check=True, timeout=10)
@@ -189,7 +190,7 @@ def test_per_node_launch_arguments(bash):
         assert "--control-port node0:31001" not in result.stdout
         if node == 0:
             assert "--variants base,opt" in result.stdout.replace("\\,", ",")
-        assert ("-n 32" in result.stdout) == (node == 0)
+        assert ("-ppn 16 -n 64" in result.stdout) == (node == 0)
         if node == 0:
             assert "HYDRA_LAUNCHER_AUTOFORK=0" in result.stdout
             assert "MPIEXEC_PORT_RANGE=31000:31000" in result.stdout
@@ -197,7 +198,8 @@ def test_per_node_launch_arguments(bash):
         assert "--launcher manual" not in result.stdout
     for args in (("--ep", "4", "--node-rank", "1"), ("--ep", "32"), ("--run-id", "../escape"),
                  ("--master-port", "65536", "--variants", "base,opt"), ("--variants", "../escape"),
-                 ("--variants", "base,,opt")):
+                 ("--variants", "base,,opt"), ("--ep", "64", "--hosts", "a,b"),
+                 ("--ep", "64", "--hosts", "a,b,c,a"), ("--ep", "32", "--hosts", "a,b", "--node-rank", "2")):
         result = subprocess.run([bash, str(HERE / "launch.sh"), *args, "--dry-run"],
                                 capture_output=True, timeout=10)
         assert result.returncode != 0
@@ -286,9 +288,9 @@ def test_hydra_command_launcher_only_prints(bash, tmp_path):
     assert not marker.exists()
 
 
-@pytest.mark.parametrize("failure", [0, 1, 2])
-def test_two_node_script_sequence_with_fake_hydra(bash, tmp_path, failure):
-    """Exercise two independent scripts. This fixture is not an MPI runtime test."""
+@pytest.mark.parametrize("nodes,failure", [(2, 0), (2, 1), (2, 2), (4, 0), (4, 1), (4, 2), (4, 3)])
+def test_multi_node_script_sequence_with_fake_hydra(bash, tmp_path, nodes, failure):
+    """Exercise independent node scripts; this is not an MPI runtime test."""
     root = tmp_path / "project"
     script = root / "tests/ll_cpp_bench/launch.sh"
     script.parent.mkdir(parents=True)
@@ -326,21 +328,26 @@ done
 [[ $launcher == ssh && $launcher_exec == */hydra_proxy_command.sh ]]
 mkdir -p "$out"
 touch "$FAKE_SHARED/controller-$port"
-for node in 0 1; do
+for ((node=0;node<FAKE_NODES;++node)); do
+    if [[ ${FAKE_FAIL:-0} == 3 && $node == $((FAKE_NODES-1)) ]]; then continue; fi
     bash "$launcher_exec" -x "node$node" '"/fixture/hydra_pmi_proxy"' --control-port "node0:$port" --proxy-id "$node"
 done
 if [[ ${FAKE_FAIL:-0} == 2 ]]; then echo 'fixture controller abort'; exit 134; fi
 for ((i=0;i<200;i++)); do
-    if [[ -f "$FAKE_SHARED/join-$port-0" && -f "$FAKE_SHARED/join-$port-1" ]]; then break; fi
+    joined=1
+    for ((node=0;node<FAKE_NODES;++node)); do
+        [[ -f "$FAKE_SHARED/join-$port-$node" ]] || joined=0
+    done
+    ((joined)) && break
     sleep 0.02
 done
-[[ -f "$FAKE_SHARED/join-$port-0" && -f "$FAKE_SHARED/join-$port-1" ]]
+((joined))
 if [[ ${FAKE_FAIL:-0} == 1 ]]; then touch "$FAKE_SHARED/done-$port"; exit 17; fi
 IFS=, read -r -a phases <<< "$variants"
 for phase in "${!phases[@]}"; do
     phase_out="$out/$phase-${phases[$phase]}"
     mkdir -p "$phase_out"
-    for ((r=0;r<32;r++)); do echo passed >"$phase_out/rank-$r.PASS"; done
+    for ((r=0;r<FAKE_NODES*16;r++)); do echo passed >"$phase_out/rank-$r.PASS"; done
     echo summary >"$phase_out/summary.csv"
 done
 touch "$FAKE_SHARED/done-$port"
@@ -363,18 +370,19 @@ for ((i=0;i<200;i++)); do
 done
 exit 1
 ''')
-    env = dict(os.environ, FAKE_SHARED=shared.as_posix(), FAKE_FAIL=str(failure))
+    env = dict(os.environ, FAKE_SHARED=shared.as_posix(), FAKE_FAIL=str(failure), FAKE_NODES=str(nodes))
     # Git Bash accepts Windows drive paths as arguments, but PATH uses /c/... .
     helper_path = subprocess.check_output([bash, "-c", 'cygpath -u "$1"' if os.name == "nt" else 'printf "%s" "$1"',
                                           "_", helpers.as_posix()], text=True).strip()
     original_path = subprocess.check_output([bash, "-c", 'printf "%s" "$PATH"'], text=True)
     env["PATH"] = helper_path + ":" + original_path
-    args = [bash, str(script), "--ep", "32", "--hosts", "node0,node1", "--mpi-home", mpi.as_posix(),
+    args = [bash, str(script), "--ep", str(nodes * 16), "--hosts", ",".join(f"node{n}" for n in range(nodes)), "--mpi-home", mpi.as_posix(),
             "--variants", "base,opt", "--run-id", "test", "--join-timeout", "5", "--job-timeout", "10"]
+    order = [*range(1, nodes), 0]
     processes = [subprocess.Popen([*args, "--node-rank", str(node)], env=env, stdout=subprocess.PIPE,
-                                  stderr=subprocess.STDOUT, text=True) for node in (1, 0)]
+                                  stderr=subprocess.STDOUT, text=True) for node in order]
     try:
-        for node, proc in zip((1, 0), processes):
+        for node, proc in zip(order, processes):
             output, _ = proc.communicate(timeout=25)
             assert (proc.returncode == 0) == (failure == 0), output
             if node == 0 and failure == 2:
@@ -386,3 +394,9 @@ exit 1
                 proc.wait(timeout=5)
     assert (shared / "controller-29671").exists()
     assert not (shared / "controller-29672").exists()
+    if failure == 3:
+        assert not (shared / "join-29671-0").exists(), "node 0 joined before all proxy commands were ready"
+    if failure == 0:
+        assert (root / "results/ll-cpp/test/summary.txt").exists()
+        for node in range(nodes):
+            assert (root / f"results/ll-cpp/test/node-{node}/suite.log").exists()

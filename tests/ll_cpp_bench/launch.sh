@@ -26,17 +26,17 @@ while (($#)); do
     case "$1" in
         --help|-h)
             cat <<'USAGE'
-launch.sh --ep 2|4|8|16|32 [--ranks-per-host 4|16] [--node-rank 0|1] [--hosts HOST0,HOST1]
+launch.sh --ep 2|4|8|16|32|64 [--ranks-per-host 4|16] [--node-rank N] [--hosts HOST0,HOST1[,HOST2,HOST3]]
           [--master-addr IP] [--master-port PORT] [--variants NAME[,NAME...]]
           [--run-id NAME] [--mpi-home DIR] [--job-timeout SECONDS]
           [--join-timeout SECONDS] [--dry-run] -- [benchmark options]
 Each host runs this script once. Cross-host EP uses one MPICH 3.2.1 MPI world,
 without SSH or manually copying proxy commands. Benchmark arguments come
-from node 0. Both nodes use the same checkout path, hosts, ports, variants
+from node 0. All nodes use the same checkout path, hosts, ports, variants
 and run-id. One MPI/ACL/SHMEM session runs all selected variants.
 Each variant provides build/ll-cpp-NAME/libll_bench_variant.so.
 Single-host runs create results/ll-cpp/<run-id>/<timestamp>-<unique>/.
-Cross-host EP uses results/ll-cpp/<run-id>/; choose the same new run-id on both nodes.
+Cross-host EP uses results/ll-cpp/<run-id>/; choose the same new run-id on all nodes.
 USAGE
             exit 0;;
         --dry-run) dry=1; shift;;
@@ -53,14 +53,20 @@ USAGE
         *) fail "Unknown launcher option: $1 (benchmark options follow --)";;
     esac
 done
-[[ $ep =~ ^(2|4|8|16|32)$ && $node_rank =~ ^[01]$ ]] || fail 'Invalid EP or node-rank'
-[[ $hosts =~ ^[a-zA-Z0-9_.-]+(,[a-zA-Z0-9_.-]+)?$ ]] || fail 'Provide one or two hostnames/IPv4 addresses'
+[[ $ep =~ ^(2|4|8|16|32|64)$ && $node_rank =~ ^[0-3]$ ]] || fail 'Invalid EP or node-rank'
+[[ $hosts =~ ^[a-zA-Z0-9_.-]+(,[a-zA-Z0-9_.-]+)*$ ]] || fail 'Provide comma-separated hostnames/IPv4 addresses'
 IFS=, read -r -a nodes <<< "$hosts"
 [[ $ranks_per_host =~ ^(4|16)$ ]] || fail 'ranks-per-host must be 4 or 16'
-((ep<=2*ranks_per_host)) || fail 'EP exceeds the selected two-host layout'
+((ep<=16 || ranks_per_host==16)) || fail 'EP32/64 requires --ranks-per-host 16 in both build and run'
 per_host=$((ep<ranks_per_host ? ep : ranks_per_host))
+node_count=$((ep/per_host))
+((node_rank<node_count && ${#nodes[@]}==node_count)) || fail "EP=$ep with $per_host ranks/host requires $node_count hosts and node-rank 0..$((node_count-1))"
+for ((i=0;i<node_count;++i)); do
+    for ((j=0;j<i;++j)); do
+        [[ ${nodes[i]} != "${nodes[j]}" ]] || fail 'Each host must appear only once'
+    done
+done
 if ((ep>ranks_per_host)); then
-    ((${#nodes[@]}==2)) && [[ ${nodes[0]} != "${nodes[1]}" ]] || fail 'Cross-host EP requires two distinct hosts'
     master=${master:-${nodes[0]}}
 else
     ((node_rank==0 && ${#nodes[@]}==1)) || fail 'Single-host EP uses one host and node-rank 0'
@@ -167,8 +173,14 @@ else
             # The command-only launcher avoids MPICH 3.2.1 manual's invalid
             # free when AUTOFORK=0. It prints commands without executing SSH.
             deadline=$((SECONDS+join_timeout))
-            until grep -Fqx "LL_HYDRA_PROXY_READY 0 $master:$phase_port" "$log.controller" &&
-                  grep -Fqx "LL_HYDRA_PROXY_READY 1 $master:$phase_port" "$log.controller"; do
+            while true; do
+                ready=1
+                for ((node=0;node<node_count;++node)); do
+                    if ! grep -Fqx "LL_HYDRA_PROXY_READY $node $master:$phase_port" "$log.controller"; then
+                        ready=0; break
+                    fi
+                done
+                ((ready)) && break
                 kill -0 "$controller" 2>/dev/null || { cat "$log.controller"; fail 'MPI controller exited'; }
                 ((SECONDS<deadline)) || fail 'MPI controller startup timed out'
                 sleep 0.1
@@ -213,5 +225,5 @@ done
 if ((node_rank==0)); then
     bash "$root/tests/ll_cpp_bench/summarize.sh" --suite "$result_root" | tee "$result_root/summary.txt"
 else
-    echo "PASS node=1; global summary and selected global diagnostics are on node 0."
+    echo "PASS node=$node_rank; global summary and selected global diagnostics are on node 0."
 fi

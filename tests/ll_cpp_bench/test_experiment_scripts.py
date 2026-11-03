@@ -158,7 +158,41 @@ def test_host_detection_and_benchmark_overrides(harness):
     clean, = call_options(run("run_all.sh", "--ep", "16", "--ranks-per-host", "16", "--variants", "base", "--profile", "0").stdout)
     assert clean["--profile"] == "0"
     env["TEST_LOCAL_IP"] = "90.90.93.84 90.90.93.184"
-    assert "Both hosts match" in run("run_all.sh", ok=False).stderr
+    assert "Multiple hosts match" in run("run_all.sh", ok=False).stderr
+
+
+def test_four_host_commands_and_detection(harness):
+    run, env = harness
+    hosts = "90.90.93.84,90.90.93.184,90.90.93.85,90.90.93.185"
+    result = run("run_all.sh", "--ep", "64", "--ranks-per-host", "16", "--hosts", hosts,
+                 "--tokens", "32,72,128,256", "--master-port", "30071")
+    first, = call_options(result.stdout)
+    assert first["--devices"] == ",".join(map(str, range(16)))
+    assert first["--tokens"] == "32,72,128,256"
+    lines = [line for line in result.stdout.splitlines() if line.startswith("Run on node ")]
+    assert len(lines) == 3
+    for node, line in enumerate(lines, 1):
+        command = shlex.split(line.split(": ", 1)[1])
+        peer, = call_options(run("run_all.sh", *command[2:]).stdout)
+        for key in ("--ep", "--hosts", "--master-addr", "--master-port", "--run-id", "--ranks-per-host", "--variants"):
+            assert peer[key] == first[key]
+        assert peer["--node-rank"] == str(node)
+        env["TEST_LOCAL_IP"] = hosts.split(",")[node]
+        detected, = call_options(run("run_all.sh", first["--run-id"], "--ep", "64",
+                                    "--ranks-per-host", "16", "--hosts", hosts).stdout)
+        assert detected["--node-rank"] == str(node)
+
+
+@pytest.mark.parametrize("args", [
+    ("--ep", "64", "--ranks-per-host", "16"),
+    ("--ep", "64", "--hosts", "a,b,c,d"),
+    ("--ep", "64", "--ranks-per-host", "16", "--hosts", "a,b,c,a"),
+    ("--ep", "64", "--ranks-per-host", "16", "--hosts", "a,b,c,d,other"),
+    ("--node-rank", "2"),
+])
+def test_invalid_multi_host_layout(harness, args):
+    run, _ = harness
+    run("run_all.sh", "--dry-run", *args, ok=False)
 
 
 def test_optional_ops_baseline(harness):

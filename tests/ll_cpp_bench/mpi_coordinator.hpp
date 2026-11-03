@@ -23,8 +23,8 @@ struct Coordinator {
         mpi_check(MPI_Comm_set_errhandler(MPI_COMM_WORLD, MPI_ERRORS_RETURN), "MPI error handler");
         mpi_check(MPI_Comm_rank(MPI_COMM_WORLD, &rank), "MPI rank");
         mpi_check(MPI_Comm_size(MPI_COMM_WORLD, &world), "MPI size");
-        if (world != 2 && world != 4 && world != 8 && world != 16 && world != 32)
-            throw std::runtime_error("Use 2, 4, 8, 16 or 32 MPI ranks");
+        if (world != 2 && world != 4 && world != 8 && world != 16 && world != 32 && world != 64)
+            throw std::runtime_error("Use 2, 4, 8, 16, 32 or 64 MPI ranks");
         MPI_Comm local = MPI_COMM_NULL;
         mpi_check(MPI_Comm_split_type(MPI_COMM_WORLD, MPI_COMM_TYPE_SHARED, rank, MPI_INFO_NULL, &local),
                   "MPI local group");

@@ -8,7 +8,7 @@ bench_args=()
 while (($#)); do
     case "$1" in
         --help|-h)
-            echo 'run.sh --hosts HOST0[,HOST1] [--ep 2|4|8|16|32] [--master-addr IP] [--port-range LOW:HIGH]'
+            echo 'run.sh --hosts HOST0[,HOST1,HOST2,HOST3] [--ep 2|4|8|16|32|64] [--master-addr IP] [--port-range LOW:HIGH]'
             echo '       [--launcher ssh|manual|fork] [--mpi-home DIR] [--binary FILE] [--job-timeout SECONDS]'
             echo '       [--dry-run] -- [benchmark options; see binary --help]'
             exit 0;;
@@ -25,13 +25,18 @@ while (($#)); do
         *) echo "Unknown launcher option: $1 (benchmark options follow --)" >&2;exit 2;;
     esac
 done
-[[ $hosts =~ ^[a-zA-Z0-9_.-]+(,[a-zA-Z0-9_.-]+)?$ ]] || { echo 'Provide one or two hostnames/IPv4 addresses' >&2;exit 2; }
+[[ $hosts =~ ^[a-zA-Z0-9_.-]+(,[a-zA-Z0-9_.-]+)*$ ]] || { echo 'Provide comma-separated hostnames/IPv4 addresses' >&2;exit 2; }
 IFS=, read -r -a nodes <<< "$hosts"
 ep=${ep:-$((${#nodes[@]}*16))}
-[[ $ep =~ ^(2|4|8|16|32)$ ]] || { echo 'EP must be 2, 4, 8, 16 or 32' >&2;exit 2; }
-(( (${#nodes[@]}==1 && ep<=16) || (${#nodes[@]}==2 && ep==32) )) || { echo 'EP2/4/8/16 needs one host; EP32 needs two hosts' >&2;exit 2; }
+[[ $ep =~ ^(2|4|8|16|32|64)$ ]] || { echo 'EP must be 2, 4, 8, 16, 32 or 64' >&2;exit 2; }
+expected_hosts=$((ep<=16 ? 1 : ep/16))
+((${#nodes[@]}==expected_hosts)) || { echo "EP=$ep needs $expected_hosts hosts with this 16-rank launcher" >&2;exit 2; }
 ppn=$((ep/${#nodes[@]}))
-if ((${#nodes[@]}==2)) && [[ ${nodes[0]} == "${nodes[1]}" ]]; then echo 'EP32 needs two physical hosts' >&2;exit 2;fi
+for ((i=0;i<expected_hosts;++i)); do
+    for ((j=0;j<i;++j)); do
+        [[ ${nodes[i]} != "${nodes[j]}" ]] || { echo 'Each host must appear only once' >&2;exit 2; }
+    done
+done
 [[ $launcher =~ ^(ssh|manual|fork)$ ]] || { echo 'Unknown launcher' >&2;exit 2; }
 [[ $launcher != fork || ${#nodes[@]} == 1 ]] || { echo 'fork is only for a single host' >&2;exit 2; }
 [[ $port_range =~ ^([0-9]+):([0-9]+)$ ]] || { echo 'Use --port-range LOW:HIGH' >&2;exit 2; }

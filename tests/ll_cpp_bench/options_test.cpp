@@ -26,6 +26,13 @@ int main()
     auto diagnostic = parse({"bench", "--tokens", "1,72", "--dtype", "fp16", "--profile", "2"});
     assert(diagnostic.profile == 2 && diagnostic.signature() != o.signature());
     assert(o.rank == 17 && o.world == 32 && o.device == 1 && o.tokens.back() == 72);
+    for (uint32_t rank = 0; rank < 64; ++rank) {
+        char name[] = "bench";
+        char* argv[] = {name};
+        const auto multi = llbench::Options::parse(1, argv, rank, 64, rank % 16);
+        assert(multi.rank == rank && multi.world == 64 && multi.device == rank % 16);
+        assert(multi.ranksPerHost == 16 && DispatchDedup::LlGroupForWorld(64) == 16);
+    }
     for (auto args : std::vector<std::vector<std::string>>{{"bench", "--tokens", "1,"},
                                                            {"bench", "--tokens", "0"},
                                                            {"bench", "--devices", "0,1"},

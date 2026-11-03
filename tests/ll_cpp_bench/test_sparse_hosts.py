@@ -9,7 +9,8 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 
 
-def test_ep8_four_ranks_per_host(tmp_path):
+@pytest.mark.parametrize("world,host_ranks,first_device", [(8, 4, 12), (64, 16, 0)])
+def test_host_transport_and_layout(tmp_path, world, host_ranks, first_device):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
     if not zig:
         pytest.skip("Set DEEPEP_TEST_ZIG for CPU execution")
@@ -24,43 +25,46 @@ def test_ep8_four_ranks_per_host(tmp_path):
 #include "kernels/dispatch/low_latency/device/ll_transport.h"
 int main() {
     using namespace DispatchDedup;
-    static_assert(kLlPhysicalRanksPerHost==4 && LlGroupForWorld(8)==4);
-    char prog[]="bench", key[]="--devices", value[]="12,13,14,15";
-    char* argv[]={prog,key,value};
-    for(unsigned rank=0;rank<8;++rank) {
-        auto o=llbench::Options::parse(3,argv,rank,8,rank%4);
-        assert(o.device==12+rank%4 && o.ranksPerHost==4);
-        CommArgs args{};args.rank=rank;args.rankSize=8;args.reserved0=4;
+    constexpr unsigned world=TEST_WORLD, host=kLlPhysicalRanksPerHost, workers=4;
+    static_assert(LlGroupForWorld(world)==host);
+    std::string devices;
+    for(unsigned i=0;i<host;++i) devices+=(i ? "," : "")+std::to_string(TEST_FIRST_DEVICE+i);
+    char prog[]="bench", key[]="--devices";
+    char* argv[]={prog,key,devices.data()};
+    for(unsigned rank=0;rank<world;++rank) {
+        auto o=llbench::Options::parse(3,argv,rank,world,rank%host);
+        assert(o.device==TEST_FIRST_DEVICE+rank%host && o.ranksPerHost==host);
+        CommArgs args{};args.rank=rank;args.rankSize=world;args.reserved0=host;
         args.reservedConfig[0]=LlRdma::kBackend;
-        for(unsigned peer=0;peer<8;++peer) {
-            assert(LlTransport::RemoteWrite(&args,peer)==(rank/4!=peer/4));
-            if(rank/4==peer/4) assert(rank/4==peer/LlGroupForWorld(8));
+        for(unsigned peer=0;peer<world;++peer) {
+            assert(LlTransport::RemoteWrite(&args,peer)==(rank/host!=peer/host));
+            if(rank/host==peer/host) assert(rank/host==peer/LlGroupForWorld(world));
         }
         std::vector<unsigned> owners(384);
-        for(unsigned worker=0;worker<4;++worker) {
-            auto a=CountAssignment(rank,8,384,4,worker,true);
+        for(unsigned worker=0;worker<workers;++worker) {
+            auto a=CountAssignment(rank,world,384,workers,worker,true);
             unsigned local=0,remote=0;
-            for(unsigned t=worker;t<a.localDomain;t+=4) {
+            for(unsigned t=worker;t<a.localDomain;t+=workers) {
                 auto p=CountLocalPeer(rank,t,true);
-                assert(p<8 && rank/4==p/4);++local;
-                for(unsigned e=p*48;e<(p+1)*48;++e)++owners[e];
+                assert(p<world && rank/host==p/host);++local;
+                for(unsigned e=p*(384/world);e<(p+1)*(384/world);++e)++owners[e];
             }
-            for(unsigned t=worker;t<4;t+=4) {
-                auto p=CountRemotePeer(rank,8,t);
-                assert(p<8 && rank/4!=p/4);++remote;
-                for(unsigned e=p*48;e<(p+1)*48;++e)++owners[e];
+            for(unsigned t=worker;t<world-host;t+=workers) {
+                auto p=CountRemotePeer(rank,world,t);
+                assert(p<world && rank/host!=p/host);++remote;
+                for(unsigned e=p*(384/world);e<(p+1)*(384/world);++e)++owners[e];
             }
-            assert(local==a.localPeers && remote==1);
+            assert(local==a.localPeers && remote==(world-host)/workers);
         }
         for(auto n:owners)assert(n==1);
     }
     EpMemoryServerDedupLayout dispatch;
     CombineDedup::Layout combine;
-    assert(BuildDispatchServerDedupLayout(8,256,3584,8,384,&dispatch,EpServerDedupInputMode::Plain16,56)==0);
-    assert(DispatchDedupPacketUbFits(dispatch,256,8,384,8,56));
-    assert(CombineDedup::BuildLayout(8,256,3584,8,384,combine,56));
+    assert(BuildDispatchServerDedupLayout(world,256,3584,8,384,&dispatch,EpServerDedupInputMode::Plain16,56)==0);
+    assert(DispatchDedupPacketUbFits(dispatch,256,8,384,world,56));
+    assert(CombineDedup::BuildLayout(world,256,3584,8,384,combine,56));
     bool rejected=false;
-    try { llbench::Options::parse(3,argv,0,16,0); } catch(const std::invalid_argument&) {rejected=true;}
+    try { llbench::Options::parse(3,argv,0,host==4 ? 32 : 128,0); } catch(const std::invalid_argument&) {rejected=true;}
     assert(rejected);
 }
 ''', encoding="utf-8")
@@ -69,9 +73,10 @@ int main() {
     query = dispatch[begin:dispatch.index("\n}", begin) + 2]
     source.write_text(source.read_text(encoding="utf-8").replace("int main() {",
                       "#define DEEPEP_EXPORT\n" + query + "\nint main() {\n"
-                      "assert(deepep_ll_ranks_per_group(8)==DispatchDedup::LlGroupForWorld(8));\n"), encoding="utf-8")
+                      "assert(deepep_ll_ranks_per_group(TEST_WORLD)==DispatchDedup::LlGroupForWorld(TEST_WORLD));\n"), encoding="utf-8")
     exe = tmp_path / "sparse.exe"
-    subprocess.run([zig, "c++", "-std=c++17", "-O1", "-UNDEBUG", "-DDEEPEP_LL_PHYSICAL_RANKS_PER_HOST=4",
+    subprocess.run([zig, "c++", "-std=c++17", "-O1", "-UNDEBUG", f"-DDEEPEP_LL_PHYSICAL_RANKS_PER_HOST={host_ranks}",
+                    f"-DTEST_WORLD={world}", f"-DTEST_FIRST_DEVICE={first_device}",
                     "-DDEEPEP_LL_RDMA=1", "-I" + str(HERE), "-I" + str(ROOT / "csrc"),
                     "-I" + str(ROOT / "tests/ll_rdma/stubs"), str(source), "-o", str(exe)], check=True, timeout=120)
     subprocess.run([str(exe)], check=True, timeout=20)

@@ -93,12 +93,12 @@ struct Options {
             args.erase(i);
         }
         if (!args.empty()) throw std::invalid_argument("Unknown option: " + args.begin()->first);
-        if ((o.world != 2 && o.world != 4 && o.world != 8 && o.world != 16 && o.world != 32) || o.rank >= o.world ||
+        if ((o.world != 2 && o.world != 4 && o.world != 8 && o.world != 16 && o.world != 32 && o.world != 64) || o.rank >= o.world ||
             o.output.empty() || o.tokens.empty() || o.hidden % 16 || o.experts % o.world || o.topk > o.experts ||
             (o.dtype != "bf16" && o.dtype != "fp16") || (o.route != "random" && o.route != "hotspot"))
             throw std::invalid_argument("Invalid topology, shape, dtype or routing policy");
-        if (world > 2U * o.ranksPerHost || DispatchDedup::LlGroupForWorld(world) > o.ranksPerHost)
-            throw std::invalid_argument("Rebuild with --ranks-per-host 16 for EP16/32");
+        if (DispatchDedup::LlGroupForWorld(world) > o.ranksPerHost)
+            throw std::invalid_argument("Rebuild with --ranks-per-host 16 for EP32/64");
         if (*std::max_element(o.tokens.begin(), o.tokens.end()) > o.capacity)
             throw std::invalid_argument("capacity must cover every token count");
         return o;
