@@ -21,7 +21,8 @@ struct Runtime {
     {
         if (progress) progress->report(stage, bs, done, total);
     }
-    void synchronize(const char* stage, unsigned bs = 0, unsigned iteration = 0) const
+    void synchronize(const char* stage, unsigned bs = 0, unsigned iteration = 0,
+                     aclrtEvent start = nullptr, aclrtEvent end = nullptr) const
     {
         const int status = aclrtSynchronizeStreamWithTimeout(stream, int32_t(options.kernelTimeout * 1000U));
         if (!status) return;
@@ -30,6 +31,32 @@ struct Runtime {
                      options.rank, options.device, options.output.c_str(), bs, iteration, stage, status,
                      options.kernelTimeout);
         std::fflush(stderr);
+        // Only sampling supplies Events recorded in this iteration. Query them
+        // after a failed wait; add no tasks or waits to the measured path.
+        if (start && end) {
+            aclrtEventRecordedStatus first = ACL_EVENT_RECORDED_STATUS_NOT_READY;
+            aclrtEventRecordedStatus last = ACL_EVENT_RECORDED_STATUS_NOT_READY;
+            const int firstRc = aclrtQueryEventStatus(start, &first);
+            const int lastRc = aclrtQueryEventStatus(end, &last);
+            const char* boundary = "unknown";
+            if (!firstRc && !lastRc) {
+                if (last == ACL_EVENT_RECORDED_STATUS_COMPLETE)
+                    boundary = "end_event_complete";
+                else if (last == ACL_EVENT_RECORDED_STATUS_NOT_READY) {
+                    if (first == ACL_EVENT_RECORDED_STATUS_COMPLETE) boundary = "between_start_and_end";
+                    else if (first == ACL_EVENT_RECORDED_STATUS_NOT_READY) boundary = "before_start_event";
+                }
+            }
+            // A completed start proves local entry sync passed. An incomplete
+            // start does not distinguish Notify, entry kernel and Event itself.
+            // A runtime query failure must never be interpreted as completion.
+            std::fprintf(stderr, "FAIL_BOUNDARY rank=%u BS=%u iteration=%u entry_sync=%s boundary=%s "
+                                 "start_rc=%d start_status=%d end_rc=%d end_status=%d "
+                                 "(status:0=not_ready,1=complete; valid only when rc=0)\n",
+                         options.rank, bs, iteration, options.entrySync.c_str(), boundary,
+                         firstRc, int(first), lastRc, int(last));
+            std::fflush(stderr);
+        }
         // Do not unwind and free buffers while the failed stream may still use
         // them. Abort the whole MPI job first; the launcher owns process cleanup.
         MPI_Abort(MPI_COMM_WORLD, status);

@@ -378,7 +378,7 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
             launch();
             end.record(stream);
             entry.submitted();
-            session.synchronize("sampling", bs, i);
+            session.synchronize("sampling", bs, i, start.value, end.value);
             float ms = 0;
             check(aclrtEventElapsedTime(&ms, start.value, end.value), "event elapsed");
             if (!std::isfinite(ms) || ms <= 0) throw std::runtime_error("Invalid Event duration");

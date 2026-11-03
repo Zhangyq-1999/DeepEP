@@ -102,3 +102,83 @@ int main() {
 }
 ''')
     compile_run(tmp_path, source)
+
+
+def test_timeout_event_boundaries(tmp_path):
+    # Execute Runtime::synchronize itself. MPI_Abort throws only in this CPU
+    # substitute so the test can inspect the failure-only queries.
+    shutil.copyfile(HERE / "variant_api.hpp", tmp_path / "variant_api.hpp")
+    (tmp_path / "options.hpp").write_text(r'''
+#pragma once
+#include <cstdint>
+#include <string>
+namespace llbench {
+struct Options {
+    unsigned kernelTimeout=10, rank=17, device=1;
+    std::string output="fixture", entrySync="device";
+};
+}
+''')
+    (tmp_path / "mpi_coordinator.hpp").write_text(r'''
+#pragma once
+#include <cassert>
+constexpr int MPI_COMM_WORLD=1;
+struct Aborted {};
+inline void MPI_Abort(int,int status) { assert(status==507046); throw Aborted{}; }
+namespace llbench { struct Coordinator {}; }
+''')
+    (tmp_path / "progress.hpp").write_text(r'''
+#pragma once
+#include <cstdio>
+namespace llbench { struct Progress { void report(const char*,unsigned,unsigned,unsigned) const {} }; }
+''')
+    (tmp_path / "acl").mkdir()
+    (tmp_path / "acl/acl.h").write_text(r'''
+#pragma once
+#include <cassert>
+using aclrtStream=void*;
+using aclrtEvent=void*;
+enum aclrtEventRecordedStatus { ACL_EVENT_RECORDED_STATUS_NOT_READY, ACL_EVENT_RECORDED_STATUS_COMPLETE };
+struct FakeEvent { aclrtEventRecordedStatus status; int rc; };
+inline int queries=0, waitResult=507046;
+inline int aclrtSynchronizeStreamWithTimeout(void*,int ms) { assert(ms==10000); return waitResult; }
+inline int aclrtQueryEventStatus(void* event,aclrtEventRecordedStatus* status) {
+    ++queries;
+    auto e=static_cast<FakeEvent*>(event);
+    *status=e->status; return e->rc;
+}
+''')
+    source = tmp_path / "test.cpp"
+    source.write_text(r'''
+#include "variant_api.hpp"
+int main() {
+    llbench::Runtime r{};
+    FakeEvent a{ACL_EVENT_RECORDED_STATUS_NOT_READY,0}, b=a;
+    // A successful sample must never query either Event.
+    waitResult=0; r.synchronize("sampling",16,17,&a,&b); assert(!queries);
+    waitResult=507046;
+    auto fail=[&](void* start,void* end,int expected) {
+        queries=0;
+        try { r.synchronize("sampling",16,17,start,end); assert(false); } catch(Aborted&) {}
+        assert(queries==expected);
+    };
+    fail(nullptr,nullptr,0);  // Warmup/no recorded Events: do not report stale state.
+    fail(&a,&b,2);            // Notify/entry/start pending.
+    a.status=ACL_EVENT_RECORDED_STATUS_COMPLETE; fail(&a,&b,2); // Combine/end pending.
+    b.status=ACL_EVENT_RECORDED_STATUS_COMPLETE; fail(&a,&b,2);
+    a.rc=7; fail(&a,&b,2);    // Even a "complete" output is invalid on query failure.
+    a.rc=0; b.rc=9; fail(&a,&b,2);
+}
+''')
+    zig = os.environ.get("DEEPEP_TEST_ZIG")
+    if not zig:
+        pytest.skip("Set DEEPEP_TEST_ZIG")
+    executable = tmp_path / "boundaries.exe"
+    subprocess.run([zig, "c++", "-std=c++17", "-O1", "-UNDEBUG", "-I", str(tmp_path),
+                    str(source), "-o", str(executable)], check=True, timeout=180)
+    result = subprocess.run([str(executable)], capture_output=True, text=True, check=True, timeout=10)
+    boundaries = [line.split("boundary=", 1)[1].split()[0] for line in result.stderr.splitlines()
+                  if line.startswith("FAIL_BOUNDARY")]
+    assert boundaries == ["before_start_event", "between_start_and_end", "end_event_complete",
+                          "unknown", "unknown"]
+    assert "rank=17 BS=16 iteration=17 entry_sync=device" in result.stderr

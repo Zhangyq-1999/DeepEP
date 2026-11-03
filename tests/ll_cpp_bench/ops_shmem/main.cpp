@@ -185,7 +185,8 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
             launch();
             if (i >= o.warmup) end.record(stream);
             entry.submitted();
-            session.synchronize(sampling ? "sampling" : "warmup", bs, iteration);
+            session.synchronize(sampling ? "sampling" : "warmup", bs, iteration,
+                                sampling ? start.value : nullptr, sampling ? end.value : nullptr);
             if (i >= o.warmup) {
                 float ms = 0;
                 check(aclrtEventElapsedTime(&ms, start.value, end.value), "elapsed Event");
