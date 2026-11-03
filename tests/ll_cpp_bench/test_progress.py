@@ -38,4 +38,4 @@ def test_progress_stays_outside_event_and_before_barrier():
     assert sample.index('session.report("sampling"') < sample.index("peers.barrier();")
     timed = sample.split("start.record(stream);", 1)[1].split("end.record(stream);", 1)[0]
     assert "report(" not in timed and "launch();" in timed
-    assert 'session.synchronize("sampling", bs, i, start.value, end.value)' in sample
+    assert 'session.synchronize("sampling", bs, i)' in sample

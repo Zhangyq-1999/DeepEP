@@ -2,7 +2,6 @@
 #include "../sample_report.hpp"
 #include "../mpi_coordinator.hpp"
 #include "../variant_api.hpp"
-#include "../entry_sync.hpp"
 #include "runtime/ll_core_config.hpp"
 #include "host/mem/shmem_host_heap.h"
 #include "host/data_plane/shmem_host_rma.h"
@@ -161,15 +160,13 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
     if (!o.rank)
         std::cout << "ops-shmem-base: upstream " << LL_OPS_REV
                   << "; SHMEM QP Put + batch-boundary quiet; entry_sync=" << o.entrySync << std::endl;
-    llbench::EntrySync entry(session);
     for (auto bs : o.tokens) {
         session.report("ops input preparation", bs);
         DeviceCase item(o, bs, cores, ub, context.p);
         auto launch = [&] { ops_shmem_combine_do(stream, &item.args); };
         session.report("Combine correctness", bs);
-        entry.before();
+        peers.barrier();
         launch();
-        entry.submitted();
         session.synchronize("Combine correctness", bs);
         double error = item.precision(o.dtype == "bf16");
         peers.barrier();
@@ -180,13 +177,11 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
             const auto iteration = sampling ? i - o.warmup : i;
             if (iteration % 10U == 0)
                 session.report(sampling ? "sampling" : "warmup", bs, iteration, sampling ? o.iterations : o.warmup);
-            entry.before();
+            peers.barrier();
             if (i >= o.warmup) start.record(stream);
             launch();
             if (i >= o.warmup) end.record(stream);
-            entry.submitted();
-            session.synchronize(sampling ? "sampling" : "warmup", bs, iteration,
-                                sampling ? start.value : nullptr, sampling ? end.value : nullptr);
+            session.synchronize(sampling ? "sampling" : "warmup", bs, iteration);
             if (i >= o.warmup) {
                 float ms = 0;
                 check(aclrtEventElapsedTime(&ms, start.value, end.value), "elapsed Event");

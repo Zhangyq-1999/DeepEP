@@ -70,11 +70,6 @@ if(DEEPEP_LL_OPS_BASE)
     # This independent baseline needs no DeepEP Dispatch or Combine objects.
     set(_ll_sources "${DEEPEP_SOURCE_DIR}/tests/ll_cpp_bench/ops_shmem/device.cpp")
 endif()
-if(DEEPEP_LL_BENCH_ENTRY_SYNC AND NOT DEEPEP_DEVICE_COMPONENT STREQUAL "combine")
-    # Shared across all DeepEP Combine variants with the Dispatch objects.
-    # The standalone ops-shmem build owns its own copy of this separate kernel.
-    list(APPEND _ll_sources "${DEEPEP_SOURCE_DIR}/tests/ll_cpp_bench/entry_sync.cpp")
-endif()
 add_library(deepep_kernel_ll_plain OBJECT ${_ll_sources})
 add_library(deepep_kernel_ll_reference OBJECT ${_ll_sources})
 set_target_properties(deepep_kernel_ll_plain deepep_kernel_ll_reference PROPERTIES EXCLUDE_FROM_ALL TRUE)

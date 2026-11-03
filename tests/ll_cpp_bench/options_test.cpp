@@ -15,15 +15,13 @@ int main()
         char* argv[] = {name};
         auto small = llbench::Options::parse(1, argv, world - 1, world, world - 1);
         assert(small.device == world - 1 && small.world == world);
-        assert(small.entrySync == "device" && small.tokens == std::vector<uint32_t>({32, 48, 64, 72, 256}));
+        assert(small.entrySync == "host" && small.tokens == std::vector<uint32_t>({32, 48, 64, 72, 256}));
     }
     auto o = parse({"bench", "--tokens", "1,72", "--dtype", "fp16"});
     assert(o.profile == 0);
-    assert(o.entrySync == "device");
+    assert(o.entrySync == "host");
     assert(parse({"bench", "--entry-sync", "host"}).entrySync == "host");
-    assert(parse({"bench", "--entry-sync", "auto"}).entrySync == "device");
-    assert(parse({"bench", "--entry-sync", "device"}).entrySync == "device");
-    assert(parse({"bench", "--entry-sync", "host"}).signature() != parse({"bench"}).signature());
+    assert(parse({"bench", "--entry-sync", "auto"}).entrySync == "host");
     assert(parse({"bench", "--profile-iters", "4"}).profileIterations == 4);
     auto diagnostic = parse({"bench", "--tokens", "1,72", "--dtype", "fp16", "--profile", "2"});
     assert(diagnostic.profile == 2 && diagnostic.signature() != o.signature());
@@ -41,6 +39,7 @@ int main()
                                                            {"bench", "--iters", "-1"},
                                                            {"bench", "--profile", "3"},
                                                            {"bench", "--entry-sync", "unknown"},
+                                                           {"bench", "--entry-sync", "device"},
                                                            {"bench", "--hidden", "17"},
                                                            {"bench", "--capacity", "4"},
                                                            {"bench", "--iters", "3", "--iters", "4"},

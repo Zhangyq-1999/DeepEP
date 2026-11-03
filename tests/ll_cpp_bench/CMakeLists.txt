@@ -84,7 +84,6 @@ string(SHA256 _variant_tag "${CMAKE_BINARY_DIR}")
 string(SUBSTRING "${_variant_tag}" 0 12 _variant_tag)
 set(DEEPEP_DEVICE_OUTPUT_NAME "deepep_bench_${_variant_tag}")
 set(DEEPEP_DEVICE_LOCAL_SYMBOLS ON)
-set(DEEPEP_LL_BENCH_ENTRY_SYNC ON)
 set(DEEPEP_DEVICE_JOBS "4" CACHE STRING "Parallel Device compilation jobs")
 if(NOT DEEPEP_LL_OPS_BASE)
     include("${CMAKE_CURRENT_LIST_DIR}/shared_dispatch.cmake")
@@ -146,7 +145,7 @@ target_compile_definitions(ll_bench_variant PRIVATE
 # Hash the compiled source tree, including uncommitted edits, for cross-rank checks.
 file(GLOB_RECURSE _identity_files CONFIGURE_DEPENDS
     "${DEEPEP_SOURCE_DIR}/csrc/*.h" "${DEEPEP_SOURCE_DIR}/csrc/*.hpp" "${DEEPEP_SOURCE_DIR}/csrc/*.cpp"
-    "${CMAKE_CURRENT_LIST_DIR}/*.h" "${CMAKE_CURRENT_LIST_DIR}/*.hpp" "${CMAKE_CURRENT_LIST_DIR}/*.cpp")
+    "${CMAKE_CURRENT_LIST_DIR}/*.hpp" "${CMAKE_CURRENT_LIST_DIR}/*.cpp")
 list(SORT _identity_files)
 set(_source_hashes "${LL_OPS_REV}")
 foreach(_file IN LISTS _identity_files)

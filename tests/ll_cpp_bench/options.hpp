@@ -27,7 +27,7 @@ struct Options {
     uint32_t hidden = 3584, topk = 8, experts = 384, capacity = 256, warmup = 10, iterations = 100, seed = 0,
              timeout = 300, profile = 0, profileIterations = 10, kernelTimeout = 10;
     std::vector<uint32_t> tokens{32, 48, 64, 72, 256};
-    std::string output = "results/ll-cpp", dtype = "bf16", route = "random", entrySync = "device";
+    std::string output = "results/ll-cpp", dtype = "bf16", route = "random", entrySync = "host";
     static Options parse(int argc, char** argv, uint32_t rank = 0, uint32_t world = 16, uint32_t localRank = 0)
     {
         Options o;
@@ -56,9 +56,9 @@ struct Options {
         text("--dtype", o.dtype);
         text("--route", o.route);
         text("--entry-sync", o.entrySync);
-        if (o.entrySync == "auto") o.entrySync = "device";
-        if (o.entrySync != "host" && o.entrySync != "device")
-            throw std::invalid_argument("entry-sync supports device (MTE/RoCE), host (MPI Barrier) or auto");
+        if (o.entrySync == "auto") o.entrySync = "host";
+        if (o.entrySync != "host")
+            throw std::invalid_argument("entry-sync supports host (MPI Barrier) or auto; device sync was removed");
         const uint32_t perHost = std::min(world, o.ranksPerHost);
         std::string devices;
         for (uint32_t i = 0; i < perHost; ++i) devices += (i ? "," : "") + std::to_string(i);

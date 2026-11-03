@@ -60,9 +60,6 @@ inline int MPI_Allgather(const void* p,int n,int type,void* out,int,int,int) {
 #pragma once
 #include "state.hpp"
 using aclrtStream=void*;
-using aclrtEvent=void*;
-enum aclrtEventRecordedStatus { ACL_EVENT_RECORDED_STATUS_NOT_READY, ACL_EVENT_RECORDED_STATUS_COMPLETE };
-inline int aclrtQueryEventStatus(aclrtEvent, aclrtEventRecordedStatus*) { assert(false); return 1; }
 inline int aclInit(const char*) { ++aclInitCount; return 0; }
 inline int aclFinalize() { ++aclEnd; return 0; }
 inline int aclrtSetDevice(int) { return 0; }
