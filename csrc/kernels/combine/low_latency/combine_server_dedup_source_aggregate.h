@@ -84,7 +84,7 @@ public:
         if (count_ == 0U) return 0U;
         for (uint32_t lane = 0; lane < inputLanes_; ++lane) SetFlag<HardEvent::V_MTE2>(lane);
 #if defined(DEEPEP_LL_COMBINE_EARLY_REDUCE) || defined(DEEPEP_LL_COMBINE_LOCAL_FIRST)
-        if (earlyReduce_) return ProcessEarly();
+        if (incrementalReduce_) return ProcessEarly();
 #endif
         uint32_t remaining = count_, scan = 0U, completed = 0U;
         while (remaining != 0U) {
@@ -133,7 +133,7 @@ private:
         k_ = k;
         dtype_ = dtype;
 #if defined(DEEPEP_LL_COMBINE_EARLY_REDUCE) || defined(DEEPEP_LL_COMBINE_LOCAL_FIRST)
-        earlyReduce_ = EpCombineEarlyReduce(bs);
+        incrementalReduce_ = EpCombineIncrementalReduce(bs);
         computeElements_ = computeBytes / sizeof(float);
 #endif
         const uint32_t base = bs / participants, extra = bs % participants;
@@ -574,7 +574,7 @@ private:
     uint32_t inputLanes_ = 0U, outputLanes_ = 0U, inputSequence_ = 0U;
     uint32_t sharedOutputLanes_ = 0U, retiredOutputs_ = 0U;
 #if defined(DEEPEP_LL_COMBINE_EARLY_REDUCE) || defined(DEEPEP_LL_COMBINE_LOCAL_FIRST)
-    bool earlyReduce_ = false;
+    bool incrementalReduce_ = false;
     uint32_t computeElements_ = 0U;
 #endif
 };

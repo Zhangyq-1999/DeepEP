@@ -77,12 +77,19 @@ COMBINE_DEDUP_EP_COMBINE_CONSTEXPR uint32_t EpCombineRecvCoreCount(uint32_t core
 }
 COMBINE_DEDUP_EP_COMBINE_CONSTEXPR bool EpCombineEarlyReduce(uint32_t bs)
 {
-#ifdef DEEPEP_LL_COMBINE_LOCAL_FIRST
-    return true;
-#elif defined(DEEPEP_LL_COMBINE_EARLY_REDUCE)
+#ifdef DEEPEP_LL_COMBINE_EARLY_REDUCE
     return bs <= 72U;
 #else
     return false;
+#endif
+}
+// Both options use incremental accumulation, but remain distinct build options.
+COMBINE_DEDUP_EP_COMBINE_CONSTEXPR bool EpCombineIncrementalReduce(uint32_t bs)
+{
+#ifdef DEEPEP_LL_COMBINE_LOCAL_FIRST
+    return true;
+#else
+    return EpCombineEarlyReduce(bs);
 #endif
 }
 COMBINE_DEDUP_EP_COMBINE_CONSTEXPR uint32_t EpCombineRowUbBytes(uint32_t tokens)
@@ -171,7 +178,7 @@ COMBINE_DEDUP_EP_COMBINE_CONSTEXPR EpCombineM45WorkspaceLayout EpCombineM45Layou
     const uint64_t phase = partial > final ? partial : final;
     const uint32_t compute = EpCombineAlign(h * 4U, 256U);
     // Incremental reduction retains two independent token sums, plus cast/product.
-    const uint32_t computeBuffers = EpCombineEarlyReduce(bs) && owned > 1U ? 4U : 3U;
+    const uint32_t computeBuffers = EpCombineIncrementalReduce(bs) && owned > 1U ? 4U : 3U;
     const uint64_t fixed = kEpServerDedupCombineResidentUbBytes + computeBuffers * compute + phase;
     const uint32_t input = ((h * 2U + 479U) / 480U) * 480U;
     const uint32_t output = ((h * 2U + 479U) / 480U) * 512U;
