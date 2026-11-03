@@ -138,6 +138,20 @@ int main() {
     assert(sample[ProbeFlagBlocks] == 135);
     assert(sample[ProbeMaxToken] == 32 && sample[ProbeMaxSlot] == 0xffffffffU);
     assert(sample[FinalFirstReady] && sample[FinalLastReady] >= sample[FinalFirstReady]);
+    DeviceProfile tails;
+    tails.Init(reinterpret_cast<uint8_t*>(sample), 2);
+    tails.Missing(7, 4, 44, 1, 15);  // slot 2, block 14
+    tails.Missing(7, 4, 44, 1, 15);
+    tails.Missing(9, 0, 0xffffffffU, 0, 15); // another token ready is unrelated
+    tails.Finish(0, 4, 72);
+    assert(sample[TailObservations]==2 && sample[TailToken]==7 && sample[TailSlot]==2 && sample[TailBlock]==14);
+    assert(sample[TailMissingMask]==4 && sample[TailLastSeen]>sample[TailFirstSeen] && !sample[TailReady]);
+    tails.Missing(7, 0, 0xffffffffU, 0, 15);
+    tails.Finish(0, 4, 72);
+    assert(sample[TailReady]>sample[TailLastSeen]);
+    tails.Missing(8, 1, 0, 2, 15);
+    tails.Finish(0, 4, 72);
+    assert(sample[TailToken]==8 && sample[TailObservations]==1 && !sample[TailReady]);
 #endif
 }
 ''')

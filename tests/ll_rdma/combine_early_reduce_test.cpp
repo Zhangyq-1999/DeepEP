@@ -173,7 +173,7 @@ int main(){
     for(uint32_t recv:{32,36})for(uint32_t bs:{32,48,64,72})
         for(uint32_t participant=0;participant<recv;++participant)
             for(bool dedup:{false,true})Check<bfloat16_t>(bs,256,8,participant,dedup,1,5,recv);
-    #ifdef DEEPEP_LL_COMBINE_PROGRESS_PROBE
+    #if defined(DEEPEP_LL_COMBINE_PROGRESS_PROBE) || defined(DEEPEP_LL_COMBINE_SIMT_FLAG)
     Check<bfloat16_t>(256,3584,8,0,true,1,7,28);
     Check<half>(256,3584,8,27,false,1,0,28);
 #endif

@@ -12,8 +12,11 @@ while (($#)); do
             cat <<'USAGE'
 build_all.sh [--variants NAME[,NAME...]] [--ranks-per-host 4|16] [--jobs N] [--dry-run]
              [--cann-home DIR] [--mpi-home DIR] [--shmem-root DIR]
-Defaults: base, issue, probe, issue-probe (clean), followed by
-ref-profile, issue-profile, probe-profile, issue-probe-profile (diagnostic).
+Defaults: base, prepare, flag, prepare-flag (clean), followed by
+ref-profile, prepare-profile, flag-profile, prepare-flag-profile (diagnostic).
+prepare: SIMT task selection + batch metadata + input/return overlap.
+flag: SIMT full-block flag checks. --variants can select each option separately.
+meta/meta-profile selects metadata only; prefetch/prefetch-profile selects overlap only.
 --ranks-per-host 4 (default): cross-host EP8, or single-host EP2/4.
 --ranks-per-host 16: single-host EP4/8/16, or cross-host EP32.
 Previous experiments remote, pipeline, return, opt-profile, r36-profile and early-profile remain
@@ -44,15 +47,20 @@ IFS=, read -r -a names <<< "$variants"
 # Validate the complete selection before starting any build.
 for name in "${names[@]}"; do
     case "$name" in
-        issue|probe|issue-probe|issue-profile|probe-profile|issue-probe-profile|base|remote|pipeline|return|ops-shmem-base|ref-profile|opt-profile|r36-profile|early-profile|remote-profile|pipeline-profile|return-profile) ;;
+        meta|meta-profile|prefetch|prefetch-profile|prepare|flag|prepare-flag|prepare-profile|flag-profile|prepare-flag-profile|issue|probe|issue-probe|issue-profile|probe-profile|issue-probe-profile|base|remote|pipeline|return|ops-shmem-base|ref-profile|opt-profile|r36-profile|early-profile|remote-profile|pipeline-profile|return-profile) ;;
         *) fail "Unknown experiment: $name (see --help)";;
     esac
 done
 if ((!dry)); then ll_bench_environment "$cann" "$mpi" "$shmem"; fi
 for name in "${names[@]}"; do
-    variant=opt profile=OFF small=OFF early=OFF remote=OFF defer=OFF issue=OFF probe=OFF recv=0
+    variant=opt profile=OFF small=OFF early=OFF remote=OFF defer=OFF issue=OFF probe=OFF recv=0 simt_meta=OFF simt_flag=OFF prefetch_return=OFF
     if [[ $name == *-profile ]]; then profile=ON; fi
     case "$name" in
+        meta|meta-profile) simt_meta=ON;;
+        prefetch|prefetch-profile) prefetch_return=ON;;
+        prepare|prepare-profile) simt_meta=ON; prefetch_return=ON;;
+        flag|flag-profile) simt_flag=ON;;
+        prepare-flag|prepare-flag-profile) simt_meta=ON; simt_flag=ON; prefetch_return=ON;;
         base) variant=base; profile=OFF;;
         ops-shmem-base) variant=ops-shmem-base; profile=OFF;;
         opt-profile) small=ON;;
@@ -70,7 +78,8 @@ for name in "${names[@]}"; do
          --build-dir "$root/build/ll-cpp-$name" --jobs "$jobs"
          --variant "$variant" --profile "$profile" --small-batch "$small"
          --recv-cores "$recv" --early-reduce "$early" --remote-first "$remote" --defer-return "$defer"
-         --early-issue "$issue" --progress-probe "$probe" --ranks-per-host "$ranks_per_host")
+         --early-issue "$issue" --progress-probe "$probe" --simt-meta "$simt_meta" --simt-flag "$simt_flag"
+         --prefetch-return "$prefetch_return" --ranks-per-host "$ranks_per_host")
     printf '\nBuilding %s\n' "$name"
     if ((dry)); then printf '%q ' "${cmd[@]}"; printf '\n'; else "${cmd[@]}"; fi
 done

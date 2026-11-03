@@ -96,8 +96,8 @@ int main(int argc,char** argv) {
         (0, 1, 11), (1, 0, 30), (2, 0, 13)]
     with (tmp_path / "diagnostic.csv").open() as stream:
         records = list(csv.DictReader(stream))
-    assert len(records) == 2 * 4 * 3
-    assert {int(r["iteration"]) for r in records} == {1, 2}
+    assert len(records) == 3 * 4 * 3
+    assert {int(r["iteration"]) for r in records} == {0, 1, 2}
     for row in records:
         assert int(row["core"]) in (1, 2, 5)
         assert int(row["device"]) == int(row["rank"]) + 8

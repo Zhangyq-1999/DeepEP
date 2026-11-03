@@ -2,6 +2,7 @@
 #include "sample_report.hpp"
 #include "profile_samples.hpp"
 #include "profile.hpp"
+#include "producer_map.hpp"
 #include "mpi_coordinator.hpp"
 #include <cstdlib>
 #include <acl/acl.h>
@@ -204,6 +205,48 @@ struct Case {
         }
         return worst;
     }
+    void exportProducers(const llbench::Options& o, const llbench::Coordinator& peers,
+                         uint32_t cores, uint32_t recv, uint32_t options)
+    {
+        int32_t count = 0;
+        check(aclrtMemcpy(&count, sizeof(count), dispatch.sendCountsOut + (o.experts - 1U) * 4U,
+                          sizeof(count), ACL_MEMCPY_DEVICE_TO_HOST), "read producer count");
+        if (count < 0 || uint32_t(count) > CombineDedup::kEpServerDedupCombineMaxTokenNum)
+            throw std::runtime_error("Invalid producer count");
+        std::vector<int32_t> types(count), table(size_t(count) * 3U);
+        if (count) {
+            if (DispatchDedup::EpServerDedupEnabled(o.capacity, bs, o.world))
+                check(aclrtMemcpy(types.data(), types.size() * 4U, dispatch.tokenTypeOut,
+                                  types.size() * 4U, ACL_MEMCPY_DEVICE_TO_HOST), "read producer types");
+            else std::fill(types.begin(), types.end(), 1);
+            check(aclrtMemcpy(table.data(), table.size() * 4U, dispatch.destinationIndexOut,
+                              table.size() * 4U, ACL_MEMCPY_DEVICE_TO_HOST), "read producer routes");
+        }
+        const auto local = llbench::return_producers(types, table, o.rank, o.world, bs, o.topk,
+            DispatchDedup::LlGroupForWorld(o.world), o.ranksPerHost, cores, recv, options & 1U);
+        const auto gathered = peers.gather(local.data(), local.size() * sizeof(uint64_t));
+        if (o.rank) return;
+        const auto path = std::filesystem::path(o.output) / "producers.csv";
+        const bool exists = std::filesystem::exists(path);
+        std::ofstream out(path, std::ios::app);
+        if (!exists) out << "tokens,source,token,slot,producer,core,type,row,path\n";
+        for (size_t i = 0; i < local.size(); ++i) {
+            uint64_t producer = 0U;
+            for (uint32_t p = 0; p < o.world; ++p) {
+                uint64_t v = 0U;
+                std::memcpy(&v, gathered.data() + (size_t(p) * local.size() + i) * 8U, 8U);
+                if (v && producer) throw std::runtime_error("Multiple ranks produce the same return slot");
+                if (v) producer = v;
+            }
+            if (!producer) continue;  // inactive source-mask slots have no writer
+            const uint32_t source = uint32_t(i / (bs * o.topk)), peer = uint32_t(producer & 0xffffU) - 1U;
+            out << bs << ',' << source << ',' << (i / o.topk) % bs << ',' << i % o.topk << ',' << peer << ','
+                << ((producer >> 16U) & 0xffU) << ',' << ((producer >> 24U) & 0xffU) << ',' << (producer >> 32U)
+                << ',' << (source == peer ? "local" : source / o.ranksPerHost == peer / o.ranksPerHost ? "UBMEM" : "RDMA") << '\n';
+        }
+        out.close();
+        if (!out) throw std::runtime_error("Cannot write return producer map");
+    }
 };
 }  // namespace
 
@@ -226,7 +269,8 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
     const bool profileBuild = deepep_ll_combine_profile_enabled() != 0;
     const uint32_t returnOptions = deepep_ll_combine_return_options();
     if (returnOptions != (DEEPEP_BENCH_REMOTE_FIRST | (DEEPEP_BENCH_DEFER_RETURN << 1) |
-                          (DEEPEP_BENCH_EARLY_ISSUE << 2) | (DEEPEP_BENCH_PROGRESS_PROBE << 3)))
+                          (DEEPEP_BENCH_EARLY_ISSUE << 2) | (DEEPEP_BENCH_PROGRESS_PROBE << 3) | (DEEPEP_BENCH_SIMT_META << 4) |
+                          (DEEPEP_BENCH_SIMT_FLAG << 5) | (DEEPEP_BENCH_PREFETCH_RETURN << 6)))
         throw std::runtime_error("Mismatched Host/device return options");
     if (!profileBuild) o.profile = 0;
     if (profileBuild && o.profile) o.iterations = o.profileIterations;
@@ -260,7 +304,7 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
         if (!summary) throw std::runtime_error("Cannot open summary");
         summary << "ep,tokens,hidden,topk,experts,dtype,route,seed,capacity,warmup,source_id,samples,active_"
                    "aiv,recv_cores,small_batch,early_"
-                   "reduce,remote_first,defer_return,early_issue,progress_probe,ranks_per_host,original,entry_sync,profile_build,profile_level,rank_max_mean_us,"
+                   "reduce,remote_first,defer_return,early_issue,progress_probe,simt_meta,simt_flag,prefetch_return,ranks_per_host,original,entry_sync,profile_build,profile_level,rank_max_mean_us,"
                    "rank_max_min_us,"
                    "rank_max_max_us,p50_us,p99_us\n";
     }
@@ -269,6 +313,8 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
               << " early_reduce=" << deepep_ll_combine_early_reduce_enabled()
               << " remote_first=" << (returnOptions & 1U) << " defer_return=" << ((returnOptions >> 1) & 1U)
               << " early_issue=" << ((returnOptions >> 2) & 1U) << " progress_probe=" << ((returnOptions >> 3) & 1U)
+              << " simt_meta=" << ((returnOptions >> 4) & 1U) << " simt_flag=" << ((returnOptions >> 5) & 1U)
+              << " prefetch_return=" << ((returnOptions >> 6) & 1U)
               << " ranks_per_host=" << o.ranksPerHost << " device=" << o.device
               << " original=" << DEEPEP_LL_COMBINE_ORIGINAL << " entry_sync=" << o.entrySync
               << " profile_build=" << profileBuild << " profile_level=" << o.profile << std::endl;
@@ -344,7 +390,10 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
         if (o.profile) profileCsv.flush();
         auto data = peers.gather(times.data(), times.size() * sizeof(float));
         const auto rankMax = llbench::rank_max_samples(data, o, bs);
-        if (o.profile) selectedProfiles.write(peers, o, bs, cores, recv, rankMax);
+        if (o.profile) {
+            c.exportProducers(o, peers, cores, recv, returnOptions);
+            selectedProfiles.write(peers, o, bs, cores, recv, rankMax);
+        }
         if (o.rank == 0) {
             auto s = llbench::stats(rankMax);
             summary << o.world << ',' << bs << ',' << o.hidden << ',' << o.topk << ',' << o.experts << ',' << o.dtype
@@ -352,7 +401,8 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
                     << DEEPEP_BENCH_SOURCE_ID << ',' << o.iterations << ',' << cores << ',' << recv << ','
                     << deepep_ll_combine_small_batch_enabled() << ',' << deepep_ll_combine_early_reduce_enabled() << ','
                     << (returnOptions & 1U) << ',' << ((returnOptions >> 1) & 1U) << ',' << ((returnOptions >> 2) & 1U) << ','
-                    << ((returnOptions >> 3) & 1U) << ',' << o.ranksPerHost << ',' << DEEPEP_LL_COMBINE_ORIGINAL
+                    << ((returnOptions >> 3) & 1U) << ',' << ((returnOptions >> 4) & 1U) << ','
+                    << ((returnOptions >> 5) & 1U) << ',' << ((returnOptions >> 6) & 1U) << ',' << o.ranksPerHost << ',' << DEEPEP_LL_COMBINE_ORIGINAL
                     << ',' << o.entrySync << ',' << profileBuild << ',' << o.profile << ',' << s.mean << ',' << s.min
                     << ',' << s.max << ',' << s.p50 << ',' << s.p99 << '\n';
             summary.flush();

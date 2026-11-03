@@ -6,6 +6,9 @@
 
 #include "kernel_operator.h"
 #include "combine_profile_device.h"
+#ifdef DEEPEP_LL_COMBINE_SIMT_FLAG
+#include "combine_simt.h"
+#endif
 #include "ep_memory_server_dedup_combine_config.h"
 #include "../../dispatch/low_latency/common/dispatch_dedup_types.h"
 
@@ -203,12 +206,59 @@ private:
         Sync<HardEvent::MTE2_V>();
         profile_.Elapsed(CombineProfile::ProbeLoadTicks, start);
         const uint64_t checkStart = profile_.DetailClock();
+#ifdef DEEPEP_LL_COMBINE_SIMT_FLAG
+        const uint32_t active = enableDedup_ ? masks_.GetValue(token - begin_)
+            : (k_ == 32U ? 0xffffffffU : (1U << k_) - 1U);
+        auto* work = reinterpret_cast<__ubuf__ uint32_t*>(work_.GetPhyAddr());
+        auto* summary = reinterpret_cast<__ubuf__ uint32_t*>(probeSum_.GetPhyAddr());
+        asc_vf_call<ResultFlagsVf>(dim3(32), reinterpret_cast<__ubuf__ float*>(flags_.GetPhyAddr()),
+                                  work, k_, blocks_, active);
+        PipeBarrier<PIPE_V>();
+        asc_vf_call<ResultFlagsSummaryVf>(dim3(32), work, summary, k_, blocks_);
+        Sync<HardEvent::V_S>();
+        auto result = probeSum_.ReinterpretCast<uint32_t>();
+        const uint32_t missingMask = result.GetValue(0U), missing = result.GetValue(1U);
+        const bool ready = missingMask == 0U;
+#else
         ReduceSum(probeSum_, flags_, work_, 1U, flags, 1U);
         Sync<HardEvent::V_S>();
         const bool ready = probeSum_.GetValue(0U) == float(expected);
+#endif
         profile_.Elapsed(CombineProfile::ProbeCheckTicks, checkStart);
         profile_.Probe(ready, token, 0xffffffffU, flags, start);
+#ifdef DEEPEP_LL_COMBINE_SIMT_FLAG
+        profile_.Missing(token, missingMask, missing, result.GetValue(2U), blocks_);
+#else
+        InspectMissing(token, ready, 0U, k_);
+#endif
         return ready;
+    }
+    __aicore__ inline void InspectMissing(uint32_t token, bool ready, uint32_t firstSlot, uint32_t slots)
+    {
+#ifdef DEEPEP_LL_COMBINE_PROFILE
+        if (!profile_.DetailClock()) return;
+        const uint64_t begin = profile_.DetailClock();
+        uint32_t mask = 0U, first = 0xffffffffU, count = 0U;
+        if (!ready) {
+            const uint32_t active = enableDedup_ ? masks_.GetValue(token - begin_)
+                : (k_ == 32U ? 0xffffffffU : (1U << k_) - 1U);
+            for (uint32_t s = 0; s < slots; ++s) {
+                if (!((active >> (firstSlot + s)) & 1U)) continue;
+                for (uint32_t b = 0; b < blocks_; ++b) {
+                    if (flags_.GetValue((s * blocks_ + b) * 8U) != 1.0f) {
+                        mask |= 1U << (firstSlot + s);
+                        if (first == 0xffffffffU) first = (firstSlot + s) * blocks_ + b;
+                        ++count;
+                    }
+                }
+            }
+        }
+        // A successful single-slot probe does not confirm the whole token.
+        // A failed sum with no missing active flag is also not a ready event.
+        if (mask || (ready && firstSlot == 0U && slots == k_))
+            profile_.Missing(token, mask, first, count, blocks_);
+        profile_.Elapsed(CombineProfile::TailInspectTicks, begin);
+#endif
     }
 #ifdef DEEPEP_LL_COMBINE_PROGRESS_PROBE
     __aicore__ inline bool ProbeProgress(uint32_t token, uint32_t next, uint32_t scan)
@@ -234,6 +284,7 @@ private:
             if (!ready) {
                 pending_.SetValue(scan, token | (next << 16U));
                 profile_.Probe(false, token, next, readBlocks, start);
+                InspectMissing(token, false, next, 1U);
                 return false;
             }
             profile_.Add(CombineProfile::ProbeConfirmedSlots);
@@ -241,6 +292,7 @@ private:
         // The reduction still starts only after all active contributions are
         // ready, and uses the original top-k arithmetic order.
         profile_.Probe(true, token, 0xffffffffU, readBlocks, start);
+        profile_.Missing(token, 0U, 0xffffffffU, 0U, blocks_);
         return true;
     }
 #endif
@@ -302,6 +354,7 @@ private:
         const bool ready = probeSum_.GetValue(0U) == float(blocks_);
         profile_.Elapsed(CombineProfile::ProbeCheckTicks, checkStart);
         profile_.Probe(ready, token, k, blocks_, start);
+        InspectMissing(token, ready, k, 1U);
         return ready;
     }
     template<class T>
@@ -342,6 +395,8 @@ private:
             ++state.members;
             ++inputSequence_;
         }
+        // All active contributions have now been observed and consumed.
+        profile_.Missing(state.token, 0U, 0xffffffffU, 0U, blocks_);
         const uint32_t outputLane = finalLayout_.outputSlots[completed % outputLanes_];
         const uint64_t outputStart = profile_.DetailClock();
         WaitFlag<HardEvent::MTE3_V>(outputLane);

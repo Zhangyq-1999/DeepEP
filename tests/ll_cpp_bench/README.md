@@ -29,20 +29,20 @@ bash tests/ll_cpp_bench/build_all.sh
 
 `build_all.sh` 默认更新以下 8 个构建目录，每个构建使用 4 个编译任务。Dispatch 用于准备 Combine 的输入和路由，同一配置只编译一次，各版本复用它的目标文件。每个版本再单独编译 Combine，并链接成独立的 kernel 库。首次完整编译的设备编译单元从 144 个减少到 25 个，实际耗时仍取决于机器和编译器。
 
-已有目录继续用于增量编译。只修改 Combine 时，Dispatch 无需重编；修改 Dispatch 或它依赖的头文件时，构建系统自动重编受影响的部分。共享目标文件保存在 `build/ll-cpp-dispatch`，不同编译器、SDK 和每机 rank 数使用独立目录。更新本次构建和超时功能后，两台机器都执行一次 `build_all.sh`，更新所有选中的版本。
+已有目录继续用于增量编译。只修改 Combine 时，Dispatch 无需重编；修改 Dispatch 或它依赖的头文件时，构建系统自动重编受影响的部分。共享目标文件保存在 `build/ll-cpp-dispatch`，不同编译器、SDK 和每机 rank 数使用独立目录。更新代码后，两台机器都执行一次 `build_all.sh`，更新所有选中的版本。
 
 | 构建名 | 启用的实验 | 打点 |
 | --- | --- | --- |
 | `base` | 冻结的上游原版 | 关闭 |
-| `issue` | 在准备下一包前提交上一包 RDMA 回传 | 关闭 |
-| `probe` | 记录已确认的回传分量，只检查尚未确认的有效分量 | 关闭 |
-| `issue-probe` | 同时启用以上两项实验 | 关闭 |
+| `prepare` | SIMT 筛选回传任务、批量加载元数据，并重叠输入读取与上一包提交 | 关闭 |
+| `flag` | 一次读取完整 flag 快照，SIMT 并行检查有效 slot 的所有块 | 关闭 |
+| `prepare-flag` | 同时启用以上两组实验 | 关闭 |
 | `ref-profile` | 实验开关全部关闭，用作打点对照 | 开启 |
-| `issue-profile` | 提前提交回传 | 开启 |
-| `probe-profile` | 记录就绪检查进度 | 开启 |
-| `issue-probe-profile` | 同时启用以上两项实验 | 开启 |
+| `prepare-profile` | 任务准备和回传重叠 | 开启 |
+| `flag-profile` | SIMT 检查 flag | 开启 |
+| `prepare-flag-profile` | 同时启用以上两组实验 | 开启 |
 
-此前的 `remote`、`pipeline`、`return` 及对应打点版，以及任务缓存 `opt-profile`、分核 `r36-profile`、提前归约 `early-profile` 均改为按需编译、运行。已有构建和结果文件继续保留。需要复测时，用 `--variants` 指定对应名称。
+此前的 `issue`、`probe`、`issue-probe`、`remote`、`pipeline`、`return` 及对应打点版改为按需构建。任务缓存 `opt-profile`、分核 `r36-profile`、提前归约 `early-profile` 也继续保留。用 `--variants` 指定名称即可复测，默认不再编译这些版本。
 
 默认使用当前两台机器：节点 0 为 `90.90.93.84`，节点 1 为 `90.90.93.184`。**每台使用后 4 张卡，即设备 12、13、14、15，共 EP8。** `build_all.sh` 和 `run_all.sh` 默认均为 `--ranks-per-host 4`。这一参数控制参与通信的 rank 分组，设备编号由 `--devices` 独立指定。脚本根据本机 IP 识别节点。两边编译完成后，第一台执行：
 
@@ -66,18 +66,22 @@ bash tests/ll_cpp_bench/run_all.sh 第一台打印的RUN_ID
 
 每次设备 stream 等待默认最多 10 秒，可用 `run_all.sh --kernel-timeout 20` 改为 20 秒。超时或设备错误会打印 rank、设备、BS、轮次和阶段，然后调用 `MPI_Abort` 终止本次作业，不继续采样或写入 PASS。该限制使用 [CANN 的带超时 stream 同步接口](https://www.hiascend.com/document/detail/en/CANNCommunityEdition/910/API/runtimeapi/aclcppdevg_03_0077.html)，不修改原版 kernel。SHMEM 初始化仍使用独立的 `--timeout` 参数，MPI 作业总时限由 `--job-timeout` 控制。
 
-`issue` 在读取下一条路由后、准备下一包数据前调用上一包的 Put，避免把下一包的向量计算等待排到上一包 WQE 搬运之前。它沿用原暂存区、输出槽和 CQ 回收规则。
+`prepare` 用 SIMT 筛选 FIRST_HOP 回传任务，保持原来的行顺序和核归属。每次最多加载 8 条已分配给本核的元数据，合并 MTE2 完成等待。上一包暂存到 GM 时，先发起下一包的输入读取，再等待暂存并提交 Put。组内末包仍立即提交，缓冲容量和 CQ 回收规则不变。
 
-`probe` 为每个 token 保存检查进度，跳过无效 slot 和已确认的分量。每个分量仍检查全部块尾标记，全部有效分量到齐后才按原顺序归约。它减少重复标记搬运，但可能增加单个 token 的检查次数，因此单独保留一个实验版本。BS256 同样测试这两项改动。
+`flag` 保留 MTE2 对 GM 的整批读取。SIMT 只检查已搬入 UB 的快照，每个线程处理一个 slot，检查该 slot 的全部块尾标记。所有有效 slot 到齐后，算子才按原有 FP32 顺序归约。这项实验没有减少需要确认的数据块，也没有把逐块检查改成只检查最后一块。
 
-这些改动尚未证明能稳定降低设备时延。先看干净版 Event，再用打点版解释差异。入口仍只执行 Host MPI Barrier，它能减小提交偏斜，但不保证各卡 kernel 同时开始。
+需要拆开 `prepare` 时，可选择 `meta`、`meta-profile`，只测试任务筛选和元数据加载；或选择 `prefetch`、`prefetch-profile`，只测试输入读取与回传提交的重叠。
+
+`SIMT_FLAG` 与旧的 `PROGRESS_PROBE`、`EARLY_REDUCE` 使用不同检查流程，不能同时启用；`PREFETCH_RETURN` 与旧的 `EARLY_ISSUE` 选择不同的提交时机，也不能同时启用。脚本会拒绝这些组合，避免某个开关被另一项实验覆盖。
+
+这些实验尚未完成 CANN 编译和设备性能验证。Host 检查不能证明时延收益；先看干净版 Event，再用打点版解释差异。入口仍只执行 Host MPI Barrier，不调用设备 RDMA 同步接口。
 
 参数仍可覆盖，例如：
 
 ```bash
 # 只重编本轮关心的两个版本，也可覆盖 SDK 路径和并行度。
 bash tests/ll_cpp_bench/build_all.sh \
-    --variants ref-profile,issue-profile --jobs 8 --shmem-root "$SHMEM_ROOT"
+    --variants ref-profile,prepare-profile --jobs 8 --shmem-root "$SHMEM_ROOT"
 
 # 单机 EP16：先把全部选中版本重编为每机 16 个 rank。
 bash tests/ll_cpp_bench/build_all.sh --ranks-per-host 16
@@ -86,16 +90,16 @@ bash tests/ll_cpp_bench/run_all.sh --ep 16 --ranks-per-host 16
 bash tests/ll_cpp_bench/run_all.sh --ep 32 --ranks-per-host 16
 
 # 上游 base 没有 EP2 特化，EP2 使用实验 kernel。
-bash tests/ll_cpp_bench/build_all.sh --variants issue,issue-profile
-bash tests/ll_cpp_bench/run_all.sh --ep 2 --variants issue,issue-profile
+bash tests/ll_cpp_bench/build_all.sh --variants prepare,prepare-profile
+bash tests/ll_cpp_bench/run_all.sh --ep 2 --variants prepare,prepare-profile
 
 # 单机 EP4 指定设备，覆盖 BS、预热和采样次数。
 bash tests/ll_cpp_bench/run_all.sh --ep 4 --devices 6,7,14,15 \
-    --variants ref-profile,issue-profile --tokens 32,72,256 --warmup 10 --profile-iters 20
+    --variants ref-profile,prepare-profile --tokens 32,72,256 --warmup 10 --profile-iters 20
 
 # 更换双机地址、端口或版本顺序时，第二台复制此命令打印的加入命令。
 bash tests/ll_cpp_bench/run_all.sh --hosts HOST0,HOST1 --node-rank 0 \
-    --master-port 30071 --variants issue-profile,ref-profile
+    --master-port 30071 --variants prepare-profile,ref-profile
 ```
 
 编译与运行的 `--ranks-per-host` 必须一致。切回默认双机 EP8 时，两边重新执行不带参数的 `build_all.sh`。`launch.sh` 会在初始化前拒绝拓扑不匹配的旧构建。
@@ -169,6 +173,9 @@ base 和 opt 使用各自的 Combine kernel 源码。base 从上游提交 `5b38b
 | 编译参数 | 默认值 | 作用 |
 | --- | --- | --- |
 | `--ranks-per-host 4` | 16 | 编译每机参与 rank 数；便捷脚本 `build_all.sh` 默认传 4 |
+| `--simt-meta ON` | OFF | SIMT 稳定筛选 FIRST_HOP 任务，合并最多 8 条元数据的完成等待 |
+| `--simt-flag ON` | OFF | SIMT 检查 UB 快照中的所有有效块尾标记 |
+| `--prefetch-return ON` | OFF | 先发起下一包输入读取，再提交上一包回传 |
 | `--early-issue ON` | OFF | 在下一包准备前提交上一包，缩短回传推迟时间 |
 | `--progress-probe ON` | OFF | 记录已到齐的贡献，后续只检查尚未确认的有效 slot |
 | `--small-batch ON` | OFF | 缓存 FIRST_HOP 任务列表，减少重复扫表和空闲缓冲槽处理 |
@@ -341,7 +348,15 @@ bash tests/ll_cpp_bench/launch.sh \
 
 打点回显中的 `E` 行给出逐轮最慢 rank 与耗时。`D` 行标识全局中位轮和最慢轮，`S`、`R` 分别展示该轮最慢 rank 的发送核与接收核。`P` 行列出 Put 返回相对本核入口较晚的候选核。各核时间保留 tick；分析跨核、跨 rank 的绝对先后需要时钟校准。
 
-rank 0 在采样后汇总选中轮次的全局代表记录，保存在各版本目录的 `diagnostic.csv`。全量逐核记录仍保存在各卡所属机器的 `rank-N-profile.csv`。报告保存为运行目录下的 `summary.txt`，可以重新生成：
+新增的 `T` 行按真实 Dispatch 路由表定位最后一次未齐备的 token、slot 和块编号。`producers` 给出生产方 rank、核、回传类型，以及最后一跳使用的 `RDMA`、`UBMEM` 或本卡搬运。`PARTIAL` 表示生产方还要先汇集机内贡献；最后一跳走 RDMA，不代表根因已经定位到 RDMA 链路。
+
+`Tfreq` 统计每轮最慢 rank 上接收尾核的缺失记录。`producer>receiver/path/type:n` 表示这组收发关系在多少轮出现；同一轮只计一次。`same-slot` 给出重复次数最多的接收 rank、token 和 slot。它统计的是被观察到的最后一次未齐备快照，不是所有包的时延分布。
+
+`first/last/ready` 分别记录同一 token/slot 连续被观察为缺失的起点、最后一次缺失和该 token 被确认齐备的位置，均相对本核入口。换了被观察的 slot 后重新计数；这些值不能跨 rank 相减当作网络时延。`P` 行仍只是较晚提交的候选核，`T` 行才使用实际路由关联。
+
+原流程打点版在失败的 flag 快照上额外读取缺失位置，开销单独计入 `tail_inspect_ticks`；SIMT 版复用已有检查结果。两者的打点扰动可能不同，性能判断使用干净版。路由表下载、MPI 汇总和文件写入都在采样结束后执行，不进入 Event 计时。
+
+rank 0 在采样后汇总每轮的全局代表记录，保存在各版本目录的 `diagnostic.csv`。全量逐核记录仍保存在各卡所属机器的 `rank-N-profile.csv`。报告保存为运行目录下的 `summary.txt`，可以重新生成：
 
 ```bash
 bash tests/ll_cpp_bench/summarize.sh --suite results/ll-cpp/RUN_ID
@@ -373,7 +388,7 @@ bash tests/ll_cpp_bench/summarize.sh results/ll-cpp/RUN_ID/4-ref-profile
 
 `notify_local_ready` 分开本卡准备等待与通知发布。`direct_first_submit`、`direct_last_submit` 和 `direct_pending_end` 标出首个提交调用、末个调用返回以及待提交任务处理完的位置。`final_first_ready`、`final_last_ready` 标出成功检查数据就绪的位置；`final_last_store` 标出末个输出写回的下发位置。最终输出完成仍以原有 drain 和 kernel 收尾为准。
 
-时间字段使用设备原始 tick。`entry_tick` 保留原始值，其余阶段时间戳均减去本核入口时间；缺失阶段留空。`profile_init_end` 标出诊断记录初始化完成的位置，可据此分开打点初始化与业务初始化。一级打点中的二级字段留空。schema 4 每核使用 1536 B 记录，在原有收尾完成后集中写出。
+时间字段使用设备原始 tick。`entry_tick` 保留原始值，其余阶段时间戳均减去本核入口时间；缺失阶段留空。`profile_init_end` 标出诊断记录初始化完成的位置，可据此分开打点初始化与业务初始化。一级打点中的二级字段留空。schema 5 每核使用 1536 B 记录，在原有收尾完成后集中写出。
 
 分析时先选择同一配置、同一轮的记录，比较发送核与接收核的任务量和阶段耗时。常见判断如下：
 

@@ -30,7 +30,7 @@ COMBINE_RETURN_INLINE uint32_t CombineReturnServer(uint32_t servers, uint32_t ow
 
 COMBINE_RETURN_INLINE constexpr bool CombineDeferReturn(uint32_t outputLanes)
 {
-#if defined(DEEPEP_LL_COMBINE_DEFER_RETURN) || defined(DEEPEP_LL_COMBINE_EARLY_ISSUE)
+#if defined(DEEPEP_LL_COMBINE_DEFER_RETURN) || defined(DEEPEP_LL_COMBINE_EARLY_ISSUE) || defined(DEEPEP_LL_COMBINE_PREFETCH_RETURN)
     return outputLanes > 1U;
 #else
     return false;

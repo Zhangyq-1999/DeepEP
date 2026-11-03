@@ -14,6 +14,9 @@
 #include "ep_memory_server_dedup_buffer_layout.h"
 #include "ep_memory_server_dedup_combine_config.h"
 #include "combine_server_dedup_select.h"
+#ifdef DEEPEP_LL_COMBINE_SIMT_META
+#include "combine_simt.h"
+#endif
 #ifdef DEEPEP_LL_COMBINE_SMALL_BATCH
 #include "combine_partial_plan.h"
 #endif
@@ -69,6 +72,10 @@ public:
         scanRows_ = EpCombineM4ScanRows(h, k);
         table2Ub_ = Allocate<int32_t>(EpCombineAlign(kEpServerDedupCombineM4TableRows * 12U, 32U));
         table3Ub_ = Allocate<uint32_t>(EpCombineAlign(kEpServerDedupCombineM4TableRows * k * 8U, 32U));
+#ifdef DEEPEP_LL_COMBINE_SIMT_META
+        table2Cache_ = table2Ub_;
+        table3Cache_ = table3Ub_;
+#endif
         cast_ = scratch.ReinterpretCast<float>();
         product_ = scratch[layout.computeBytes].ReinterpretCast<float>();
         sum_ = scratch[2U * layout.computeBytes].ReinterpretCast<float>();
@@ -108,6 +115,9 @@ public:
         const uint32_t ownServer = uint32_t(args_->rank) / Group;
         uint32_t owner = 0U, completed = 0U;
         for (uint32_t step = 1U; step <= servers; ++step) {
+#ifdef DEEPEP_LL_COMBINE_SIMT_META
+            cacheEnd_ = 0U;  // server scan aliases both metadata caches
+#endif
             const uint64_t scanStart = profile_.DetailClock();
 #ifdef DEEPEP_LL_COMBINE_SMALL_BATCH
             const uint32_t begin = planned_ && step > 1U ? plan_.End(step - 2U) : 0U;
@@ -124,7 +134,11 @@ public:
 #endif
                 const uint32_t row = uint32_t(rows_.GetValue(task));
                 const uint64_t metaStart = profile_.DetailClock();
+#ifdef DEEPEP_LL_COMBINE_SIMT_META
+                LoadTaskBatch(task, taskEnd);
+#else
                 LoadTask(row);
+#endif
                 profile_.Elapsed(CombineProfile::PartialMetadataTicks, metaStart);
 #ifdef DEEPEP_LL_COMBINE_EARLY_ISSUE
                 // Issue before the next packet queues its Vector -> MTE3 wait.
@@ -207,6 +221,26 @@ private:
             WaitFlag<HardEvent::MTE2_V>(7U);
             profile_.Elapsed(CombineProfile::PartialScanLoadTicks, loadStart);
             const uint64_t selectStart = profile_.DetailClock();
+#ifdef DEEPEP_LL_COMBINE_SIMT_META
+            // 256 B counts/bits and 32 B summary reuse the original scan space.
+            auto* work = reinterpret_cast<__ubuf__ uint32_t*>(indices.GetPhyAddr());
+            auto* summary = reinterpret_cast<__ubuf__ uint32_t*>(typeMask.GetPhyAddr());
+            asc_vf_call<PartialSelectCountVf>(dim3(32),
+                reinterpret_cast<__ubuf__ int32_t*>(table.GetPhyAddr()),
+                reinterpret_cast<__ubuf__ int32_t*>(ranks.GetPhyAddr()), work,
+                span, server * Group, (server + 1U) * Group, uint32_t(args_->rankSize));
+            PipeBarrier<PIPE_V>();
+            asc_vf_call<PartialSelectWriteVf>(dim3(32), work, summary,
+                reinterpret_cast<__ubuf__ int32_t*>(rows_.GetPhyAddr()),
+                span, begin, owner, localCore, recvCores_, count);
+            Sync<HardEvent::V_S>();
+            auto result = typeMask.ReinterpretCast<uint32_t>();
+            if (validateRanks && result.GetValue(1U)) { Trap(); return 0U; }
+            const uint32_t selected = result.GetValue(0U);
+            const uint32_t first = ServerDedupFirstOwned(localCore, owner, recvCores_);
+            if (first < selected) count += (selected - 1U - first) / recvCores_ + 1U;
+            owner = (owner + selected) % recvCores_;
+#else
             Compares(typeMask, ranks, int32_t(2), CMPMODE::EQ, (span + 63U) / 64U * 64U);
             CreateVecIndex(indices, int32_t(0), span);
             PipeBarrier<PIPE_V>();
@@ -241,6 +275,7 @@ private:
             owner = (owner + uint32_t(selected)) % recvCores_;
             for (uint32_t task = first; task < uint32_t(selected); task += recvCores_)
                 rows_.SetValue(count++, table.GetValue(task));
+#endif
             profile_.Elapsed(CombineProfile::PartialScanVectorTicks, selectStart);
         }
         return count;
@@ -253,6 +288,28 @@ private:
         DataCopyPad(table3Ub_, table3_[uint64_t(row) * k_ * 2U], {1U, k_ * 8U, 0U, 0U, 0U}, {false, 0U, 0U, 0U});
         Sync<HardEvent::MTE2_S>();
     }
+#ifdef DEEPEP_LL_COMBINE_SIMT_META
+    __aicore__ inline void LoadTaskBatch(uint32_t task, uint32_t end)
+    {
+        if (task >= cacheEnd_) {
+            cacheBegin_ = task;
+            cacheEnd_ = task + 8U < end ? task + 8U : end;
+            // Existing 384 B table2 cache fits eight padded 32 B rows. Table3
+            // already reserves 32 rows; no input/output lane is taken away.
+            for (uint32_t i = task; i < cacheEnd_; ++i) {
+                const uint32_t row = uint32_t(rows_.GetValue(i)), slot = i - task;
+                DataCopyPad(table2Cache_[slot * 8U], table2_[uint64_t(row) * 3U],
+                    {1U, 12U, 0U, 0U, 0U}, {false, 0U, 0U, 0});
+                DataCopyPad(table3Cache_[slot * EpCombineAlign(k_ * 8U, 32U) / 4U], table3_[uint64_t(row) * k_ * 2U],
+                    {1U, k_ * 8U, 0U, 0U, 0U}, {false, 0U, 0U, 0U});
+            }
+            Sync<HardEvent::MTE2_S>();
+            profile_.Add(CombineProfile::MetadataBatches);
+        }
+        table2Ub_ = table2Cache_[(task - cacheBegin_) * 8U];
+        table3Ub_ = table3Cache_[(task - cacheBegin_) * EpCombineAlign(k_ * 8U, 32U) / 4U];
+    }
+#endif
     __aicore__ inline void Load(uint32_t row, uint32_t source, uint32_t member)
     {
         const uint32_t lane = (inputSequence_ + member) % inputLanes_;
@@ -287,6 +344,13 @@ private:
     {
         const uint32_t preload = contributions < inputLanes_ ? contributions : inputLanes_;
         for (uint32_t member = 0; member < preload; ++member) Load(row, source, member);
+#ifdef DEEPEP_LL_COMBINE_PREFETCH_RETURN
+        // Let current MTE2 input reads overlap the previous packet's MTE3 wait
+        // and Put submission. The old output lane is still owned by the batch.
+        const uint64_t issueStart = profile_.DetailClock();
+        rdmaBatch_->SubmitPending();
+        profile_.Elapsed(CombineProfile::EarlyIssueTicks, issueStart);
+#endif
         const auto weights = table3Ub_.ReinterpretCast<float>();
         for (uint32_t member = 0; member < contributions; ++member) {
             const uint32_t lane = (inputSequence_ + member) % inputLanes_;
@@ -367,6 +431,11 @@ private:
     uint32_t blocks_ = 0, packetBytes_ = 0, inputBytes_ = 0, inputLanes_ = 0, outputLanes_ = 0;
     uint32_t inputSequence_ = 0, scanRows_ = 0;
     uint64_t stageStride_ = 0, stageBase_ = 0, window_ = 0;
+#ifdef DEEPEP_LL_COMBINE_SIMT_META
+    LocalTensor<int32_t> table2Cache_;
+    LocalTensor<uint32_t> table3Cache_;
+    uint32_t cacheBegin_ = 0U, cacheEnd_ = 0U;
+#endif
 #ifdef DEEPEP_LL_COMBINE_SMALL_BATCH
     PartialTaskPlan<Group> plan_;
     LocalTensor<uint8_t> planScratch_;

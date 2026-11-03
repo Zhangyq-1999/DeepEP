@@ -465,6 +465,11 @@ private:
                             {false, 0U, 0U, uint16_t(0)});
                 SetFlag<HardEvent::MTE2_V>(lane);
                 profile_.Elapsed(CombineProfile::DirectInputIssueTicks, inputStart);
+#ifdef DEEPEP_LL_COMBINE_PREFETCH_RETURN
+                const uint64_t pendingStart = profile_.DetailClock();
+                returnBatch_.SubmitPending();
+                profile_.Elapsed(CombineProfile::EarlyIssueTicks, pendingStart);
+#endif
                 const uint64_t inputWait = profile_.DetailClock();
                 WaitFlag<HardEvent::MTE2_V>(lane);
                 profile_.Elapsed(CombineProfile::DirectInputWaitTicks, inputWait);

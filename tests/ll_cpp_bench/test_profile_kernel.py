@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 @pytest.mark.parametrize("profile", [False, True])
 @pytest.mark.parametrize("small", [False, True])
-@pytest.mark.parametrize("returns", [False, True, "new"])
+@pytest.mark.parametrize("returns", [False, True, "new", "simt"])
 def test_all_combine_profile_paths_compile(tmp_path, profile, small, returns):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
     if not zig:
@@ -22,7 +22,7 @@ def test_all_combine_profile_paths_compile(tmp_path, profile, small, returns):
     arithmetic = (ROOT / "tests/ll_rdma/combine_early_reduce_test.cpp").read_text(encoding="utf-8")
     arithmetic = arithmetic[:arithmetic.index("inline uint8_t* packets=")] + "}\n"
     source = tmp_path / "all.cpp"
-    source.write_text(arithmetic + r'''
+    source.write_text('#include "simt_test_stub.h"\n' + arithmetic + r'''
 namespace AscendC {
 template<class T> void ReduceSum(LocalTensor<T>,LocalTensor<T>,LocalTensor<T>,uint32_t,uint32_t,uint32_t) {}
 template<class T> void Gather(LocalTensor<T>,LocalTensor<T>,LocalTensor<uint32_t>,uint32_t,uint32_t) {}
@@ -38,7 +38,10 @@ int main() {}
     (tmp_path / "shmem.h").write_text('#pragma once\ninline void dcci_cachelines(uint8_t*, uint64_t) {}\n')
     flags = ["-DDEEPEP_LL_RDMA=1", "-DDEEPEP_LL_COMBINE_EARLY_REDUCE=1",
              "-DDEEPEP_LL_COMBINE_RECV_CORES=36"]
-    if returns == "new":
+    if returns == "simt":
+        flags = ["-DDEEPEP_LL_RDMA=1", "-DDEEPEP_LL_COMBINE_SIMT_META=1", "-DDEEPEP_LL_COMBINE_SIMT_FLAG=1",
+                 "-DDEEPEP_LL_COMBINE_PREFETCH_RETURN=1", "-DDEEPEP_LL_PHYSICAL_RANKS_PER_HOST=4"]
+    elif returns == "new":
         flags += ["-DDEEPEP_LL_COMBINE_EARLY_ISSUE=1", "-DDEEPEP_LL_COMBINE_PROGRESS_PROBE=1",
                   "-DDEEPEP_LL_PHYSICAL_RANKS_PER_HOST=4"]
     elif returns:

@@ -214,3 +214,33 @@ def test_compact_diagnostics_select_same_global_iteration(reporter, tmp_path):
     write_csv(directory / "diagnostic.csv", fields, [r for r in records if r["rank"] == "0"])
     result = subprocess.run([str(reporter), "--suite", str(tmp_path)], capture_output=True, text=True)
     assert result.returncode != 0 and "Partial global diagnostics" in result.stderr
+
+
+def test_tail_link_and_recurrence_use_actual_slot_map(reporter, tmp_path):
+    directory = tmp_path / "0-flag-profile"
+    directory.mkdir()
+    fixture_data(directory)
+    config = dict(ep=2, tokens=32, hidden=3584, topk=8, experts=384, dtype="bf16", route="random",
+                  seed=0, warmup=10, samples=3, entry_sync="host", profile_build=1)
+    write_csv(directory / "summary.csv", list(config), [config])
+    write_csv(directory / "rank-max.csv", ["tokens", "iteration", "rank", "us"],
+              [dict(tokens=32, iteration=i, rank=1, us=v) for i, v in enumerate((10, 20, 30))])
+    records = []
+    for rank in (0, 1):
+        with (directory / f"rank-{rank}-profile.csv").open() as f:
+            reader = csv.DictReader(f)
+            fields = reader.fieldnames
+            for row in reader:
+                if rank == 1 and row["role"] == "receive":
+                    row.update(tail_token=7, tail_slot=2, tail_block=14, tail_missing_mask=4,
+                               tail_missing_blocks=1, tail_observations=5, tail_first_seen=30,
+                               tail_last_seen=60, tail_ready=70, schema=5)
+                records.append(row)
+    write_csv(directory / "diagnostic.csv", fields, records)
+    p = dict(tokens=32, source=1, token=7, slot=2, producer=0, core=31, type=2, row=93, path="RDMA")
+    write_csv(directory / "producers.csv", list(p), [p])
+    out = subprocess.check_output([str(reporter), "--suite", str(tmp_path)], text=True)
+    assert "event-tail-missed=3/3" in out and "0>1/RDMA/P:3" in out
+    assert "same-slot=r1/t7/k2:3" in out
+    assert "k2:r0/c31/RDMA/PARTIAL" in out and "first=k2/b14" in out
+    assert "first/last/ready=30/60/70" in out

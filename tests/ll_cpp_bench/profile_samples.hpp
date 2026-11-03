@@ -35,10 +35,6 @@ public:
         using namespace CombineProfile;
         if (times.empty() || records_.size() != times.size() * 3 * kWords)
             throw std::runtime_error("Missing profile samples");
-        std::vector<uint32_t> order(times.size());
-        std::iota(order.begin(), order.end(), 0U);
-        std::stable_sort(order.begin(), order.end(), [&](auto a, auto b) { return times[a] < times[b]; });
-        const std::set<uint32_t> iterations{order[(order.size() - 1) / 2], order.back()};
         std::ofstream out;
         if (!o.rank) {
             const auto path = std::filesystem::path(o.output) / "diagnostic.csv";
@@ -46,7 +42,7 @@ public:
             out.open(path, std::ios::app);
             if (!exists) profile_header(out);
         }
-        for (auto i : iterations) {
+        for (uint32_t i = 0; i < times.size(); ++i) {
             std::vector<uint64_t> send(1 + 3 * kWords);
             send[0] = o.device;
             std::copy_n(records_.data() + size_t(i) * 3 * kWords, 3 * kWords, send.data() + 1);

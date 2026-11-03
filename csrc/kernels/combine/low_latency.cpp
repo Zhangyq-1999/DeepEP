@@ -63,6 +63,15 @@ extern "C" DEEPEP_EXPORT uint32_t deepep_ll_combine_return_options()
 #ifdef DEEPEP_LL_COMBINE_PROGRESS_PROBE
     options |= 8U;
 #endif
+#ifdef DEEPEP_LL_COMBINE_SIMT_META
+    options |= 16U;
+#endif
+#ifdef DEEPEP_LL_COMBINE_SIMT_FLAG
+    options |= 32U;
+#endif
+#ifdef DEEPEP_LL_COMBINE_PREFETCH_RETURN
+    options |= 64U;
+#endif
     return options;
 }
 

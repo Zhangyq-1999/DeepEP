@@ -79,7 +79,7 @@ int main(){
     subprocess.run([str(exe)], check=True, timeout=30)
 
 
-@pytest.mark.parametrize("option", ["--remote-first", "--defer-return"])
+@pytest.mark.parametrize("option", ["--remote-first", "--defer-return", "--simt-meta", "--simt-flag", "--prefetch-return"])
 def test_original_build_rejects_return_experiments(bash, option):
     script = ROOT / "tests/ll_cpp_bench/build.sh"
     result = subprocess.run([bash, str(script), "--variant", "base", option, "ON"],
@@ -90,3 +90,15 @@ def test_original_build_rejects_return_experiments(bash, option):
                             capture_output=True, text=True, timeout=10)
     assert result.returncode != 0
     assert "must be ON or OFF" in result.stderr
+
+
+@pytest.mark.parametrize("first,second,message", [
+    ("--simt-flag", "--progress-probe", "cannot be combined"),
+    ("--simt-flag", "--early-reduce", "cannot be combined"),
+    ("--prefetch-return", "--early-issue", "different submission points"),
+])
+def test_conflicting_experiments_fail_before_build(bash, first, second, message):
+    result = subprocess.run([bash, str(ROOT / "tests/ll_cpp_bench/build.sh"),
+                             first, "ON", second, "ON"], capture_output=True, text=True, timeout=10)
+    assert result.returncode != 0
+    assert message in result.stderr

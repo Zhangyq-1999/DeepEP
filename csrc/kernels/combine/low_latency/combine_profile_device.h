@@ -94,6 +94,31 @@ public:
         if (record_) values_[word] = value;
 #endif
     }
+    __aicore__ inline void Missing(uint32_t token, uint32_t mask, uint32_t first, uint32_t count, uint32_t blocks)
+    {
+#ifdef DEEPEP_LL_COMBINE_PROFILE
+        if (level_ < 2U) return;
+        const uint64_t tick = AscendC::GetSystemCycle() - values_[Entry];
+        if (!mask) {
+            if (values_[TailObservations] && values_[TailToken] == token && !values_[TailReady])
+                values_[TailReady] = tick;
+            return;
+        }
+        const uint32_t slot = first / blocks;
+        if (!values_[TailObservations] || values_[TailToken] != token || values_[TailSlot] != slot) {
+            values_[TailFirstSeen] = tick;
+            values_[TailObservations] = 0U;
+        }
+        values_[TailToken] = token;
+        values_[TailMissingMask] = mask;
+        values_[TailSlot] = slot;
+        values_[TailBlock] = first % blocks;
+        values_[TailMissingBlocks] = count;
+        values_[TailLastSeen] = tick;
+        values_[TailReady] = 0U;
+        ++values_[TailObservations];
+#endif
+    }
     __aicore__ inline void Add(Word word, uint64_t value = 1U)
     {
 #ifdef DEEPEP_LL_COMBINE_PROFILE
@@ -135,6 +160,12 @@ private:
 // Optional shared view for helpers also exercised independently by CPU models.
 class View {
 public:
+    __aicore__ inline void Missing(uint32_t token, uint32_t mask, uint32_t first, uint32_t count, uint32_t blocks)
+    {
+#ifdef DEEPEP_LL_COMBINE_PROFILE
+        if (profile_) profile_->Missing(token, mask, first, count, blocks);
+#endif
+    }
     __aicore__ inline void Bind(DeviceProfile* profile)
     {
 #ifdef DEEPEP_LL_COMBINE_PROFILE

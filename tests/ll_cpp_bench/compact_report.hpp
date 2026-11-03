@@ -4,7 +4,71 @@ struct SuiteResult {
     std::map<std::string, std::string> config;
     std::map<uint32_t, Event> events;
     std::map<uint32_t, std::vector<Record>> records;
+    struct Producer { uint32_t rank, core, type, row; std::string path; };
+    std::map<std::tuple<uint32_t, uint32_t, uint32_t>, Producer> producers;
 };
+const Record* receive_tail(const SuiteResult& d, uint32_t i)
+{
+    const Record* tail = nullptr;
+    const auto it = d.records.find(i);
+    if (it == d.records.end()) return nullptr;
+    for (const auto& r : it->second)
+        if (r.receive && r[Rank] == d.events.at(i).rank && (!tail || r[FlushDone] > (*tail)[FlushDone])) tail = &r;
+    return tail;
+}
+void tail_producers(const SuiteResult& d, const Record& r)
+{
+    if (!r[TailObservations]) return;
+    std::cout << " T last-miss t=" << r[TailToken] << " first=k" << r[TailSlot] << "/b" << r[TailBlock]
+              << " missing_blocks=" << r[TailMissingBlocks] << " seen=" << r[TailObservations]
+              << " first/last/ready=" << r[TailFirstSeen] << '/' << r[TailLastSeen] << '/' << r[TailReady]
+              << " producers=";
+    for (uint32_t slot = 0; slot < 32; ++slot) if ((r[TailMissingMask] >> slot) & 1U) {
+        const auto found = d.producers.find({uint32_t(r[Rank]), uint32_t(r[TailToken]), slot});
+        if (found == d.producers.end()) { std::cout << "k" << slot << ":unknown "; continue; }
+        const auto& p = found->second;
+        std::cout << 'k' << slot << ":r" << p.rank << "/c" << p.core << '/' << p.path
+                  << '/' << (p.type == 1 ? "DIRECT" : "PARTIAL") << ' ';
+    }
+    std::cout << '\n';
+}
+void tail_stability(const SuiteResult& d)
+{
+    using Key = std::tuple<uint32_t, uint32_t, std::string, uint32_t>;
+    std::map<Key, uint32_t> count;
+    std::map<std::tuple<uint32_t, uint32_t, uint32_t>, uint32_t> packets;
+    uint32_t observed = 0;
+    for (const auto& [i, e] : d.events) {
+        const auto* r = receive_tail(d, i);
+        if (!r || !(*r)[TailObservations]) continue;
+        ++observed;
+        std::set<Key> unique;
+        for (uint32_t slot = 0; slot < 32; ++slot) if (((*r)[TailMissingMask] >> slot) & 1U) {
+            const auto key = std::make_tuple(uint32_t((*r)[Rank]), uint32_t((*r)[TailToken]), slot);
+            const auto found = d.producers.find(key);
+            if (found == d.producers.end()) continue;
+            const auto& p = found->second;
+            unique.emplace(p.rank, uint32_t((*r)[Rank]), p.path, p.type);
+            ++packets[key];
+        }
+        for (const auto& key : unique) ++count[key];
+    }
+    std::vector<std::pair<Key, uint32_t>> sorted(count.begin(), count.end());
+    std::stable_sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
+    std::cout << " Tfreq " << d.variant << " event-tail-missed=" << observed << '/' << d.events.size()
+              << " producer>receiver/path/type:n=";
+    for (size_t j = 0; j < std::min<size_t>(4, sorted.size()); ++j) {
+        const auto& [key, n] = sorted[j];
+        std::cout << std::get<0>(key) << '>' << std::get<1>(key) << '/' << std::get<2>(key) << '/'
+                  << (std::get<3>(key) == 1 ? "D" : "P") << ':' << n << ' ';
+    }
+    const auto most = std::max_element(packets.begin(), packets.end(), [](const auto& a, const auto& b) { return a.second < b.second; });
+    if (most != packets.end()) {
+        const auto& [key, n] = *most;
+        std::cout << " same-slot=r" << std::get<0>(key) << "/t" << std::get<1>(key) << "/k" << std::get<2>(key) << ':' << n;
+    }
+    std::cout << '\n';
+}
 double percentile(const std::vector<double>& sorted, double fraction)
 {
     const double index = fraction * (sorted.size() - 1);
@@ -33,6 +97,7 @@ void compact_record(const Record& r)
         else std::cout << r[ProbeBlockedSlot];
     }
     std::cout << " early_issue=" << r[EarlyIssueTicks]
+              << " meta_batches=" << r[MetadataBatches] << " tail_inspect=" << r[TailInspectTicks]
               << " packets/defer/gap=" << r[RdmaPackets] << '/' << r[RdmaDeferredPackets] << '/' << r[RdmaDeferGapTicks] << '\n';
 }
 void suite_report(const fs::path& root)
@@ -81,6 +146,18 @@ void suite_report(const fs::path& root)
                 if (it == data.end() || !it->second.events.count(r.iteration) || !r[Complete] ||
                     !r.present[FlushDone] || r[Rank] >= r[World]) throw std::runtime_error("Invalid diagnostic record");
                 it->second.records[r.iteration].push_back(r);
+            }
+        }
+        if (fs::exists(directory / "producers.csv")) {
+            Csv producers(directory / "producers.csv");
+            while (producers.next()) {
+                const auto bs = uint32_t(integer(producers.get("tokens")));
+                auto& d = data.at(bs);
+                const auto key = std::make_tuple(uint32_t(integer(producers.get("source"))),
+                    uint32_t(integer(producers.get("token"))), uint32_t(integer(producers.get("slot"))));
+                SuiteResult::Producer p{uint32_t(integer(producers.get("producer"))), uint32_t(integer(producers.get("core"))),
+                    uint32_t(integer(producers.get("type"))), uint32_t(integer(producers.get("row"))), producers.get("path")};
+                if (!d.producers.emplace(key, p).second) throw std::runtime_error("Duplicate return producer");
             }
         }
         for (auto& [bs, d] : data) {
@@ -133,6 +210,7 @@ void suite_report(const fs::path& root)
                 std::cout << '\n';
             }
             if (d.records.empty()) continue;
+            if (!d.producers.empty()) tail_stability(d);
             std::cout << "E " << d.variant << " i/r/us=";
             for (const auto& [i, e] : d.events) std::cout << i << '/' << e.rank << '/' << e.us << ' ';
             std::cout << '\n';
@@ -153,6 +231,7 @@ void suite_report(const fs::path& root)
                         if (r[Rank] == event.rank && r.receive == receive && (!tail || r[FlushDone] > (*tail)[FlushDone])) tail = &r;
                     if (!tail) throw std::runtime_error("Missing Event rank diagnostic role");
                     compact_record(*tail);
+                    if (receive) tail_producers(d, *tail);
                 }
                 std::vector<const Record*> puts;
                 for (const auto& r : records) if (r.present[RdmaLastPut]) puts.push_back(&r);
