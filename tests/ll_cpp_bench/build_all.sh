@@ -12,8 +12,8 @@ while (($#)); do
             cat <<'USAGE'
 build_all.sh [--variants NAME[,NAME...]] [--ranks-per-host 4|16] [--jobs N] [--dry-run]
              [--cann-home DIR] [--mpi-home DIR] [--shmem-root DIR]
-Defaults: base, poll800 (clean), followed by ref-profile, poll800-profile (diagnostic).
-poll800: Vector selection/checks; Nop<800>() after each failed flag probe.
+Defaults: base (clean), followed by ref-profile (diagnostic); no polling pause.
+Optional poll800/poll800-profile: Nop<800>() after each failed flag probe.
 SIMT selection/check experiments prepare, flag, prepare-flag are opt-in only.
 meta/meta-profile selects metadata only; prefetch/prefetch-profile selects overlap only.
 --ranks-per-host 4 (default): cross-host EP8, or single-host EP2/4.

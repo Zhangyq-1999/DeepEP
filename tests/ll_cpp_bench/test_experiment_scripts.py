@@ -8,7 +8,7 @@ import subprocess
 import pytest
 
 HERE = Path(__file__).resolve().parent
-PROFILES = ("ref-profile", "poll800-profile")
+PROFILES = ("ref-profile",)
 
 
 @pytest.fixture
@@ -70,8 +70,8 @@ def call_options(output):
 def test_build_all_isolated_matrix_and_failure_stop(harness):
     run, env = harness
     calls = call_options(run("build_all.sh").stdout)
-    assert len(calls) == 4
-    for name, call in zip(("base", "poll800", *PROFILES), calls):
+    assert len(calls) == 2
+    for name, call in zip(("base", *PROFILES), calls):
         assert call["--build-dir"].endswith("/build/ll-cpp-" + name)
         assert call["--variant"] == ("base" if name == "base" else "opt")
         assert call["--profile"] == ("ON" if name.endswith("-profile") else "OFF")
@@ -90,20 +90,21 @@ def test_build_all_isolated_matrix_and_failure_stop(harness):
         assert call["--shmem-root"].endswith("/third-party/shmem/install/shmem")
     env["FAIL_BUILD"] = "ref-profile"
     result = run("build_all.sh", ok=False)
-    assert result.returncode == 17 and len(call_options(result.stdout)) == 3
+    assert result.returncode == 17 and len(call_options(result.stdout)) == 2
     assert "CALL" not in run("build_all.sh", "--variants", "base,typo", ok=False).stdout
 
 
 def test_build_sdk_and_selection_overrides(harness):
     run, env = harness
     env["SHMEM_ROOT"] = "/env/sdk"
-    calls = call_options(run("build_all.sh", "--variants", "return-profile,ref-profile,opt-profile,r36-profile,early-profile",
+    calls = call_options(run("build_all.sh", "--variants", "return-profile,ref-profile,opt-profile,r36-profile,early-profile,poll800,poll800-profile",
                              "--jobs", "8", "--shmem-root", "/selected/sdk with spaces",
                              "--mpi-home", "/selected/mpi", "--cann-home", "/selected/cann").stdout)
-    assert len(calls) == 5
+    assert len(calls) == 7
     assert calls[2]["--small-batch"] == "ON"
     assert calls[3]["--recv-cores"] == "36"
     assert calls[4]["--early-reduce"] == "ON"
+    assert all(call["--poll-nop"] == "800" for call in calls[5:])
     for call in calls:
         assert call["--jobs"] == "8"
         assert call["--shmem-root"] == "/selected/sdk with spaces"
@@ -121,7 +122,7 @@ def test_repeat_default_run_and_second_host_join(harness):
         assert call["--node-rank"] == "0" and call["--ep"] == "8"
         assert call["--devices"] == "12,13,14,15" and call["--ranks-per-host"] == "4"
         assert call["--hosts"] == "90.90.93.84,90.90.93.184"
-        assert call["--variants"] == ",".join(("base", "poll800", *PROFILES))
+        assert call["--variants"] == ",".join(("base", *PROFILES))
         assert call["--tokens"] == "32,48,64,72,256"
         assert call["--iters"] == "100" and call["--profile"] == "2"
         assert call["--profile-iters"] == "10"

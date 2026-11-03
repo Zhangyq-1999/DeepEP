@@ -27,18 +27,16 @@ git pull --ff-only origin perf/ll-combine-small-batch
 bash tests/ll_cpp_bench/build_all.sh
 ```
 
-`build_all.sh` 默认更新以下 4 个构建目录，每个构建使用 4 个编译任务。Dispatch 用于准备 Combine 的输入和路由，同一配置只编译一次，各版本复用它的目标文件。每个版本再单独编译 Combine，并链接成独立的 kernel 库。本轮减少了默认实验数量，实际编译耗时仍取决于机器和编译器。
+`build_all.sh` 默认更新以下 2 个构建目录，每个构建使用 4 个编译任务。Dispatch 用于准备 Combine 的输入和路由，同一配置只编译一次，各版本复用它的目标文件。每个版本再单独编译 Combine，并链接成独立的 kernel 库。
 
 已有目录继续用于增量编译。只修改 Combine 时，Dispatch 无需重编；修改 Dispatch 或它依赖的头文件时，构建系统自动重编受影响的部分。共享目标文件保存在 `build/ll-cpp-dispatch`，不同编译器、SDK 和每机 rank 数使用独立目录。更新代码后，两台机器都执行一次 `build_all.sh`，更新所有选中的版本。
 
 | 构建名 | 启用的实验 | 打点 |
 | --- | --- | --- |
 | `base` | 冻结的上游原版 | 关闭 |
-| `poll800` | Vector 筛选和检查；flag 未就绪时执行 `Nop<800>()`，再轮询 | 关闭 |
 | `ref-profile` | 实验开关全部关闭，用作打点对照 | 开启 |
-| `poll800-profile` | 与 `poll800` 相同 | 开启 |
 
-上一轮 EP8 实测中，SIMT 筛选和 flag 检查未带来稳定收益，`prepare`、`flag`、`prepare-flag` 及其打点版退出默认构建。筛选和压紧优先使用 Vector；SIMT 更适合对已选任务并行计算地址、构造描述符等独立工作。本轮只验证轮询间隔，不替换已有的向量归约。
+EP8 实测中，轮询暂停没有带来稳定收益，默认构建和运行均关闭 Nop。筛选、flag 检查和归约继续使用 Vector。此前的 SIMT 筛选实验也保持关闭。
 
 此前各项实验仍可通过 `--variants` 选择，默认不编译。
 
@@ -54,7 +52,7 @@ bash tests/ll_cpp_bench/run_all.sh
 bash tests/ll_cpp_bench/run_all.sh 第一台打印的RUN_ID
 ```
 
-默认先跑 2 个干净版本，再跑 2 个打点版本。每版测试 **BS32、48、64、72、256**，形状为 EP8、H3584、TopK 8、384 个专家、BF16、随机路由、seed 0、capacity 256。每个 BS 预热 10 轮；干净版采样 100 轮，打点版采样 10 轮。`--iters` 和 `--profile-iters` 分别控制两类采样次数。
+默认先跑干净版 `base`，再跑打点版 `ref-profile`。每版测试 **BS32、48、64、72、256**，形状为 EP8、H3584、TopK 8、384 个专家、BF16、随机路由、seed 0、capacity 256。每个 BS 预热 10 轮；干净版采样 100 轮，打点版采样 10 轮。`--iters` 和 `--profile-iters` 分别控制两类采样次数。
 
 干净版在编译时关闭打点，使用独立 kernel。打点版在预热前启用所选打点级别，让预热和采样执行相同路径。一次运行可同时包含两类版本，`--profile 2` 只作用于支持打点的构建。
 
@@ -64,20 +62,20 @@ bash tests/ll_cpp_bench/run_all.sh 第一台打印的RUN_ID
 
 每次设备 stream 等待默认最多 10 秒，可用 `run_all.sh --kernel-timeout 20` 改为 20 秒。超时或设备错误会打印 rank、设备、BS、轮次和阶段，然后调用 `MPI_Abort` 终止本次作业，不继续采样或写入 PASS。该限制使用 [CANN 的带超时 stream 同步接口](https://www.hiascend.com/document/detail/en/CANNCommunityEdition/910/API/runtimeapi/aclcppdevg_03_0077.html)，不修改原版 kernel。SHMEM 初始化仍使用独立的 `--timeout` 参数，MPI 作业总时限由 `--job-timeout` 控制。
 
-`poll800` 的首次检查立即执行。检查失败后，算子调用 `AscendC::Nop<800>()`，再检查下一个待处理 token 或重试同一组 ready 标记；检查成功则直接处理。该间隔覆盖本卡准备完成、机内暂存就绪和最终结果的 flag 等待，包含 RDMA 与 UBMEM 返回的数据。原有 GM 快照读取、块尾标记检查、归约顺序和清理时机保持不变。
+可选实验 `poll800` 的首次检查立即执行。检查失败后，算子调用 `AscendC::Nop<800>()`，再检查下一个待处理 token 或重试同一组 ready 标记；检查成功则直接处理。该间隔覆盖本卡准备完成、机内暂存就绪和最终结果的 flag 等待，包含 RDMA 与 UBMEM 返回的数据。原有 GM 快照读取、块尾标记检查、归约顺序和清理时机保持不变。
 
-[Nop](https://asc.gitcode.com/api/SIMD-API/basic_api/scalar_compute/Nop.html) 的参数表示延迟周期数。当前 Ascend C 实现还在 Nop 前后执行 `PIPE_ALL`，调用可能等待本核在途搬运，实际间隔还包含读取和检查开销。打点中的 `poll_pause_calls`、`poll_pause_ticks` 记录暂停次数和完整调用耗时；原有 probe 时间不包含暂停。暂停可能减少重复读取，也可能推迟就绪发现，应以干净版 Event 判断收益。暂未在设备上验证本轮修改。
+[Nop](https://asc.gitcode.com/api/SIMD-API/basic_api/scalar_compute/Nop.html) 的参数表示延迟周期数。当前 Ascend C 实现还在 Nop 前后执行 `PIPE_ALL`，调用可能等待本核在途搬运，实际间隔还包含读取和检查开销。打点中的 `poll_pause_calls`、`poll_pause_ticks` 记录暂停次数和完整调用耗时；原有 probe 时间不包含暂停。暂停可能减少重复读取，也可能推迟就绪发现，应以干净版 Event 判断收益。
 
 自定义间隔可在 `build.sh --variant opt` 后设置 `--poll-nop 400`，`0` 表示不暂停；`build_all.sh` 的 `poll800` 固定使用 800。base 拒绝该开关，保留独立的冻结 kernel。入口仍只执行 Host MPI Barrier，不调用设备 RDMA 同步接口。
 
-旧的 `meta`、`flag` 等 SIMT 实验继续保留供复查。启用它们时，启动参数和接收缓冲均限制为 216 KiB，为系统及 SIMT Data Cache 留出空间，详见 [CANN 的 UB 划分说明](https://asc.gitcode.com/api/SIMT-API/SIMD_SIMT_hybrid_programming_intro/programming_model.html)。默认的四个版本均不启用 SIMT，保持纯 SIMD 的缓冲配置。
+旧的 `meta`、`flag` 等 SIMT 实验继续保留供复查。启用它们时，启动参数和接收缓冲均限制为 216 KiB，为系统及 SIMT Data Cache 留出空间，详见 [CANN 的 UB 划分说明](https://asc.gitcode.com/api/SIMT-API/SIMD_SIMT_hybrid_programming_intro/programming_model.html)。默认版本均不启用 SIMT，保持纯 SIMD 的缓冲配置。
 
 参数仍可覆盖，例如：
 
 ```bash
 # 只重编本轮关心的两个版本，也可覆盖 SDK 路径和并行度。
 bash tests/ll_cpp_bench/build_all.sh \
-    --variants ref-profile,poll800-profile --jobs 8 --shmem-root "$SHMEM_ROOT"
+    --variants base,ref-profile --jobs 8 --shmem-root "$SHMEM_ROOT"
 
 # 单机 EP16：先把全部选中版本重编为每机 16 个 rank。
 bash tests/ll_cpp_bench/build_all.sh --ranks-per-host 16
@@ -86,16 +84,16 @@ bash tests/ll_cpp_bench/run_all.sh --ep 16 --ranks-per-host 16
 bash tests/ll_cpp_bench/run_all.sh --ep 32 --ranks-per-host 16
 
 # 上游 base 没有 EP2 特化，EP2 使用实验 kernel。
-bash tests/ll_cpp_bench/build_all.sh --variants poll800,poll800-profile
-bash tests/ll_cpp_bench/run_all.sh --ep 2 --variants poll800,poll800-profile
+bash tests/ll_cpp_bench/build_all.sh --variants ref-profile
+bash tests/ll_cpp_bench/run_all.sh --ep 2 --variants ref-profile
 
 # 单机 EP4 指定设备，覆盖 BS、预热和采样次数。
 bash tests/ll_cpp_bench/run_all.sh --ep 4 --devices 6,7,14,15 \
-    --variants ref-profile,poll800-profile --tokens 32,72,256 --warmup 10 --profile-iters 20
+    --variants base,ref-profile --tokens 32,72,256 --warmup 10 --profile-iters 20
 
 # 更换双机地址、端口或版本顺序时，第二台复制此命令打印的加入命令。
 bash tests/ll_cpp_bench/run_all.sh --hosts HOST0,HOST1 --node-rank 0 \
-    --master-port 30071 --variants poll800-profile,ref-profile
+    --master-port 30071 --variants ref-profile,base
 ```
 
 编译与运行的 `--ranks-per-host` 必须一致。切回默认双机 EP8 时，两边重新执行不带参数的 `build_all.sh`。`launch.sh` 会在初始化前拒绝拓扑不匹配的旧构建。
@@ -110,7 +108,7 @@ bash tests/ll_cpp_bench/run_all.sh --hosts HOST0,HOST1 --node-rank 0 \
 
 跨机适配使用 `aclshmemx_roce_qp_put_nbi`，在原有批次边界调用 `aclshmemx_roce_qp_quiet`。这与原仓 Hcomm 的批量提交、CQE 策略有差异，结果用于比较 SHMEM 后端上的算法方案。单机也运行这套分层算法，只执行机内阶段。原来的 `base` 继续使用冻结的 DeepEP kernel。
 
-两边分别按需编译，默认 `build_all.sh` 构建前文的 4 个版本：
+两边分别按需编译，默认 `build_all.sh` 构建前文的 2 个版本：
 
 ```bash
 bash tests/ll_cpp_bench/build_all.sh --ranks-per-host 16 --variants base,ops-shmem-base
