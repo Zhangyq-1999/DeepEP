@@ -94,7 +94,12 @@ endif()
 if(DEEPEP_LL_COUNT_HISTOGRAM)
     target_compile_definitions(deepep_kernel_options INTERFACE DEEPEP_LL_COUNT_HISTOGRAM=1)
 endif()
-foreach(_option DEEPEP_LL_COMBINE_REMOTE_FIRST DEEPEP_LL_COMBINE_DEFER_RETURN)
+if(DEEPEP_LL_PHYSICAL_RANKS_PER_HOST)
+    target_compile_definitions(deepep_kernel_options INTERFACE
+        DEEPEP_LL_PHYSICAL_RANKS_PER_HOST=${DEEPEP_LL_PHYSICAL_RANKS_PER_HOST})
+endif()
+foreach(_option DEEPEP_LL_COMBINE_REMOTE_FIRST DEEPEP_LL_COMBINE_DEFER_RETURN
+                DEEPEP_LL_COMBINE_EARLY_ISSUE DEEPEP_LL_COMBINE_PROGRESS_PROBE)
     if(${_option})
         set_property(SOURCE "${DEEPEP_SOURCE_DIR}/csrc/kernels/combine/low_latency.cpp"
             APPEND PROPERTY COMPILE_DEFINITIONS ${_option}=1)

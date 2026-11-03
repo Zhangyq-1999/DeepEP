@@ -1,7 +1,14 @@
 #pragma once
 #include <cstdint>
 namespace DispatchDedup {
-constexpr uint32_t kLlPhysicalRanksPerHost = 16U;
+#ifndef DEEPEP_LL_PHYSICAL_RANKS_PER_HOST
+#define DEEPEP_LL_PHYSICAL_RANKS_PER_HOST 16
+#endif
+// Participating ranks, not the number of installed devices. The benchmark
+// compiles Host, Dispatch and Combine with the same physical-host layout.
+constexpr uint32_t kLlPhysicalRanksPerHost = DEEPEP_LL_PHYSICAL_RANKS_PER_HOST;
+static_assert(kLlPhysicalRanksPerHost == 4U || kLlPhysicalRanksPerHost == 16U,
+              "supported ranks per physical host: 4 or 16");
 constexpr uint32_t kLlMaxRanksPerGroup = 16U;
 enum class LlTilingKey : uint8_t { Group2 = 2U, Group4 = 4U, Group16 = 16U };
 #if defined(__CCE__) && defined(__CCE_IS_AICORE__)

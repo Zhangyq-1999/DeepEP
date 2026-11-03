@@ -3,7 +3,7 @@
 set -euo pipefail
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 mpi=${MPI_HOME:-/usr/local/mpich-3.2.1}
-ep=16 node_rank=0 hosts=localhost master= port=29671 variants=base run_id=combine
+ep=16 ranks_per_host=16 node_rank=0 hosts=localhost master= port=29671 variants=base run_id=combine
 job_timeout=3600 join_timeout=300 dry=0
 bench_args=()
 fail() { echo "ERROR: $*" >&2; exit 2; }
@@ -26,26 +26,26 @@ while (($#)); do
     case "$1" in
         --help|-h)
             cat <<'USAGE'
-launch.sh --ep 2|4|8|16|32 [--node-rank 0|1] [--hosts HOST0,HOST1]
+launch.sh --ep 2|4|8|16|32 [--ranks-per-host 4|16] [--node-rank 0|1] [--hosts HOST0,HOST1]
           [--master-addr IP] [--master-port PORT] [--variants NAME[,NAME...]]
           [--run-id NAME] [--mpi-home DIR] [--job-timeout SECONDS]
           [--join-timeout SECONDS] [--dry-run] -- [benchmark options]
-Each host runs this script once. EP32 uses one MPICH 3.2.1 MPI world,
+Each host runs this script once. Cross-host EP uses one MPICH 3.2.1 MPI world,
 without SSH or manually copying proxy commands. Benchmark arguments come
 from node 0. Both nodes use the same checkout path, hosts, ports, variants
 and run-id. One MPI/ACL/SHMEM session runs all selected variants.
 Each variant provides build/ll-cpp-NAME/libll_bench_variant.so.
 Single-host runs create results/ll-cpp/<run-id>/<timestamp>-<unique>/.
-EP32 uses results/ll-cpp/<run-id>/; choose the same new run-id on both nodes.
+Cross-host EP uses results/ll-cpp/<run-id>/; choose the same new run-id on both nodes.
 USAGE
             exit 0;;
         --dry-run) dry=1; shift;;
         --) shift; bench_args=("$@"); break;;
-        --ep|--node-rank|--hosts|--master-addr|--master-port|--variants|--run-id|--mpi-home|--job-timeout|--join-timeout)
+        --ep|--ranks-per-host|--node-rank|--hosts|--master-addr|--master-port|--variants|--run-id|--mpi-home|--job-timeout|--join-timeout)
             (($#>=2)) || fail "Missing value: $1"
             key=$1 value=$2; shift 2
             case "$key" in
-                --ep) ep=$value;; --node-rank) node_rank=$value;; --hosts) hosts=$value;;
+                --ep) ep=$value;; --ranks-per-host) ranks_per_host=$value;; --node-rank) node_rank=$value;; --hosts) hosts=$value;;
                 --master-addr) master=$value;; --master-port) port=$value;; --variants) variants=$value;;
                 --run-id) run_id=$value;; --mpi-home) mpi=$value;; --job-timeout) job_timeout=$value;;
                 --join-timeout) join_timeout=$value;;
@@ -56,11 +56,14 @@ done
 [[ $ep =~ ^(2|4|8|16|32)$ && $node_rank =~ ^[01]$ ]] || fail 'Invalid EP or node-rank'
 [[ $hosts =~ ^[a-zA-Z0-9_.-]+(,[a-zA-Z0-9_.-]+)?$ ]] || fail 'Provide one or two hostnames/IPv4 addresses'
 IFS=, read -r -a nodes <<< "$hosts"
-if ((ep==32)); then
-    ((${#nodes[@]}==2)) && [[ ${nodes[0]} != "${nodes[1]}" ]] || fail 'EP32 requires two distinct hosts'
+[[ $ranks_per_host =~ ^(4|16)$ ]] || fail 'ranks-per-host must be 4 or 16'
+((ep<=2*ranks_per_host)) || fail 'EP exceeds the selected two-host layout'
+per_host=$((ep<ranks_per_host ? ep : ranks_per_host))
+if ((ep>ranks_per_host)); then
+    ((${#nodes[@]}==2)) && [[ ${nodes[0]} != "${nodes[1]}" ]] || fail 'Cross-host EP requires two distinct hosts'
     master=${master:-${nodes[0]}}
 else
-    ((node_rank==0 && ${#nodes[@]}==1)) || fail 'EP2/4/8/16 uses one host and node-rank 0'
+    ((node_rank==0 && ${#nodes[@]}==1)) || fail 'Single-host EP uses one host and node-rank 0'
 fi
 [[ -z $master || $master =~ ^[a-zA-Z0-9_.-]+$ ]] || fail 'Invalid master address'
 [[ $variants =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*(,[a-zA-Z0-9][a-zA-Z0-9_-]*)*$ ]] || fail 'Use comma-separated build names containing letters, digits, _ or -'
@@ -79,7 +82,7 @@ result_root="$root/results/ll-cpp/$run_id"
 if ((!dry)); then
     prepare_nofile
     [[ -x "$mpi/bin/mpiexec" ]] || fail 'MPI executable unavailable'
-    if ((ep==32)); then
+    if ((ep>ranks_per_host)); then
         [[ -x "$mpi/bin/hydra_pmi_proxy" ]] || fail 'Hydra proxy unavailable'
         [[ -x "$root/tests/ll_cpp_bench/hydra_proxy_command.sh" ]] || fail 'Update the checkout; executable hydra_proxy_command.sh is required'
         "$mpi/bin/mpiexec" -version | grep -Eq 'Version:[[:space:]]+3\.2\.1([[:space:]]|$)' || fail 'Per-node startup requires MPICH 3.2.1'
@@ -88,16 +91,18 @@ if ((!dry)); then
     command -v timeout >/dev/null || fail 'GNU timeout is required'
     for variant in "${sequence[@]}"; do
         [[ -f "$root/build/ll-cpp-$variant/libll_bench_variant.so" ]] || fail "Rebuild ll-cpp-$variant for the shared-session runner"
+        grep -Fqx "ranks_per_host=$ranks_per_host" "$root/build/ll-cpp-$variant/bench-build.txt" ||
+            fail "Rebuild ll-cpp-$variant with --ranks-per-host $ranks_per_host"
     done
     [[ -x "$root/build/ll-cpp-${sequence[0]}/ll_combine_bench" ]] || fail "Build ll-cpp-${sequence[0]} first"
     mkdir -p "$result_root"
-    if ((ep<=16)); then
+    if ((ep<=ranks_per_host)); then
         # mktemp reserves a fresh directory even for invocations in the same second.
         result_root=$(mktemp -d "$result_root/$(date +%Y%m%d-%H%M%S)-XXXXXX")
     fi
     # Exclusive local ownership; node-specific directories also support shared storage.
     mkdir "$result_root/node-$node_rank" || fail 'This node already has this run-id; select a new one'
-elif ((ep<=16)); then
+elif ((ep<=ranks_per_host)); then
     result_root="$result_root/TIMESTAMP-UNIQUE"
 fi
 echo "Results: $result_root"
@@ -130,7 +135,7 @@ echo "node=$node_rank EP=$ep variants=$variants (one shared initialization)"
 for phase in "${!sequence[@]}"; do
     echo "phase=$phase variant=${sequence[$phase]} output=$result_root/$phase-${sequence[$phase]}"
 done
-if ((ep<=16)); then
+if ((ep<=ranks_per_host)); then
     cmd=("$mpi/bin/mpiexec" -launcher fork -rmk user -hosts localhost -ppn "$ep" -n "$ep"
          -bind-to none -wdir "$root" "$binary" "${bench_args[@]}" --variants "$variants" --build-root "$root/build" --output-dir "$out")
     if ((dry)); then print_cmd "${cmd[@]}"; exit 0; fi
@@ -149,7 +154,7 @@ else
         cmd+=("MPIEXEC_PORT_RANGE=$phase_port:$phase_port" "MPIEXEC_TIMEOUT=$job_timeout" HYDRA_LAUNCHER_AUTOFORK=0
               "$mpi/bin/mpiexec" -launcher ssh -launcher-exec "$root/tests/ll_cpp_bench/hydra_proxy_command.sh"
               -rmk user -demux poll -localhost "$master"
-              -hosts "$hosts" -ppn 16 -n 32 -bind-to none -wdir "$root"
+              -hosts "$hosts" -ppn "$per_host" -n "$ep" -bind-to none -wdir "$root"
               "$binary" "${bench_args[@]}" --variants "$variants" --build-root "$root/build" --output-dir "$out")
         if ((dry)); then print_cmd "${cmd[@]}"; else
             setsid "${cmd[@]}" >"$log.controller" 2>&1 & controller=$!
@@ -190,7 +195,6 @@ fi
 for phase in "${!sequence[@]}"; do
     variant=${sequence[$phase]}
     out="$result_root/$phase-$variant"
-    per_host=$((ep<16 ? ep : 16))
     for ((rank=node_rank*per_host; rank<(node_rank+1)*per_host; ++rank)); do
         [[ -s "$out/rank-$rank.PASS" ]] || fail "Missing successful result for rank $rank; see $log"
     done
@@ -198,5 +202,5 @@ done
 if ((node_rank==0)); then
     bash "$root/tests/ll_cpp_bench/summarize.sh" --suite "$result_root" | tee "$result_root/summary.txt"
 else
-    echo "PASS node=1; global summary and selected 32-rank diagnostics are on node 0."
+    echo "PASS node=1; global summary and selected global diagnostics are on node 0."
 fi

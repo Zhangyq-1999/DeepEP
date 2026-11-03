@@ -26,6 +26,13 @@ void compact_record(const Record& r)
     for (size_t j = 0; j < std::min<size_t>(6, costs.size()); ++j)
         std::cout << ' ' << names[costs[j]] << '=' << r[costs[j]];
     std::cout << " poll=miss/call/ticks:" << r[ProbeMisses] << '/' << r[ProbeCalls] << '/' << r[ProbeMissTicks]
+              << " flags/confirmed=" << r[ProbeFlagBlocks] << '/' << r[ProbeConfirmedSlots];
+    if (r.present[ProbeBlockedSlot] && r[ProbeMisses]) {
+        std::cout << " blocked=t" << r[ProbeBlockedToken] << "/k";
+        if (r[ProbeBlockedSlot] == 0xffffffffU) std::cout << "all";
+        else std::cout << r[ProbeBlockedSlot];
+    }
+    std::cout << " early_issue=" << r[EarlyIssueTicks]
               << " packets/defer/gap=" << r[RdmaPackets] << '/' << r[RdmaDeferredPackets] << '/' << r[RdmaDeferGapTicks] << '\n';
 }
 void suite_report(const fs::path& root)

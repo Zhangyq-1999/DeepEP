@@ -5,6 +5,7 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include "../../csrc/kernels/dispatch/low_latency/common/ll_group_policy.h"
 
 namespace llbench {
 inline void mpi_check(int status, const char* operation)
@@ -33,9 +34,11 @@ struct Coordinator {
         first = rank;
         mpi_check(MPI_Bcast(&first, 1, MPI_INT, 0, local), "MPI first local rank");
         mpi_check(MPI_Comm_free(&local), "MPI free local group");
-        const int perHost = world <= 16 ? world : 16;
+        const int hostRanks = int(DispatchDedup::kLlPhysicalRanksPerHost);
+        const int perHost = world < hostRanks ? world : hostRanks;
         if (size != perHost || first % perHost || rank != first + localRank)
-            throw std::runtime_error("EP2/4/8/16 needs one host; EP32 needs two hosts with 16 consecutive ranks each");
+            throw std::runtime_error("MPI host layout does not match the compiled ranks-per-host; "
+                                     "rebuild all variants for this topology");
     }
     void barrier() const
     {

@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 @pytest.mark.parametrize("profile", [False, True])
 @pytest.mark.parametrize("small", [False, True])
-@pytest.mark.parametrize("returns", [False, True])
+@pytest.mark.parametrize("returns", [False, True, "new"])
 def test_all_combine_profile_paths_compile(tmp_path, profile, small, returns):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
     if not zig:
@@ -38,7 +38,10 @@ int main() {}
     (tmp_path / "shmem.h").write_text('#pragma once\ninline void dcci_cachelines(uint8_t*, uint64_t) {}\n')
     flags = ["-DDEEPEP_LL_RDMA=1", "-DDEEPEP_LL_COMBINE_EARLY_REDUCE=1",
              "-DDEEPEP_LL_COMBINE_RECV_CORES=36"]
-    if returns:
+    if returns == "new":
+        flags += ["-DDEEPEP_LL_COMBINE_EARLY_ISSUE=1", "-DDEEPEP_LL_COMBINE_PROGRESS_PROBE=1",
+                  "-DDEEPEP_LL_PHYSICAL_RANKS_PER_HOST=4"]
+    elif returns:
         flags += ["-DDEEPEP_LL_COMBINE_REMOTE_FIRST=1", "-DDEEPEP_LL_COMBINE_DEFER_RETURN=1"]
     if profile:
         flags += ["-DDEEPEP_LL_COMBINE_PROFILE=1"]

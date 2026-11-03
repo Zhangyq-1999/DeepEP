@@ -302,9 +302,10 @@ void report(const fs::path& directory)
                     r.v[w] = integer(csv.cells[columns[w]]);
                     r.present[w] = true;
                 }
-            if ((r[Schema] != kSchema && r[Schema] != 2U) || r[Complete] != 1 || r[Rank] != rank || !r.present[FlushDone] ||
+            if ((r[Schema] != kSchema && r[Schema] != 3U && r[Schema] != 2U) || r[Complete] != 1 ||
+                r[Rank] != rank || !r.present[FlushDone] ||
                 !r.present[Entry] || !r[World] || rank >= r[World] || (r[Level] != 1 && r[Level] != 2))
-                throw std::runtime_error("Incomplete profile or unsupported schema (requires schema 2 or 3)");
+                throw std::runtime_error("Incomplete profile or unsupported schema (requires schema 2, 3 or 4)");
             auto it = cases.find(uint32_t(r[Tokens]));
             if (it == cases.end() || !it->second.events.count(r.iteration))
                 throw std::runtime_error("Profile has no matching Event sample");

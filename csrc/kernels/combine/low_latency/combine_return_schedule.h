@@ -1,5 +1,6 @@
 #pragma once
 #include "../../common/ep_server_order.h"
+#include "../../dispatch/low_latency/common/ll_group_policy.h"
 
 namespace CombineDedup {
 #if defined(__CCE__) && defined(__CCE_IS_AICORE__)
@@ -8,14 +9,14 @@ namespace CombineDedup {
 #define COMBINE_RETURN_INLINE inline
 #endif
 // Move the local physical host to the end, preserving the relative order of
-// all remote hosts. G2/G4 are single-host paths and retain their original order.
+// all remote hosts. Only a group matching a physical host changes its order.
 // Task ownership follows this traversal, so an enabled build also redistributes
 // individual tasks among the same set of per-core QPs.
 template<uint32_t Group>
 COMBINE_RETURN_INLINE uint32_t CombineReturnServer(uint32_t servers, uint32_t own, uint32_t ordinal)
 {
 #ifdef DEEPEP_LL_COMBINE_REMOTE_FIRST
-    if constexpr (Group == 16U) {
+    if constexpr (Group == DispatchDedup::kLlPhysicalRanksPerHost) {
         if (servers > 1U) {
             const uint32_t split = servers / 2U;
             const uint32_t ownLength = own < split ? split : servers - split;
@@ -29,7 +30,7 @@ COMBINE_RETURN_INLINE uint32_t CombineReturnServer(uint32_t servers, uint32_t ow
 
 COMBINE_RETURN_INLINE constexpr bool CombineDeferReturn(uint32_t outputLanes)
 {
-#ifdef DEEPEP_LL_COMBINE_DEFER_RETURN
+#if defined(DEEPEP_LL_COMBINE_DEFER_RETURN) || defined(DEEPEP_LL_COMBINE_EARLY_ISSUE)
     return outputLanes > 1U;
 #else
     return false;

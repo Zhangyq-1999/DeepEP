@@ -3,7 +3,7 @@
 set -euo pipefail
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 source "$root/tests/ll_cpp_bench/experiment_defaults.sh"
-ep=32 node_rank=${NODE_RANK:-} hosts="${HOST0:-90.90.93.84},${HOST1:-90.90.93.184}"
+ep=8 ranks_per_host=4 node_rank=${NODE_RANK:-} hosts="${HOST0:-90.90.93.84},${HOST1:-90.90.93.184}"
 master= port=29671 variants=$ll_bench_variants run_id= dry=0
 cann=$ll_bench_cann mpi=$ll_bench_mpi shmem=$ll_bench_shmem
 job_timeout=3600 join_timeout=300
@@ -18,7 +18,7 @@ while (($#)); do
             cat <<'USAGE'
 Node 0: run_all.sh
 Node 1: run_all.sh RUN_ID
-Options: --ep 2|4|8|16|32 --node-rank 0|1 --hosts HOST0,HOST1
+Options: --ep 2|4|8|16|32 --ranks-per-host 4|16 --node-rank 0|1 --hosts HOST0,HOST1
          --master-addr IP --master-port PORT --run-id ID --variants NAME[,NAME...]
          --cann-home DIR --mpi-home DIR --shmem-root DIR --dry-run
          --join-timeout SECONDS --job-timeout SECONDS
@@ -26,9 +26,10 @@ Benchmark options (with or without a preceding --):
          --tokens LIST --devices LIST --hidden N --topk N --experts N --capacity N
          --dtype bf16|fp16 --route random|hotspot --seed N --entry-sync host|auto
          --warmup N --iters N --profile-iters N --profile 0|1|2 --timeout SECONDS
-Defaults: EP32, hosts 90.90.93.84,90.90.93.184, port 29671.
+Defaults: EP8, four ranks/host, devices 12,13,14,15 on each host; hosts 90.90.93.84,90.90.93.184, port 29671.
           Four clean and four diagnostic versions; BS 32,48,64,72,256; H3584/K8/E384/BF16.
           Warmup 10; clean samples 100; diagnostic samples 10, level 2.
+Rebuild with the same --ranks-per-host value. Use 16 for single-host EP16 or dual-host EP32.
 All selected variants share one MPI/ACL/SHMEM initialization.
 Host MPI Barrier before each warmup/sample; no benchmark device synchronization kernel.
 Node is detected from local addresses; --node-rank overrides detection.
@@ -39,11 +40,11 @@ USAGE
             exit 0;;
         --dry-run) dry=1; shift;;
         --) shift;;
-        --ep|--node-rank|--hosts|--master-addr|--master-port|--variants|--run-id|--mpi-home|--cann-home|--shmem-root|--job-timeout|--join-timeout)
+        --ep|--ranks-per-host|--node-rank|--hosts|--master-addr|--master-port|--variants|--run-id|--mpi-home|--cann-home|--shmem-root|--job-timeout|--join-timeout)
             (($#>=2)) || fail "Missing value: $1"
             key=$1 value=$2; shift 2
             case "$key" in
-                --ep) ep=$value;; --node-rank) node_rank=$value;; --hosts) hosts=$value;;
+                --ep) ep=$value;; --ranks-per-host) ranks_per_host=$value;; --node-rank) node_rank=$value;; --hosts) hosts=$value;;
                 --master-addr) master=$value;; --master-port) port=$value;; --variants) variants=$value;;
                 --run-id) run_id=$value;; --mpi-home) mpi=$value;; --cann-home) cann=$value;;
                 --shmem-root) shmem=$value;; --job-timeout) job_timeout=$value;; --join-timeout) join_timeout=$value;;
@@ -56,10 +57,20 @@ USAGE
     esac
 done
 [[ $ep =~ ^(2|4|8|16|32)$ ]] || fail 'EP must be 2,4,8,16 or 32'
-if ((ep==32)); then
-    [[ $hosts =~ ^[a-zA-Z0-9_.-]+,[a-zA-Z0-9_.-]+$ ]] || fail 'EP32 requires two hosts'
+[[ $ranks_per_host =~ ^(4|16)$ ]] || fail 'ranks-per-host must be 4 or 16'
+((ep<=2*ranks_per_host)) || fail 'Rebuild and run with --ranks-per-host 16 for EP16/32'
+per_host=$((ep<ranks_per_host ? ep : ranks_per_host))
+if [[ ! ${bench[devices]+set} ]]; then
+    # Both current machines have 16 physical devices; use their last local ranks.
+    bench[devices]=
+    for ((device=16-per_host; device<16; ++device)); do
+        bench[devices]+="${bench[devices]:+,}$device"
+    done
+fi
+if ((ep>ranks_per_host)); then
+    [[ $hosts =~ ^[a-zA-Z0-9_.-]+,[a-zA-Z0-9_.-]+$ ]] || fail 'Cross-host EP requires two hosts'
     IFS=, read -r -a nodes <<< "$hosts"
-    [[ ${nodes[0]} != "${nodes[1]}" ]] || fail 'EP32 requires two distinct hosts'
+    [[ ${nodes[0]} != "${nodes[1]}" ]] || fail 'Cross-host EP requires two distinct hosts'
     master=${master:-${nodes[0]}}
     if [[ -z $node_rank ]]; then
         local_ids=$(hostname -I 2>/dev/null || true)
@@ -82,7 +93,7 @@ else
     hosts=localhost
 fi
 [[ $node_rank =~ ^[01]$ ]] || fail 'node-rank must be 0 or 1'
-[[ $ep == 32 || $node_rank == 0 ]] || fail 'Single-host EP uses node-rank 0'
+[[ $ep -gt $ranks_per_host || $node_rank == 0 ]] || fail 'Single-host EP uses node-rank 0'
 if [[ -z $run_id ]]; then
     [[ $node_rank == 0 ]] || fail 'Copy RUN_ID from node 0: bash tests/ll_cpp_bench/run_all.sh RUN_ID'
     run_id="ep${ep}-all-$(date +%Y%m%d-%H%M%S)-$$-$RANDOM"
@@ -95,11 +106,11 @@ if [[ $node_rank == 0 ]]; then
 else
     echo 'Benchmark shapes and sampling options come from node 0.'
 fi
-if [[ $ep == 32 && $node_rank == 0 ]]; then
+if [[ $ep -gt $ranks_per_host && $node_rank == 0 ]]; then
     peer_cmd=(bash tests/ll_cpp_bench/run_all.sh "$run_id")
     # With defaults this prints only RUN_ID; custom launch settings travel too.
-    if [[ $hosts != 90.90.93.84,90.90.93.184 || $master != 90.90.93.84 || $port != 29671 || $variants != "$ll_bench_variants" ]]; then
-        peer_cmd+=(--node-rank 1 --hosts "$hosts" --master-addr "$master" --master-port "$port" --variants "$variants")
+    if [[ $ep != 8 || $ranks_per_host != 4 || $hosts != 90.90.93.84,90.90.93.184 || $master != 90.90.93.84 || $port != 29671 || $variants != "$ll_bench_variants" ]]; then
+        peer_cmd+=(--ep "$ep" --ranks-per-host "$ranks_per_host" --node-rank 1 --hosts "$hosts" --master-addr "$master" --master-port "$port" --variants "$variants")
     fi
     if [[ ${bench[profile]} != 2 ]]; then peer_cmd+=(--profile "${bench[profile]}"); fi
     if [[ $job_timeout != 3600 || $join_timeout != 300 ]]; then
@@ -111,7 +122,7 @@ if [[ $ep == 32 && $node_rank == 0 ]]; then
     printf 'Run on node 1: '; printf '%q ' "${peer_cmd[@]}"; printf '\n'
 fi
 if ((!dry)); then ll_bench_environment "$cann" "$mpi" "$shmem"; fi
-args=(--ep "$ep" --node-rank "$node_rank" --hosts "$hosts" --master-port "$port"
+args=(--ep "$ep" --ranks-per-host "$ranks_per_host" --node-rank "$node_rank" --hosts "$hosts" --master-port "$port"
       --variants "$variants" --run-id "$run_id" --mpi-home "$mpi"
       --job-timeout "$job_timeout" --join-timeout "$join_timeout")
 if [[ -n $master ]]; then args+=(--master-addr "$master"); fi

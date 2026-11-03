@@ -2,7 +2,7 @@
 
 ## 用途与依赖
 
-本用例直接调用仓库里的 Dispatch 和 Combine kernel，支持单机 EP2、EP4、EP8、EP16，以及双机 EP32。MPI 负责 SHMEM 初始化、Host 同步和结果汇总，SHMEM 负责设备通信。编译和运行都使用 C++、CMake 与 Shell，无需安装 Python 包或复制 Conda 环境。
+本用例直接调用仓库里的 Dispatch 和 Combine kernel，支持单机 EP2、EP4、EP8、EP16，以及双机 EP8、EP32。MPI 负责 SHMEM 初始化、Host 同步和结果汇总，SHMEM 负责设备通信。编译和运行都使用 C++、CMake 与 Shell，无需安装 Python 包或复制 Conda 环境。
 
 两台机器需要相同的源码、编译选项和 SDK：
 
@@ -14,7 +14,7 @@
 
 一次运行中的所有版本共用一个 MPI 作业和一套 ACL、SHMEM 资源。程序初始化一次，按顺序完成各版本测试，最后统一释放资源。切换版本前，所有 rank 等待上一版结束，再清零测试工作区。清理、输入准备和预热均在 Event 计时之外。
 
-各版本仍使用独立编译的 kernel。base 保留冻结的上游源码，实验开关只进入实验版。每版都单独检查精度、采样并输出结果。
+各版本使用独立编译的 kernel，实验开关只进入实验版。base 保留冻结的上游 Combine 源码；每机只选 4 张卡时，仅将其公共头文件中的每机参与 rank 数从 16 改为 4，使基线与实验版使用相同拓扑。每版都单独检查精度、采样并输出结果。
 
 ## 一次编译并运行当前实验
 
@@ -32,17 +32,17 @@ bash tests/ll_cpp_bench/build_all.sh
 | 构建名 | 启用的实验 | 打点 |
 | --- | --- | --- |
 | `base` | 冻结的上游原版 | 关闭 |
-| `remote` | 优先回传跨机结果 | 关闭 |
-| `pipeline` | 准备下一包时暂存上一包 | 关闭 |
-| `return` | 优先跨机回传，加暂存流水 | 关闭 |
+| `issue` | 在准备下一包前提交上一包 RDMA 回传 | 关闭 |
+| `probe` | 记录已确认的回传分量，只检查尚未确认的有效分量 | 关闭 |
+| `issue-probe` | 同时启用以上两项实验 | 关闭 |
 | `ref-profile` | 实验开关全部关闭，用作打点对照 | 开启 |
-| `remote-profile` | 优先回传跨机结果 | 开启 |
-| `pipeline-profile` | 准备下一包时暂存上一包 | 开启 |
-| `return-profile` | 优先跨机回传，加暂存流水 | 开启 |
+| `issue-profile` | 提前提交回传 | 开启 |
+| `probe-profile` | 记录就绪检查进度 | 开启 |
+| `issue-probe-profile` | 同时启用以上两项实验 | 开启 |
 
-此前的任务缓存 `opt-profile`、分核 `r36-profile` 和提前归约 `early-profile` 改为按需编译、运行。已有构建和结果文件继续保留。需要复测时，用 `--variants` 指定对应名称。
+此前的 `remote`、`pipeline`、`return` 及对应打点版，以及任务缓存 `opt-profile`、分核 `r36-profile`、提前归约 `early-profile` 均改为按需编译、运行。已有构建和结果文件继续保留。需要复测时，用 `--variants` 指定对应名称。
 
-默认使用当前两台机器：节点 0 为 `90.90.93.84`，节点 1 为 `90.90.93.184`。脚本根据本机 IP 识别节点。两边编译完成后，第一台执行：
+默认使用当前两台机器：节点 0 为 `90.90.93.84`，节点 1 为 `90.90.93.184`。**每台使用后 4 张卡，即设备 12、13、14、15，共 EP8。** `build_all.sh` 和 `run_all.sh` 默认均为 `--ranks-per-host 4`。这一参数控制参与通信的 rank 分组，设备编号由 `--devices` 独立指定。脚本根据本机 IP 识别节点。两边编译完成后，第一台执行：
 
 ```bash
 bash tests/ll_cpp_bench/run_all.sh
@@ -54,36 +54,45 @@ bash tests/ll_cpp_bench/run_all.sh
 bash tests/ll_cpp_bench/run_all.sh 第一台打印的RUN_ID
 ```
 
-默认先跑 4 个干净版本，再跑 4 个打点版本。每版测试 **BS32、48、64、72、256**，形状为 EP32、H3584、TopK 8、384 个专家、BF16、随机路由、seed 0、capacity 256。每个 BS 预热 10 轮；干净版采样 100 轮，打点版采样 10 轮。`--iters` 和 `--profile-iters` 分别控制两类采样次数。
+默认先跑 4 个干净版本，再跑 4 个打点版本。每版测试 **BS32、48、64、72、256**，形状为 EP8、H3584、TopK 8、384 个专家、BF16、随机路由、seed 0、capacity 256。每个 BS 预热 10 轮；干净版采样 100 轮，打点版采样 10 轮。`--iters` 和 `--profile-iters` 分别控制两类采样次数。
 
 干净版在编译时关闭打点，使用独立 kernel。打点版在预热前启用所选打点级别，让预热和采样执行相同路径。一次运行可同时包含两类版本，`--profile 2` 只作用于支持打点的构建。
 
 每次启动都会生成新的结果目录，保留此前数据。第一台按 BS 打印干净版和打点版的时延表，再打印全局选中轮次的诊断数据。第二台正常结束时只打印成功状态，分析时通常提供第一台的 `summary.txt` 即可。
 
-BS256 用于观察较大数据量的行为。`early-reduce` 只作用于 BS ≤ 72；BS256 沿用原归约路径。回传顺序优化在跨机 G16 场景生效，单机 G2/G4 保留原顺序。
+`issue` 在读取下一条路由后、准备下一包数据前调用上一包的 Put，避免把下一包的向量计算等待排到上一包 WQE 搬运之前。它沿用原暂存区、输出槽和 CQ 回收规则。
+
+`probe` 为每个 token 保存检查进度，跳过无效 slot 和已确认的分量。每个分量仍检查全部块尾标记，全部有效分量到齐后才按原顺序归约。它减少重复标记搬运，但可能增加单个 token 的检查次数，因此单独保留一个实验版本。BS256 同样测试这两项改动。
+
+这些改动尚未证明能稳定降低设备时延。先看干净版 Event，再用打点版解释差异。入口仍只执行 Host MPI Barrier，它能减小提交偏斜，但不保证各卡 kernel 同时开始。
 
 参数仍可覆盖，例如：
 
 ```bash
 # 只重编本轮关心的两个版本，也可覆盖 SDK 路径和并行度。
 bash tests/ll_cpp_bench/build_all.sh \
-    --variants ref-profile,return-profile --jobs 8 --shmem-root "$SHMEM_ROOT"
+    --variants ref-profile,issue-profile --jobs 8 --shmem-root "$SHMEM_ROOT"
 
-# 单机 EP16；EP4、EP8 也可使用默认版本。
-bash tests/ll_cpp_bench/run_all.sh --ep 16
+# 单机 EP16：先把全部选中版本重编为每机 16 个 rank。
+bash tests/ll_cpp_bench/build_all.sh --ranks-per-host 16
+bash tests/ll_cpp_bench/run_all.sh --ep 16 --ranks-per-host 16
+# 双机 EP32 使用同一套 16-rank 构建，第二台复制第一台打印的命令。
+bash tests/ll_cpp_bench/run_all.sh --ep 32 --ranks-per-host 16
 
 # 上游 base 没有 EP2 特化，EP2 使用实验 kernel。
-bash tests/ll_cpp_bench/build_all.sh --variants remote,remote-profile
-bash tests/ll_cpp_bench/run_all.sh --ep 2 --variants remote,remote-profile
+bash tests/ll_cpp_bench/build_all.sh --variants issue,issue-profile
+bash tests/ll_cpp_bench/run_all.sh --ep 2 --variants issue,issue-profile
 
 # 单机 EP4 指定设备，覆盖 BS、预热和采样次数。
 bash tests/ll_cpp_bench/run_all.sh --ep 4 --devices 6,7,14,15 \
-    --variants ref-profile,return-profile --tokens 32,72,256 --warmup 10 --profile-iters 20
+    --variants ref-profile,issue-profile --tokens 32,72,256 --warmup 10 --profile-iters 20
 
 # 更换双机地址、端口或版本顺序时，第二台复制此命令打印的加入命令。
 bash tests/ll_cpp_bench/run_all.sh --hosts HOST0,HOST1 --node-rank 0 \
-    --master-port 30071 --variants return-profile,ref-profile
+    --master-port 30071 --variants issue-profile,ref-profile
 ```
+
+编译与运行的 `--ranks-per-host` 必须一致。切回默认双机 EP8 时，两边重新执行不带参数的 `build_all.sh`。`launch.sh` 会在初始化前拒绝拓扑不匹配的旧构建。
 
 用 `--dry-run` 可以查看编译或启动命令。识别不到本机 IP 时，使用 `--node-rank 0` 或 `--node-rank 1` 指定节点。首次准备 SDK、定制编译选项和底层启动方式见下文。
 
@@ -98,7 +107,7 @@ bash tests/ll_cpp_bench/run_all.sh --hosts HOST0,HOST1 --node-rank 0 \
 两边分别按需编译，默认 `build_all.sh` 构建前文的 8 个版本：
 
 ```bash
-bash tests/ll_cpp_bench/build_all.sh --variants base,ops-shmem-base
+bash tests/ll_cpp_bench/build_all.sh --ranks-per-host 16 --variants base,ops-shmem-base
 ```
 
 首次构建会下载固定版本的 kernel 及依赖，保留上游许可证。已有该版本的干净 checkout 时，可用 `OPS_SOURCE_DIR=/path/to/ops-transformer` 指定源码目录。新基线只编译自身 kernel，不编译 DeepEP Dispatch 的多种特化。
@@ -106,11 +115,11 @@ bash tests/ll_cpp_bench/build_all.sh --variants base,ops-shmem-base
 第一台执行以下命令，第二台复制第一台打印的加入命令：
 
 ```bash
-bash tests/ll_cpp_bench/run_all.sh --variants base,ops-shmem-base --profile 0 --iters 100
-# 单机比较：在上面的命令中增加 --ep 16。
+bash tests/ll_cpp_bench/run_all.sh --ep 32 --ranks-per-host 16 --variants base,ops-shmem-base --profile 0 --iters 100
+# 单机比较：把上面的 --ep 32 改为 --ep 16。
 ```
 
-初版支持 H3584/H7168、TopK 8、384 个专家、BF16/FP16，BS 和设备选择沿用现有参数。测试在 CPU 上根据相同路由生成 expert 输入、行索引、计数和位图，准备工作在计时外完成。每个 rank 检查输出，汇总仍使用逐轮 rank-MAX Event。构建目录的 `ops-baseline.txt` 和结果 CSV 记录源码版本及通信适配方式。
+这份适配基线目前按每机 16 个 rank 构建，尚未接入两机各 4 卡的拓扑。初版支持 H3584/H7168、TopK 8、384 个专家、BF16/FP16，BS 和设备选择沿用现有参数。测试在 CPU 上根据相同路由生成 expert 输入、行索引、计数和位图，准备工作在计时外完成。每个 rank 检查输出，汇总仍使用逐轮 rank-MAX Event。构建目录的 `ops-baseline.txt` 和结果 CSV 记录源码版本及通信适配方式。
 
 这份基线关闭算子内打点，使用 `--profile 0`。Host 检查覆盖路由与汇集位图的一致性、构建选择及源码适配范围；CANN 编译和 NPU 精度、性能仍需在目标机器验证。
 
@@ -147,12 +156,15 @@ CANN 的 Device 编译器与 Host C++ 编译器使用各自的构建目录。构
 
 如果已有其他目录下的配套 SDK，可以跳过 `prepare_shmem.sh`，直接设置实际的 `SHMEM_ROOT`。脚本会保留已有构建；如果子模块中存在尚未登记的 `build/install`，它会停止并提示使用现成 SDK 或新 checkout。
 
-base 和 opt 使用各自的 Combine kernel 源码。base 从上游提交 `5b38bf2ea1f67f38c0c2d3662618ae1a0457bfc6` 提取原始 kernel 及其依赖头文件，保存在构建目录中。原始文件保持不变，实验开关和打点只进入 opt。`bench-build.txt` 记录实际源码路径、原版提交和编译选项。
+base 和 opt 使用各自的 Combine kernel 源码。base 从上游提交 `5b38bf2ea1f67f38c0c2d3662618ae1a0457bfc6` 提取原始 kernel 及其依赖头文件，保存在构建目录中。Combine 算法文件保持不变。每机 4 个 rank 的构建只替换 `ll_group_policy.h` 中的每机 rank 数常量；16-rank 构建的全部原始文件保持不变。实验开关和打点只进入 opt。`bench-build.txt` 记录实际源码路径、原版提交和编译选项。
 
 `--variant base` 明确选择原版；`--variant opt` 选择实验版。省略参数时，脚本根据实验开关选择：全部关闭时使用 base，启用任意实验或打点时使用 opt。各优化开关可以单独编译：
 
 | 编译参数 | 默认值 | 作用 |
 | --- | --- | --- |
+| `--ranks-per-host 4` | 16 | 编译每机参与 rank 数；便捷脚本 `build_all.sh` 默认传 4 |
+| `--early-issue ON` | OFF | 在下一包准备前提交上一包，缩短回传推迟时间 |
+| `--progress-probe ON` | OFF | 记录已到齐的贡献，后续只检查尚未确认的有效 slot |
 | `--small-batch ON` | OFF | 缓存 FIRST_HOP 任务列表，减少重复扫表和空闲缓冲槽处理 |
 | `--recv-cores 8` | 0 | 指定接收、汇集和最终归约核数；0 沿用核数均分 |
 | `--early-reduce ON` | OFF | BS ≤ 72 时，按原 slot 顺序归约已到齐的贡献，同时推进至多两个 token |
@@ -215,9 +227,9 @@ bash tests/ll_cpp_bench/launch.sh \
 
 单机测试每次都会在 `results/ll-cpp/<run-id>/` 下创建带时间戳和随机后缀的子目录。同一条命令可以重复执行，之前的 CSV、日志和汇总都会保留。脚本开头的 `Results:` 显示本次目录。`--variants` 也支持自定义构建名：例如 `ref-profile` 对应 `build/ll-cpp-ref-profile/libll_bench_variant.so`。
 
-EP2 使用新增的 G2 Plain16 特化，支持 BF16 和 FP16；EP4、EP8、EP16 使用 G4。单机数据走 MTE。EP32 沿用 G16，跨主机回传走 RDMA；FIRST_HOP 汇集保留 Get 方案。
+EP2 使用新增的 G2 Plain16 特化，支持 BF16 和 FP16；EP4、EP8、EP16 使用 G4。单机数据走 MTE。双机 EP8 用 G4，双机 EP32 用 G16，跨机回传都走 RDMA；FIRST_HOP 汇集保留机内 Get 方案。以下 `build.sh`、`launch.sh` 命令默认每机 16 个 rank；双机 EP8 则给两者都传 `--ranks-per-host 4`。
 
-小 EP 验证覆盖本机通信和归约；跨主机 RDMA 与对应中转仍需通过 EP32 验证。本次小 EP 入口在 C++ 用例中提供，原 Python 用例的 EP 范围保持不变。
+小 EP 验证覆盖本机通信和归约；跨机 RDMA 与对应中转需用双机 EP8 或 EP32 验证。本次小 EP 入口在 C++ 用例中提供，原 Python 用例的 EP 范围保持不变。
 
 ## 双机 32 卡
 
@@ -323,7 +335,7 @@ bash tests/ll_cpp_bench/launch.sh \
 
 打点回显中的 `E` 行给出逐轮最慢 rank 与耗时。`D` 行标识全局中位轮和最慢轮，`S`、`R` 分别展示该轮最慢 rank 的发送核与接收核。`P` 行列出 Put 返回相对本核入口较晚的候选核。各核时间保留 tick；分析跨核、跨 rank 的绝对先后需要时钟校准。
 
-rank 0 在采样后汇总选中轮次的 32-rank 代表记录，保存在各版本目录的 `diagnostic.csv`。全量逐核记录仍保存在各卡所属机器的 `rank-N-profile.csv`。报告保存为运行目录下的 `summary.txt`，可以重新生成：
+rank 0 在采样后汇总选中轮次的全局代表记录，保存在各版本目录的 `diagnostic.csv`。全量逐核记录仍保存在各卡所属机器的 `rank-N-profile.csv`。报告保存为运行目录下的 `summary.txt`，可以重新生成：
 
 ```bash
 bash tests/ll_cpp_bench/summarize.sh --suite results/ll-cpp/RUN_ID
@@ -355,7 +367,7 @@ bash tests/ll_cpp_bench/summarize.sh results/ll-cpp/RUN_ID/4-ref-profile
 
 `notify_local_ready` 分开本卡准备等待与通知发布。`direct_first_submit`、`direct_last_submit` 和 `direct_pending_end` 标出首个提交调用、末个调用返回以及待提交任务处理完的位置。`final_first_ready`、`final_last_ready` 标出成功检查数据就绪的位置；`final_last_store` 标出末个输出写回的下发位置。最终输出完成仍以原有 drain 和 kernel 收尾为准。
 
-时间字段使用设备原始 tick。`entry_tick` 保留原始值，其余阶段时间戳均减去本核入口时间；缺失阶段留空。`profile_init_end` 标出诊断记录初始化完成的位置，可据此分开打点初始化与业务初始化。一级打点中的二级字段留空。schema 3 每核使用 1536 B 记录，在原有收尾完成后集中写出。
+时间字段使用设备原始 tick。`entry_tick` 保留原始值，其余阶段时间戳均减去本核入口时间；缺失阶段留空。`profile_init_end` 标出诊断记录初始化完成的位置，可据此分开打点初始化与业务初始化。一级打点中的二级字段留空。schema 4 每核使用 1536 B 记录，在原有收尾完成后集中写出。
 
 分析时先选择同一配置、同一轮的记录，比较发送核与接收核的任务量和阶段耗时。常见判断如下：
 
@@ -363,6 +375,8 @@ bash tests/ll_cpp_bench/summarize.sh results/ll-cpp/RUN_ID/4-ref-profile
 - `probe_misses` 和 `probe_miss_ticks` 较大：接收核多次检查时数据尚未齐备，需要结合发送侧提交和收尾分析。`probe_load_ticks` 包括标记加载及其等待，`probe_check_ticks` 包括 `ReduceSum` 及原有 `V_S` 等待。
 - `direct_submit_ticks` 较大：先看是否跨机。跨机时继续区分 GM 暂存、Put 调用和 quiet，查看 `rdma_*` 字段；机内则观察提交、输出槽等待与最终 drain。
 - 就绪检查开销较小、归约仍较慢：检查 `final_input_wait_ticks`、`final_compute_issue_ticks` 和 `final_output_pack_ticks`。它们分别反映已有输入等待、计算指令下发和输出转换到可交给 MTE3 的过程。
+
+`early_issue_ticks` 记录提前提交上一包所花的时间，其中可能包含 `rdma_stage_wait_ticks` 和 `rdma_put_ticks`，这些字段不能相加。`probe_flag_blocks` 记录实际加载的标记块数，`probe_confirmed_slots` 记录已确认的分量数；`probe_blocked_token/slot` 记录最后一次未就绪的位置。结合收尾时间判断是否减少了重复检查，不能仅凭计数下降认定算子更快。
 
 单次回传调用的最大耗时保存在 `direct_submit_max_ticks` 或 `partial_submit_max_ticks`，并记录对应 peer 和 token。`probe_max_ticks` 记录最慢的一次标记检查及其 token、slot；整 token 检查时 slot 为 `4294967295`。该值反映一次检查的耗时，持续未就绪的情况结合累计次数和耗时判断。`rdma_quiet_max_peer` 标出单次 quiet 等待最久的目标。
 

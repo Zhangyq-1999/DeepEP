@@ -40,9 +40,11 @@ inline void PublishReady() {
     ++tick;assert(tick<100000);
     for(uint32_t c=0;c<arrival.size();++c)if(!published[c] && arrival[c] && arrival[c]<=tick){
         for(uint32_t b=0;b<blocks;++b){
-            float flag=1;std::memcpy(packets+c*packetBytes+b*512+480,&flag,4);
+            // Delay different blocks independently, including the final block.
+            float flag = tick >= arrival[c] + b % 5 ? 1.0f : 0.0f;
+            std::memcpy(packets+c*packetBytes+b*512+480,&flag,4);
         }
-        published[c]=true;
+        published[c]=tick >= arrival[c] + std::min(blocks-1,4U);
     }
     if(contributions && std::find(published.begin(),published.end(),false)!=published.end())earlyObserved=1;
 }
@@ -135,6 +137,9 @@ template<class T> void Check(uint32_t bs,uint32_t h,uint32_t k,uint32_t particip
     for (uint32_t t=begin; t<begin+count; ++t)
         expectedContributions += dedup ? __builtin_popcount(masks[t]) : k;
     assert(profileData[CombineProfile::Contributions] == expectedContributions);
+#ifdef DEEPEP_LL_COMBINE_PROGRESS_PROBE
+    assert(profileData[CombineProfile::ProbeConfirmedSlots] == expectedContributions);
+#endif
     assert(profileData[CombineProfile::ProbeCalls] >= count);
     assert(profileData[CombineProfile::ProbeMisses] <= profileData[CombineProfile::ProbeCalls]);
 #endif
@@ -168,5 +173,9 @@ int main(){
     for(uint32_t recv:{32,36})for(uint32_t bs:{32,48,64,72})
         for(uint32_t participant=0;participant<recv;++participant)
             for(bool dedup:{false,true})Check<bfloat16_t>(bs,256,8,participant,dedup,1,5,recv);
+    #ifdef DEEPEP_LL_COMBINE_PROGRESS_PROBE
+    Check<bfloat16_t>(256,3584,8,0,true,1,7,28);
+    Check<half>(256,3584,8,27,false,1,0,28);
+#endif
     std::puts("PASS production M5: delayed arrivals, BF16/FP16 results, M4 retirement, masks, tails and guards");
 }

@@ -30,7 +30,8 @@ def test_sender_scopes_policy_and_keeps_earlier_members():
     assert "for (uint32_t k = 0U; members != 0U && k < k_; ++k)" in code
 
 
-def test_actual_classify_and_per_host_selection(tmp_path):
+@pytest.mark.parametrize("ranks_per_host", [16, 4])
+def test_actual_classify_and_per_host_selection(tmp_path, ranks_per_host):
     zig = os.environ.get('DEEPEP_TEST_ZIG')
     if not zig:
         pytest.skip('Set DEEPEP_TEST_ZIG for the native policy test')
@@ -130,8 +131,17 @@ int main() {
     std::cout<<"PASS actual multi-host Classify/first-hop: "<<cases<<" cases; independent masks, no lost/duplicate routes, <=2K route reads\n";
 }
 ''', encoding='utf-8')
+    if ranks_per_host == 4:
+        text = source.read_text(encoding='utf-8')
+        text = text.replace('constexpr unsigned Group=16;', 'constexpr unsigned Group=4;')
+        text = text.replace('/16', '/Group').replace('%16', '%Group')
+        text = text.replace('Check(64,0,{16*2,32*2,33*2});', 'Check(8,0,{2,8,10});')
+        text = text.replace('Check(64,0,{16*2,20*2,21*2,32*2,36*2,37*2});', 'Check(8,4,{0,2,4,8,10,12});')
+        text = text.replace('{32U,64U,128U,256U}', '{8U}').replace('k<=32', 'k<=16')
+        source.write_text(text, encoding='utf-8')
     exe = tmp_path / 'multi-first-hop.exe'
     subprocess.run([zig, 'c++', '-std=c++17', '-O2', '-UNDEBUG', '-I' + str(ROOT / 'csrc'),
+                    f'-DDEEPEP_LL_PHYSICAL_RANKS_PER_HOST={ranks_per_host}',
                     str(source), '-o', str(exe)], check=True, timeout=180)
     result = subprocess.run([str(exe)], check=True, capture_output=True, text=True, timeout=30)
     assert 'PASS actual multi-host Classify/first-hop' in result.stdout

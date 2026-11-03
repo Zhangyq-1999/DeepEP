@@ -76,7 +76,12 @@ public:
         while (remaining != 0U) {
             const uint32_t task = pending_.GetValue(scan);
             const uint32_t token = task & 0xffffU;
-            if (!Probe(token, task >> 16U)) {
+#ifdef DEEPEP_LL_COMBINE_PROGRESS_PROBE
+            const bool ready = ProbeProgress(token, task >> 16U, scan);
+#else
+            const bool ready = Probe(token, task >> 16U);
+#endif
+            if (!ready) {
                 if (++scan == remaining) scan = 0U;
                 continue;
             }
@@ -158,11 +163,16 @@ private:
                 Trap();
                 return;
             }
+#ifdef DEEPEP_LL_COMBINE_PROGRESS_PROBE
+            // High half stores the first contribution not yet confirmed.
+            pending_.SetValue(p, begin_ + p);
+#else
             const uint32_t expected =
                 (enableDedup_ ? uint32_t(GetBitCount<1>(uint64_t(mask))) : k_) * blocks_;
             // BuildLayout admits B <= 65536; the existing flag DMA bound is
             // <=4095. Cache both fields in the original uint32 task slot.
             pending_.SetValue(p, (begin_ + p) | (expected << 16U));
+#endif
         }
         profile_.Elapsed(CombineProfile::FinalPendingBuildTicks, pendingStart);
     }
@@ -200,6 +210,40 @@ private:
         profile_.Probe(ready, token, 0xffffffffU, flags, start);
         return ready;
     }
+#ifdef DEEPEP_LL_COMBINE_PROGRESS_PROBE
+    __aicore__ inline bool ProbeProgress(uint32_t token, uint32_t next, uint32_t scan)
+    {
+        const uint64_t start = profile_.DetailClock();
+        const uint32_t mask = enableDedup_ ? masks_.GetValue(token - begin_) : 0U;
+        uint32_t readBlocks = 0U;
+        for (; next < k_; ++next) {
+            if (enableDedup_ && ((mask >> next) & 1U) == 0U) continue;
+            const uint64_t loadStart = profile_.DetailClock();
+            auto src = resultFlags_[(uint64_t(token) * k_ + next) * packetBytes_ / 4U + 120U];
+            // Check every block, including the tail. No flag is cleared until
+            // all tokens have arrived, so confirmed contributions stay valid.
+            DataCopy(flags_, src, {uint16_t(blocks_), 1U, 15U, 0U});
+            Sync<HardEvent::MTE2_V>();
+            profile_.Elapsed(CombineProfile::ProbeLoadTicks, loadStart);
+            const uint64_t checkStart = profile_.DetailClock();
+            ReduceSum(probeSum_, flags_, work_, 1U, blocks_, 1U);
+            Sync<HardEvent::V_S>();
+            const bool ready = probeSum_.GetValue(0U) == float(blocks_);
+            profile_.Elapsed(CombineProfile::ProbeCheckTicks, checkStart);
+            readBlocks += blocks_;
+            if (!ready) {
+                pending_.SetValue(scan, token | (next << 16U));
+                profile_.Probe(false, token, next, readBlocks, start);
+                return false;
+            }
+            profile_.Add(CombineProfile::ProbeConfirmedSlots);
+        }
+        // The reduction still starts only after all active contributions are
+        // ready, and uses the original top-k arithmetic order.
+        profile_.Probe(true, token, 0xffffffffU, readBlocks, start);
+        return true;
+    }
+#endif
     __aicore__ inline void ClearFlags()
     {
         const uint64_t start = profile_.DetailClock();

@@ -13,7 +13,8 @@ import pytest
 HERE = Path(__file__).resolve().parent
 
 
-def test_original_kernel_snapshot_is_verbatim(tmp_path):
+@pytest.mark.parametrize("ranks_per_host", [16, 4])
+def test_original_kernel_snapshot_is_verbatim(tmp_path, ranks_per_host):
     cmake = shutil.which("cmake")
     git = shutil.which("git")
     if not cmake or not git:
@@ -22,6 +23,7 @@ def test_original_kernel_snapshot_is_verbatim(tmp_path):
     revision = "5b38bf2ea1f67f38c0c2d3662618ae1a0457bfc6"
     wrapper = tmp_path / "snapshot.cmake"
     wrapper.write_text(f'set(DEEPEP_SOURCE_DIR "{root.as_posix()}")\n'
+                       f'set(DEEPEP_LL_PHYSICAL_RANKS_PER_HOST "{ranks_per_host}")\n'
                        f'include("{(HERE / "baseline.cmake").as_posix()}")\n')
     subprocess.run([cmake, "-P", str(wrapper)], cwd=tmp_path, check=True, timeout=30)
     expected = subprocess.check_output([git, "-C", str(root), "archive", "--format=tar", revision, "csrc/kernels"])
@@ -30,7 +32,11 @@ def test_original_kernel_snapshot_is_verbatim(tmp_path):
     with tarfile.open(fileobj=io.BytesIO(expected)) as archive:
         for member in archive:
             if member.isfile():
-                assert (extracted / member.name).read_bytes() == archive.extractfile(member).read()
+                data = archive.extractfile(member).read()
+                if ranks_per_host == 4 and member.name.endswith("common/ll_group_policy.h"):
+                    assert data.count(b"kLlPhysicalRanksPerHost = 16U") == 1
+                    data = data.replace(b"kLlPhysicalRanksPerHost = 16U", b"kLlPhysicalRanksPerHost = 4U")
+                assert (extracted / member.name).read_bytes() == data
                 count += 1
     assert count > 100
     original = (extracted / "csrc/kernels/combine/low_latency.cpp").read_text(encoding="utf-8")
@@ -236,6 +242,7 @@ done
 ''')
     for variant in ("ref-profile", "opt-profile"):
         (root / f"build/ll-cpp-{variant}/libll_bench_variant.so").touch()
+        (root / f"build/ll-cpp-{variant}/bench-build.txt").write_text("ranks_per_host=16\n")
     write(script.with_name("summarize.sh"), 'echo "profile-summary: $1"\n')
     helper_path = subprocess.check_output([bash, "-c", 'cygpath -u "$1"' if os.name == "nt" else 'printf "%s" "$1"',
                                           "_", helpers.as_posix()], text=True).strip()
@@ -297,6 +304,7 @@ def test_two_node_script_sequence_with_fake_hydra(bash, tmp_path, failure):
     for variant in ("base", "opt"):
         write(root / f"build/ll-cpp-{variant}/ll_combine_bench", "exit 0\n")
         (root / f"build/ll-cpp-{variant}/libll_bench_variant.so").touch()
+        (root / f"build/ll-cpp-{variant}/bench-build.txt").write_text("ranks_per_host=16\n")
     # Git Bash lacks setsid on some Windows installations. Process-group and
     # signal behavior belongs to Linux validation; this test checks orchestration.
     helpers = tmp_path / "helpers"

@@ -17,6 +17,13 @@ option(DEEPEP_LL_COMBINE_SMALL_BATCH "Cache partial tasks and trim idle lanes" O
 option(DEEPEP_LL_COMBINE_EARLY_REDUCE "Reduce ready contributions for BS <= 72" OFF)
 option(DEEPEP_LL_COMBINE_REMOTE_FIRST "Return cross-host results before local-host results" OFF)
 option(DEEPEP_LL_COMBINE_DEFER_RETURN "Overlap return staging with next-packet preparation" OFF)
+option(DEEPEP_LL_COMBINE_EARLY_ISSUE "Submit the preceding packet before preparing the next packet" OFF)
+option(DEEPEP_LL_COMBINE_PROGRESS_PROBE "Remember confirmed result contributions" OFF)
+set(DEEPEP_LL_PHYSICAL_RANKS_PER_HOST "16" CACHE STRING "Participating ranks per physical host: 4 or 16")
+if(NOT DEEPEP_LL_PHYSICAL_RANKS_PER_HOST MATCHES "^(4|16)$")
+    message(FATAL_ERROR "ranks-per-host must be 4 or 16")
+endif()
+add_compile_definitions(DEEPEP_LL_PHYSICAL_RANKS_PER_HOST=${DEEPEP_LL_PHYSICAL_RANKS_PER_HOST})
 set(DEEPEP_LL_COMBINE_RECV_CORES "0" CACHE STRING "0=half; explicit receive cores in [8,36]")
 if(NOT DEEPEP_LL_COMBINE_RECV_CORES MATCHES "^(0|[89]|[12][0-9]|3[0-6])$")
     message(FATAL_ERROR "Receive cores must be 0 or an integer in [8,36]")
@@ -26,8 +33,12 @@ set(DEEPEP_LL_REFERENCE_PROFILE OFF)
 set(DEEPEP_LL_STAGE_TIMER OFF)
 set(DEEPEP_LL_COUNT_HISTOGRAM OFF)
 if(DEEPEP_LL_OPS_BASE)
+    if(NOT DEEPEP_LL_PHYSICAL_RANKS_PER_HOST STREQUAL "16")
+        message(FATAL_ERROR "ops-shmem-base currently requires --ranks-per-host 16")
+    endif()
     if(DEEPEP_LL_COMBINE_ORIGINAL OR DEEPEP_LL_COMBINE_PROFILE OR DEEPEP_LL_COMBINE_SMALL_BATCH OR
        DEEPEP_LL_COMBINE_EARLY_REDUCE OR DEEPEP_LL_COMBINE_REMOTE_FIRST OR DEEPEP_LL_COMBINE_DEFER_RETURN OR
+       DEEPEP_LL_COMBINE_EARLY_ISSUE OR DEEPEP_LL_COMBINE_PROGRESS_PROBE OR
        NOT DEEPEP_LL_COMBINE_RECV_CORES STREQUAL "0")
         message(FATAL_ERROR "ops-shmem-base has no DeepEP experiment flags or instrumentation")
     endif()
@@ -35,6 +46,7 @@ if(DEEPEP_LL_OPS_BASE)
 elseif(DEEPEP_LL_COMBINE_ORIGINAL)
     if(DEEPEP_LL_COMBINE_SMALL_BATCH OR DEEPEP_LL_COMBINE_EARLY_REDUCE OR DEEPEP_LL_COMBINE_PROFILE OR
        DEEPEP_LL_COMBINE_REMOTE_FIRST OR DEEPEP_LL_COMBINE_DEFER_RETURN OR
+       DEEPEP_LL_COMBINE_EARLY_ISSUE OR DEEPEP_LL_COMBINE_PROGRESS_PROBE OR
        NOT DEEPEP_LL_COMBINE_RECV_CORES STREQUAL "0")
         message(FATAL_ERROR "Original Combine cannot enable experimental options or profiling; use --variant opt")
     endif()
@@ -80,7 +92,9 @@ target_compile_definitions(ll_bench_variant PRIVATE DEEPEP_LL_RDMA=1 DEEPEP_LL_M
     $<$<BOOL:${DEEPEP_LL_COMBINE_EARLY_REDUCE}>:DEEPEP_LL_COMBINE_EARLY_REDUCE=1>)
 target_compile_definitions(ll_bench_variant PRIVATE
     DEEPEP_BENCH_REMOTE_FIRST=$<BOOL:${DEEPEP_LL_COMBINE_REMOTE_FIRST}>
-    DEEPEP_BENCH_DEFER_RETURN=$<BOOL:${DEEPEP_LL_COMBINE_DEFER_RETURN}>)
+    DEEPEP_BENCH_DEFER_RETURN=$<BOOL:${DEEPEP_LL_COMBINE_DEFER_RETURN}>
+    DEEPEP_BENCH_EARLY_ISSUE=$<BOOL:${DEEPEP_LL_COMBINE_EARLY_ISSUE}>
+    DEEPEP_BENCH_PROGRESS_PROBE=$<BOOL:${DEEPEP_LL_COMBINE_PROGRESS_PROBE}>)
 # Hash the compiled source tree, including uncommitted edits, for cross-rank checks.
 file(GLOB_RECURSE _identity_files CONFIGURE_DEPENDS
     "${DEEPEP_SOURCE_DIR}/csrc/*.h" "${DEEPEP_SOURCE_DIR}/csrc/*.hpp" "${DEEPEP_SOURCE_DIR}/csrc/*.cpp"
@@ -108,4 +122,4 @@ if(DEEPEP_LL_OPS_BASE)
         "implementation=ops-shmem-base\nupstream=${LL_OPS_REV}\ntransport=SHMEM QP Put; quiet at upstream batch boundary\n")
 endif()
 file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/bench-build.txt" CONTENT
-    "source=${_source_id}\noriginal=${DEEPEP_LL_COMBINE_ORIGINAL}\nbaseline_revision=${LL_COMBINE_BASELINE_REV}\ncombine_source=${DEEPEP_LL_COMBINE_SOURCE}\nsmall_batch=${DEEPEP_LL_COMBINE_SMALL_BATCH}\nrecv_cores=${DEEPEP_LL_COMBINE_RECV_CORES}\nearly_reduce=${DEEPEP_LL_COMBINE_EARLY_REDUCE}\nremote_first=${DEEPEP_LL_COMBINE_REMOTE_FIRST}\ndefer_return=${DEEPEP_LL_COMBINE_DEFER_RETURN}\nprofile=${DEEPEP_LL_COMBINE_PROFILE}\nmpi=${MPI_CXX_COMPILER}\nshmem=${SHMEM_ROOT}\n")
+    "source=${_source_id}\noriginal=${DEEPEP_LL_COMBINE_ORIGINAL}\nbaseline_revision=${LL_COMBINE_BASELINE_REV}\ncombine_source=${DEEPEP_LL_COMBINE_SOURCE}\nsmall_batch=${DEEPEP_LL_COMBINE_SMALL_BATCH}\nrecv_cores=${DEEPEP_LL_COMBINE_RECV_CORES}\nearly_reduce=${DEEPEP_LL_COMBINE_EARLY_REDUCE}\nremote_first=${DEEPEP_LL_COMBINE_REMOTE_FIRST}\ndefer_return=${DEEPEP_LL_COMBINE_DEFER_RETURN}\nearly_issue=${DEEPEP_LL_COMBINE_EARLY_ISSUE}\nprogress_probe=${DEEPEP_LL_COMBINE_PROGRESS_PROBE}\nranks_per_host=${DEEPEP_LL_PHYSICAL_RANKS_PER_HOST}\nprofile=${DEEPEP_LL_COMBINE_PROFILE}\nmpi=${MPI_CXX_COMPILER}\nshmem=${SHMEM_ROOT}\n")

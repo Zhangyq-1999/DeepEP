@@ -450,6 +450,11 @@ private:
                 const uint32_t topk = uint32_t(tableUb_.GetValue(2U));
                 const uint32_t lane = sendSequence++ % activeLanes;
                 profile_.Elapsed(CombineProfile::DirectMetadataTicks, metadataStart);
+#ifdef DEEPEP_LL_COMBINE_EARLY_ISSUE
+                const uint64_t pendingStart = profile_.DetailClock();
+                returnBatch_.SubmitPending();
+                profile_.Elapsed(CombineProfile::EarlyIssueTicks, pendingStart);
+#endif
                 // Input lifetime ends after Vector has consumed its last block.
                 const uint64_t reuseStart = profile_.DetailClock();
                 WaitFlag<HardEvent::V_MTE2>(lane);

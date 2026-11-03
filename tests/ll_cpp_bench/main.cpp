@@ -213,6 +213,8 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
     const auto& session = *shared;
     const auto& peers = *shared->peers;
     auto o = shared->options;
+    if (o.ranksPerHost != DispatchDedup::kLlPhysicalRanksPerHost)
+        throw std::runtime_error("Runner and variant use different ranks-per-host; rebuild both");
     const auto stream = shared->stream;
     const auto cores = shared->cores;
     if (DEEPEP_LL_COMBINE_ORIGINAL && o.world == 2)
@@ -223,7 +225,8 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
         throw std::runtime_error("Unsupported receive-core count or mismatched Host/device build");
     const bool profileBuild = deepep_ll_combine_profile_enabled() != 0;
     const uint32_t returnOptions = deepep_ll_combine_return_options();
-    if (returnOptions != (DEEPEP_BENCH_REMOTE_FIRST | (DEEPEP_BENCH_DEFER_RETURN << 1)))
+    if (returnOptions != (DEEPEP_BENCH_REMOTE_FIRST | (DEEPEP_BENCH_DEFER_RETURN << 1) |
+                          (DEEPEP_BENCH_EARLY_ISSUE << 2) | (DEEPEP_BENCH_PROGRESS_PROBE << 3)))
         throw std::runtime_error("Mismatched Host/device return options");
     if (!profileBuild) o.profile = 0;
     if (profileBuild && o.profile) o.iterations = o.profileIterations;
@@ -257,7 +260,7 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
         if (!summary) throw std::runtime_error("Cannot open summary");
         summary << "ep,tokens,hidden,topk,experts,dtype,route,seed,capacity,warmup,source_id,samples,active_"
                    "aiv,recv_cores,small_batch,early_"
-                   "reduce,remote_first,defer_return,original,entry_sync,profile_build,profile_level,rank_max_mean_us,"
+                   "reduce,remote_first,defer_return,early_issue,progress_probe,ranks_per_host,original,entry_sync,profile_build,profile_level,rank_max_mean_us,"
                    "rank_max_min_us,"
                    "rank_max_max_us,p50_us,p99_us\n";
     }
@@ -265,6 +268,8 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
               << " small_batch=" << deepep_ll_combine_small_batch_enabled()
               << " early_reduce=" << deepep_ll_combine_early_reduce_enabled()
               << " remote_first=" << (returnOptions & 1U) << " defer_return=" << ((returnOptions >> 1) & 1U)
+              << " early_issue=" << ((returnOptions >> 2) & 1U) << " progress_probe=" << ((returnOptions >> 3) & 1U)
+              << " ranks_per_host=" << o.ranksPerHost << " device=" << o.device
               << " original=" << DEEPEP_LL_COMBINE_ORIGINAL << " entry_sync=" << o.entrySync
               << " profile_build=" << profileBuild << " profile_level=" << o.profile << std::endl;
     if (o.rank == 0 && profileBuild)
@@ -339,7 +344,8 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
                     << ',' << o.route << ',' << o.seed << ',' << o.capacity << ',' << o.warmup << ','
                     << DEEPEP_BENCH_SOURCE_ID << ',' << o.iterations << ',' << cores << ',' << recv << ','
                     << deepep_ll_combine_small_batch_enabled() << ',' << deepep_ll_combine_early_reduce_enabled() << ','
-                    << (returnOptions & 1U) << ',' << ((returnOptions >> 1) & 1U) << ',' << DEEPEP_LL_COMBINE_ORIGINAL
+                    << (returnOptions & 1U) << ',' << ((returnOptions >> 1) & 1U) << ',' << ((returnOptions >> 2) & 1U) << ','
+                    << ((returnOptions >> 3) & 1U) << ',' << o.ranksPerHost << ',' << DEEPEP_LL_COMBINE_ORIGINAL
                     << ',' << o.entrySync << ',' << profileBuild << ',' << o.profile << ',' << s.mean << ',' << s.min
                     << ',' << s.max << ',' << s.p50 << ',' << s.p99 << '\n';
             summary.flush();

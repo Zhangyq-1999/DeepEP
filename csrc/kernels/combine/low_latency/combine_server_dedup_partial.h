@@ -126,6 +126,14 @@ public:
                 const uint64_t metaStart = profile_.DetailClock();
                 LoadTask(row);
                 profile_.Elapsed(CombineProfile::PartialMetadataTicks, metaStart);
+#ifdef DEEPEP_LL_COMBINE_EARLY_ISSUE
+                // Issue before the next packet queues its Vector -> MTE3 wait.
+                // The previous packet owns a different UB output lane; the
+                // batch waits for its GM staging before using that UB as scratch.
+                const uint64_t issueStart = profile_.DetailClock();
+                rdmaBatch_->SubmitPending();
+                profile_.Elapsed(CombineProfile::EarlyIssueTicks, issueStart);
+#endif
                 const uint32_t source = uint32_t(table2Ub_.GetValue(0U));
                 const uint32_t token = uint32_t(table2Ub_.GetValue(1U));
                 const uint32_t topk = uint32_t(table2Ub_.GetValue(2U));

@@ -10,6 +10,7 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include "../../csrc/kernels/dispatch/low_latency/common/ll_group_policy.h"
 
 namespace llbench {
 inline uint32_t number(const std::string& text, uint32_t low, uint32_t high)
@@ -22,6 +23,7 @@ inline uint32_t number(const std::string& text, uint32_t low, uint32_t high)
 }
 struct Options {
     uint32_t rank = 0, world = 16, device = 0;
+    uint32_t ranksPerHost = DispatchDedup::kLlPhysicalRanksPerHost;
     uint32_t hidden = 3584, topk = 8, experts = 384, capacity = 256, warmup = 10, iterations = 100, seed = 0,
              timeout = 300, profile = 0, profileIterations = 10;
     std::vector<uint32_t> tokens{32, 48, 64, 72, 256};
@@ -57,7 +59,7 @@ struct Options {
         if (o.entrySync == "auto") o.entrySync = "host";
         if (o.entrySync != "host")
             throw std::invalid_argument("entry-sync supports host (MPI Barrier) or auto; device sync was removed");
-        const uint32_t perHost = std::min(world, 16U);
+        const uint32_t perHost = std::min(world, o.ranksPerHost);
         std::string devices;
         for (uint32_t i = 0; i < perHost; ++i) devices += (i ? "," : "") + std::to_string(i);
         text("--devices", devices);
@@ -94,6 +96,8 @@ struct Options {
             o.output.empty() || o.tokens.empty() || o.hidden % 16 || o.experts % o.world || o.topk > o.experts ||
             (o.dtype != "bf16" && o.dtype != "fp16") || (o.route != "random" && o.route != "hotspot"))
             throw std::invalid_argument("Invalid topology, shape, dtype or routing policy");
+        if (world > 2U * o.ranksPerHost || DispatchDedup::LlGroupForWorld(world) > o.ranksPerHost)
+            throw std::invalid_argument("Rebuild with --ranks-per-host 16 for EP16/32");
         if (*std::max_element(o.tokens.begin(), o.tokens.end()) > o.capacity)
             throw std::invalid_argument("capacity must cover every token count");
         return o;
@@ -103,7 +107,7 @@ struct Options {
         std::ostringstream s;
         s << world << '/' << hidden << '/' << topk << '/' << experts << '/' << capacity << '/' << warmup << '/'
           << iterations << '/' << seed << '/' << dtype << '/' << route << '/' << profile << '/' << entrySync
-          << '/' << profileIterations;
+          << '/' << profileIterations << '/' << ranksPerHost;
         for (auto b : tokens) s << '/' << b;
         return s.str();
     }

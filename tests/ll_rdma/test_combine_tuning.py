@@ -9,14 +9,15 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
-@pytest.mark.parametrize("early", [False, True])
+@pytest.mark.parametrize("early", [False, True, "progress"])
 @pytest.mark.parametrize("profile", [False, True])
 def test_production_early_reduction(tmp_path, early, profile):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
     if not zig:
         pytest.skip("Set DEEPEP_TEST_ZIG for CPU C++ execution")
     exe = tmp_path / "early.exe"
-    flags = ["-DDEEPEP_LL_COMBINE_EARLY_REDUCE=1"] if early else []
+    flags = (["-DDEEPEP_LL_COMBINE_PROGRESS_PROBE=1"] if early == "progress" else
+             ["-DDEEPEP_LL_COMBINE_EARLY_REDUCE=1"] if early else [])
     if profile:
         flags += ["-DDEEPEP_LL_COMBINE_PROFILE=1"]
         (tmp_path / "shmem.h").write_text('''#pragma once

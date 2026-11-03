@@ -73,6 +73,8 @@ public:
             if (!ready) {
                 ++values_[ProbeMisses];
                 values_[ProbeMissTicks] += ticks;
+                values_[ProbeBlockedToken] = token;
+                values_[ProbeBlockedSlot] = slot;
             }
             if (ticks > values_[ProbeMaxTicks]) {
                 values_[ProbeMaxTicks] = ticks;

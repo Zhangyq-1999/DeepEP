@@ -40,6 +40,9 @@ int main(){
    };
    for(unsigned lane=0;lane<lanes;++lane)SetFlag<HardEvent::MTE3_V>(lane);
    for(unsigned i=0;i<n;++i){
+#ifdef DEEPEP_LL_COMBINE_EARLY_ISSUE
+    batch.SubmitPending(); // before next packet's output/Vector work
+#endif
     const bool cross=pattern==0 || (pattern==2 && i%3!=1);
     const unsigned peers[]={16,31,32,63,127,255};
     const unsigned peer=cross?peers[i%6]:1+i%15,lane=i%lanes;

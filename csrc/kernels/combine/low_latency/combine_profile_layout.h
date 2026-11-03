@@ -3,7 +3,7 @@
 
 namespace CombineProfile {
 // One 1536-byte record per AIV. Timestamps precede StageRows; detail counters
-// are exported only at level 2. Schema 3 records actual RDMA submission timing.
+// are exported only at level 2. Schema 4 also records early issue and probe progress.
 enum Word : uint32_t {
     Entry,
     ProfileInitEnd,
@@ -153,6 +153,10 @@ enum Word : uint32_t {
     RdmaDeferGapTicks,
     RdmaStageWaitMaxTicks,
     RdmaStageWaitMaxPeer,
+    EarlyIssueTicks,
+    ProbeConfirmedSlots,
+    ProbeBlockedToken,
+    ProbeBlockedSlot,
     Rank,
     Core,
     Tokens,
@@ -164,8 +168,8 @@ enum Word : uint32_t {
     Count
 };
 constexpr uint32_t kWords = 192U;
-constexpr uint64_t kSchema = 3U;
+constexpr uint64_t kSchema = 4U;
 constexpr Word kDetailBegin = InitPrefixTicks;
-constexpr Word kDetailEnd = RdmaStageWaitMaxPeer;
+constexpr Word kDetailEnd = ProbeBlockedSlot;
 static_assert(Count <= kWords && StageRows <= 64U, "profile record bounds");
 }  // namespace CombineProfile

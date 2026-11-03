@@ -57,6 +57,12 @@ extern "C" DEEPEP_EXPORT uint32_t deepep_ll_combine_return_options()
 #ifdef DEEPEP_LL_COMBINE_DEFER_RETURN
     options |= 2U;
 #endif
+#ifdef DEEPEP_LL_COMBINE_EARLY_ISSUE
+    options |= 4U;
+#endif
+#ifdef DEEPEP_LL_COMBINE_PROGRESS_PROBE
+    options |= 8U;
+#endif
     return options;
 }
 

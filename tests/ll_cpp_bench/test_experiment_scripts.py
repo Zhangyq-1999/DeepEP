@@ -8,7 +8,7 @@ import subprocess
 import pytest
 
 HERE = Path(__file__).resolve().parent
-PROFILES = ("ref-profile", "remote-profile", "pipeline-profile", "return-profile")
+PROFILES = ("ref-profile", "issue-profile", "probe-profile", "issue-probe-profile")
 
 
 @pytest.fixture
@@ -71,7 +71,7 @@ def test_build_all_isolated_matrix_and_failure_stop(harness):
     run, env = harness
     calls = call_options(run("build_all.sh").stdout)
     assert len(calls) == 8
-    for name, call in zip(("base", "remote", "pipeline", "return", *PROFILES), calls):
+    for name, call in zip(("base", "issue", "probe", "issue-probe", *PROFILES), calls):
         assert call["--build-dir"].endswith("/build/ll-cpp-" + name)
         assert call["--variant"] == ("base" if name == "base" else "opt")
         assert call["--profile"] == ("ON" if name.endswith("-profile") else "OFF")
@@ -80,6 +80,9 @@ def test_build_all_isolated_matrix_and_failure_stop(harness):
         assert call["--early-reduce"] == ("ON" if name == "early-profile" else "OFF")
         assert call["--remote-first"] == ("ON" if name in ("remote", "return", "remote-profile", "return-profile") else "OFF")
         assert call["--defer-return"] == ("ON" if name in ("pipeline", "return", "pipeline-profile", "return-profile") else "OFF")
+        assert call["--ranks-per-host"] == "4"
+        assert call["--early-issue"] == ("ON" if name in ("issue", "issue-probe", "issue-profile", "issue-probe-profile") else "OFF")
+        assert call["--progress-probe"] == ("ON" if name in ("probe", "issue-probe", "probe-profile", "issue-probe-profile") else "OFF")
         assert call["--shmem-root"].endswith("/third-party/shmem/install/shmem")
     env["FAIL_BUILD"] = "ref-profile"
     result = run("build_all.sh", ok=False)
@@ -111,9 +114,10 @@ def test_repeat_default_run_and_second_host_join(harness):
         result = run("run_all.sh")
         call, = call_options(result.stdout)
         ids.append(call["--run-id"])
-        assert call["--node-rank"] == "0" and call["--ep"] == "32"
+        assert call["--node-rank"] == "0" and call["--ep"] == "8"
+        assert call["--devices"] == "12,13,14,15" and call["--ranks-per-host"] == "4"
         assert call["--hosts"] == "90.90.93.84,90.90.93.184"
-        assert call["--variants"] == ",".join(("base", "remote", "pipeline", "return", *PROFILES))
+        assert call["--variants"] == ",".join(("base", "issue", "probe", "issue-probe", *PROFILES))
         assert call["--tokens"] == "32,48,64,72,256"
         assert call["--iters"] == "100" and call["--profile"] == "2"
         assert call["--profile-iters"] == "10"
@@ -144,8 +148,8 @@ def test_host_detection_and_benchmark_overrides(harness):
     local, = call_options(run("run_all.sh", "--ep", "4", "--devices", "6,7,14,15").stdout)
     assert local["--hosts"] == "localhost" and local["--node-rank"] == "0"
     assert local["--devices"] == "6,7,14,15" and local["--entry-sync"] == "host"
-    assert call_options(run("run_all.sh", "--ep", "16", "--variants", "base").stdout)[0]["--profile"] == "2"
-    clean, = call_options(run("run_all.sh", "--ep", "16", "--variants", "base", "--profile", "0").stdout)
+    assert call_options(run("run_all.sh", "--ep", "16", "--ranks-per-host", "16", "--variants", "base").stdout)[0]["--profile"] == "2"
+    clean, = call_options(run("run_all.sh", "--ep", "16", "--ranks-per-host", "16", "--variants", "base", "--profile", "0").stdout)
     assert clean["--profile"] == "0"
     env["TEST_LOCAL_IP"] = "90.90.93.84 90.90.93.184"
     assert "Both hosts match" in run("run_all.sh", ok=False).stderr

@@ -3,18 +3,20 @@
 set -euo pipefail
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 source "$root/tests/ll_cpp_bench/experiment_defaults.sh"
-variants=$ll_bench_variants
+variants=$ll_bench_variants ranks_per_host=4
 cann=$ll_bench_cann mpi=$ll_bench_mpi shmem=$ll_bench_shmem jobs=4 dry=0
 fail() { echo "ERROR: $*" >&2; exit 2; }
 while (($#)); do
     case "$1" in
         --help|-h)
             cat <<'USAGE'
-build_all.sh [--variants NAME[,NAME...]] [--jobs N] [--dry-run]
+build_all.sh [--variants NAME[,NAME...]] [--ranks-per-host 4|16] [--jobs N] [--dry-run]
              [--cann-home DIR] [--mpi-home DIR] [--shmem-root DIR]
-Defaults: base, remote, pipeline, return (clean), followed by
-ref-profile, remote-profile, pipeline-profile, return-profile (diagnostic).
-Previous experiments opt-profile, r36-profile and early-profile remain
+Defaults: base, issue, probe, issue-probe (clean), followed by
+ref-profile, issue-profile, probe-profile, issue-probe-profile (diagnostic).
+--ranks-per-host 4 (default): cross-host EP8, or single-host EP2/4.
+--ranks-per-host 16: single-host EP4/8/16, or cross-host EP32.
+Previous experiments remote, pipeline, return, opt-profile, r36-profile and early-profile remain
 available through --variants but are excluded from the default build.
 ops-shmem-base builds the optional ops-transformer baseline with SHMEM transport.
 Existing build directories are updated in place; all flags are explicit.
@@ -24,29 +26,30 @@ ASCEND_HOME_PATH, MPI_HOME and SHMEM_ROOT override these SDK defaults.
 USAGE
             exit 0;;
         --dry-run) dry=1; shift;;
-        --variants|--jobs|--cann-home|--mpi-home|--shmem-root)
+        --variants|--jobs|--cann-home|--mpi-home|--shmem-root|--ranks-per-host)
             (($#>=2)) || fail "Missing value: $1"
             key=$1 value=$2; shift 2
             case "$key" in
                 --variants) variants=$value;; --jobs) jobs=$value;; --cann-home) cann=$value;;
-                --mpi-home) mpi=$value;; --shmem-root) shmem=$value;;
+                --mpi-home) mpi=$value;; --shmem-root) shmem=$value;; --ranks-per-host) ranks_per_host=$value;;
             esac;;
         *) fail "Unknown build option: $1";;
     esac
 done
+[[ $ranks_per_host =~ ^(4|16)$ ]] || fail 'ranks-per-host must be 4 or 16'
 [[ $jobs =~ ^[1-9][0-9]*$ ]] && ((jobs<=64)) || fail 'jobs must be in [1,64]'
 [[ $variants =~ ^[a-z0-9-]+(,[a-z0-9-]+)*$ ]] || fail 'Provide comma-separated experiment names'
 IFS=, read -r -a names <<< "$variants"
 # Validate the complete selection before starting any build.
 for name in "${names[@]}"; do
     case "$name" in
-        base|remote|pipeline|return|ops-shmem-base|ref-profile|opt-profile|r36-profile|early-profile|remote-profile|pipeline-profile|return-profile) ;;
+        issue|probe|issue-probe|issue-profile|probe-profile|issue-probe-profile|base|remote|pipeline|return|ops-shmem-base|ref-profile|opt-profile|r36-profile|early-profile|remote-profile|pipeline-profile|return-profile) ;;
         *) fail "Unknown experiment: $name (see --help)";;
     esac
 done
 if ((!dry)); then ll_bench_environment "$cann" "$mpi" "$shmem"; fi
 for name in "${names[@]}"; do
-    variant=opt profile=OFF small=OFF early=OFF remote=OFF defer=OFF recv=0
+    variant=opt profile=OFF small=OFF early=OFF remote=OFF defer=OFF issue=OFF probe=OFF recv=0
     if [[ $name == *-profile ]]; then profile=ON; fi
     case "$name" in
         base) variant=base; profile=OFF;;
@@ -57,12 +60,16 @@ for name in "${names[@]}"; do
         remote|remote-profile) remote=ON;;
         pipeline|pipeline-profile) defer=ON;;
         return|return-profile) remote=ON; defer=ON;;
+        issue|issue-profile) issue=ON;;
+        probe|probe-profile) probe=ON;;
+        issue-probe|issue-probe-profile) issue=ON; probe=ON;;
     esac
     cmd=(bash "$root/tests/ll_cpp_bench/build.sh"
          --cann-home "$cann" --mpi-home "$mpi" --shmem-root "$shmem"
          --build-dir "$root/build/ll-cpp-$name" --jobs "$jobs"
          --variant "$variant" --profile "$profile" --small-batch "$small"
-         --recv-cores "$recv" --early-reduce "$early" --remote-first "$remote" --defer-return "$defer")
+         --recv-cores "$recv" --early-reduce "$early" --remote-first "$remote" --defer-return "$defer"
+         --early-issue "$issue" --progress-probe "$probe" --ranks-per-host "$ranks_per_host")
     printf '\nBuilding %s\n' "$name"
     if ((dry)); then printf '%q ' "${cmd[@]}"; printf '\n'; else "${cmd[@]}"; fi
 done
