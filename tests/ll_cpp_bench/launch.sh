@@ -106,10 +106,12 @@ elif ((ep<=ranks_per_host)); then
     result_root="$result_root/TIMESTAMP-UNIQUE"
 fi
 echo "Results: $result_root"
-controller= proxy=
+controller= proxy= monitor=
 cleanup() {
     local status=$?
     trap - EXIT INT TERM HUP
+    [[ -z $monitor ]] || kill "$monitor" 2>/dev/null || true
+    [[ -z $monitor ]] || wait "$monitor" 2>/dev/null || true
     # Signal only processes created by this invocation. Hydra SIGPIPE retires
     # its own application children; controller SIGINT cleans the MPI job.
     [[ -z $controller ]] || kill -INT "$controller" 2>/dev/null || true
@@ -131,6 +133,10 @@ phase_port=$port
 out=$result_root
 binary="$root/build/ll-cpp-${sequence[0]}/ll_combine_bench"
 log="$result_root/node-$node_rank/suite.log"
+if ((!dry)); then
+    echo "Progress: MPI startup/rendezvous; updates every stage or 15s while waiting"
+    bash "$root/tests/ll_cpp_bench/progress.sh" "$result_root/node-$node_rank/progress.txt" "$node_rank" "$$" & monitor=$!
+fi
 echo "node=$node_rank EP=$ep variants=$variants (one shared initialization)"
 for phase in "${!sequence[@]}"; do
     echo "phase=$phase variant=${sequence[$phase]} output=$result_root/$phase-${sequence[$phase]}"
@@ -191,6 +197,11 @@ else
     if [[ -n $controller ]]; then
         if wait "$controller"; then controller=; else status=$?; cat "$log.controller"; exit "$status"; fi
     fi
+fi
+if [[ -n $monitor ]]; then
+    kill "$monitor" 2>/dev/null || true
+    wait "$monitor" 2>/dev/null || true
+    monitor=
 fi
 for phase in "${!sequence[@]}"; do
     variant=${sequence[$phase]}

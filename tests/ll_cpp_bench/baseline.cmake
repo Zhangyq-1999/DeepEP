@@ -3,6 +3,15 @@
 set(LL_COMBINE_BASELINE_REV "5b38bf2ea1f67f38c0c2d3662618ae1a0457bfc6")
 find_package(Git REQUIRED)
 set(LL_COMBINE_BASELINE_DIR "${CMAKE_BINARY_DIR}/original-${LL_COMBINE_BASELINE_REV}")
+set(DEEPEP_LL_COMBINE_SOURCE "${LL_COMBINE_BASELINE_DIR}/csrc/kernels/combine/low_latency.cpp")
+set(_baseline_stamp "${LL_COMBINE_BASELINE_DIR}/.snapshot-layout")
+set(_baseline_identity "${LL_COMBINE_BASELINE_REV}/${DEEPEP_LL_PHYSICAL_RANKS_PER_HOST}")
+if(EXISTS "${_baseline_stamp}" AND EXISTS "${DEEPEP_LL_COMBINE_SOURCE}")
+    file(READ "${_baseline_stamp}" _baseline_previous)
+    if(_baseline_previous STREQUAL _baseline_identity)
+        return() # Preserve timestamps so a no-op build does not recompile base.
+    endif()
+endif()
 set(_baseline_archive "${CMAKE_BINARY_DIR}/original-kernels.tar")
 execute_process(COMMAND "${GIT_EXECUTABLE}" -C "${DEEPEP_SOURCE_DIR}" archive
     --format=tar "--output=${_baseline_archive}" "${LL_COMBINE_BASELINE_REV}" csrc/kernels
@@ -12,7 +21,6 @@ if(NOT _baseline_status STREQUAL "0")
 endif()
 file(MAKE_DIRECTORY "${LL_COMBINE_BASELINE_DIR}")
 file(ARCHIVE_EXTRACT INPUT "${_baseline_archive}" DESTINATION "${LL_COMBINE_BASELINE_DIR}")
-set(DEEPEP_LL_COMBINE_SOURCE "${LL_COMBINE_BASELINE_DIR}/csrc/kernels/combine/low_latency.cpp")
 # Only the physical-host rank count changes for sparse-device tests. Keep all
 # original Combine source and algorithm headers byte-for-byte intact.
 if(DEFINED DEEPEP_LL_PHYSICAL_RANKS_PER_HOST AND NOT DEEPEP_LL_PHYSICAL_RANKS_PER_HOST STREQUAL "16")
@@ -24,4 +32,5 @@ if(DEFINED DEEPEP_LL_PHYSICAL_RANKS_PER_HOST AND NOT DEEPEP_LL_PHYSICAL_RANKS_PE
     string(REPLACE "kLlPhysicalRanksPerHost = 16U" "kLlPhysicalRanksPerHost = 4U" _policy_text "${_policy_text}")
     file(CONFIGURE OUTPUT "${_policy}" CONTENT "${_policy_text}" @ONLY NEWLINE_STYLE UNIX)
 endif()
+file(WRITE "${_baseline_stamp}" "${_baseline_identity}")
 message(STATUS "Original Combine: ${LL_COMBINE_BASELINE_REV} (unaltered Combine; physical ranks per host=${DEEPEP_LL_PHYSICAL_RANKS_PER_HOST})")

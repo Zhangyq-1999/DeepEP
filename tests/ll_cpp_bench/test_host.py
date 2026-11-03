@@ -43,6 +43,9 @@ def test_original_kernel_snapshot_is_verbatim(tmp_path, ranks_per_host):
     assert "DEEPEP_LL_COMBINE_SMALL_BATCH" not in original
     assert "CombineProfile" not in original
     assert "ll_bench_entry_gate" not in original
+    before = (extracted / "csrc/kernels/combine/low_latency.cpp").stat().st_mtime_ns
+    subprocess.run([cmake, "-P", str(wrapper)], cwd=tmp_path, check=True, timeout=30)
+    assert (extracted / "csrc/kernels/combine/low_latency.cpp").stat().st_mtime_ns == before
 
 
 def test_options_routes_and_statistics(tmp_path):
@@ -65,7 +68,7 @@ def bash():
 
 def test_shell_syntax(bash):
     for script in ("build.sh", "run.sh", "launch.sh", "prepare_shmem.sh", "hydra_proxy_command.sh",
-                   "build_all.sh", "run_all.sh", "experiment_defaults.sh"):
+                   "build_all.sh", "run_all.sh", "experiment_defaults.sh", "progress.sh"):
         subprocess.run([bash, "-n", str(HERE / script)], check=True, timeout=10)
 
 

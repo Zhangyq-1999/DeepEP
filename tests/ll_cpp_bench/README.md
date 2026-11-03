@@ -27,7 +27,9 @@ git pull --ff-only origin perf/ll-combine-small-batch
 bash tests/ll_cpp_bench/build_all.sh
 ```
 
-`build_all.sh` 默认更新以下 8 个构建目录，每个构建使用 4 个编译任务。所有开关都显式传入，重复编译会覆盖旧的 CMake 选项。已有构建目录继续用于增量编译。升级到单次初始化入口后，需要重编本轮选择的全部版本，生成各自的 `libll_bench_variant.so`。
+`build_all.sh` 默认更新以下 8 个构建目录，每个构建使用 4 个编译任务。Dispatch 用于准备 Combine 的输入和路由，同一配置只编译一次，各版本复用它的目标文件。每个版本再单独编译 Combine，并链接成独立的 kernel 库。首次完整编译的设备编译单元从 144 个减少到 25 个，实际耗时仍取决于机器和编译器。
+
+已有目录继续用于增量编译。只修改 Combine 时，Dispatch 无需重编；修改 Dispatch 或它依赖的头文件时，构建系统自动重编受影响的部分。共享目标文件保存在 `build/ll-cpp-dispatch`，不同编译器、SDK 和每机 rank 数使用独立目录。更新本次构建和超时功能后，两台机器都执行一次 `build_all.sh`，更新所有选中的版本。
 
 | 构建名 | 启用的实验 | 打点 |
 | --- | --- | --- |
@@ -58,7 +60,11 @@ bash tests/ll_cpp_bench/run_all.sh 第一台打印的RUN_ID
 
 干净版在编译时关闭打点，使用独立 kernel。打点版在预热前启用所选打点级别，让预热和采样执行相同路径。一次运行可同时包含两类版本，`--profile 2` 只作用于支持打点的构建。
 
-每次启动都会生成新的结果目录，保留此前数据。第一台按 BS 打印干净版和打点版的时延表，再打印全局选中轮次的诊断数据。第二台正常结束时只打印成功状态，分析时通常提供第一台的 `summary.txt` 即可。
+每次启动都会生成新的结果目录，保留此前数据。两台机器分别显示本机进度，包含 SHMEM 初始化、输入准备、Dispatch、Combine 精度检查、预热、采样和资源释放。预热和采样每 10 轮更新一次完成数。状态没有变化时，脚本每 15 秒打印当前阶段和等待时间；这表示尚未收到新进度，不能单凭它判断卡死。
+
+进度文件保存在 `node-N/progress.txt`，由本机第一个 rank 更新。更新发生在 Event 计时之外、下一次 MPI Barrier 之前，不向设备 kernel 增加打点。第一台在测试结束后按 BS 打印对比表和诊断数据；分析时通常提供第一台的 `summary.txt` 即可。
+
+每次设备 stream 等待默认最多 10 秒，可用 `run_all.sh --kernel-timeout 20` 改为 20 秒。超时或设备错误会打印 rank、设备、BS、轮次和阶段，然后调用 `MPI_Abort` 终止本次作业，不继续采样或写入 PASS。该限制使用 [CANN 的带超时 stream 同步接口](https://www.hiascend.com/document/detail/en/CANNCommunityEdition/910/API/runtimeapi/aclcppdevg_03_0077.html)，不修改原版 kernel。SHMEM 初始化仍使用独立的 `--timeout` 参数，MPI 作业总时限由 `--job-timeout` 控制。
 
 `issue` 在读取下一条路由后、准备下一包数据前调用上一包的 Put，避免把下一包的向量计算等待排到上一包 WQE 搬运之前。它沿用原暂存区、输出槽和 CQ 回收规则。
 
@@ -402,6 +408,7 @@ bash tests/ll_cpp_bench/summarize.sh results/ll-cpp/RUN_ID/4-ref-profile
 | `--entry-sync` | host | 每轮提交前执行 Host MPI Barrier；auto 同样选择 host |
 | `--profile` | 0 | 0 关闭，1 记录阶段边界，2 增加热循环打点；干净构建自动保持关闭 |
 | `--timeout` | 300 | SHMEM 初始化和控制操作超时，单位为秒 |
+| `--kernel-timeout` | 10 | 单次设备 stream 等待上限，单位为秒；包含准备 Dispatch 和采样 Combine |
 
 上表是可执行文件和 `launch.sh` 的默认值。便捷入口 `run_all.sh` 默认使用 `--profile 2`，干净版采样 100 轮，打点版采样 10 轮；其余形状参数相同。
 

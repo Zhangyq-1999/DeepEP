@@ -20,6 +20,7 @@ Previous experiments remote, pipeline, return, opt-profile, r36-profile and earl
 available through --variants but are excluded from the default build.
 ops-shmem-base builds the optional ops-transformer baseline with SHMEM transport.
 Existing build directories are updated in place; all flags are explicit.
+Dispatch compiler outputs are shared; each variant compiles only its own Combine.
 SDK defaults: CANN cann-9.2.T101, MPI /usr/local/mpich-3.2.1,
              SHMEM third-party/shmem/install/shmem in this checkout.
 ASCEND_HOME_PATH, MPI_HOME and SHMEM_ROOT override these SDK defaults.

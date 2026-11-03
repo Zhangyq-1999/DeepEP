@@ -236,7 +236,7 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
              << deepep_ll_combine_early_reduce_enabled() << '/' << profileBuild << '/' << DEEPEP_LL_COMBINE_ORIGINAL
              << '/' << returnOptions;
     peers.verify(llbench::hash(identity.str()));
-    check(aclrtSynchronizeStream(stream), "initial completion");
+    session.synchronize("initial completion");
     peers.barrier();
     auto hostComm = comm_args(session);
     Buffer comm(sizeof(hostComm));
@@ -275,18 +275,22 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
     if (o.rank == 0 && profileBuild)
         std::cout << "Diagnostic build: use --profile OFF when rebuilding for clean Event performance." << std::endl;
     for (auto bs : o.tokens) {
+        session.report("input allocation and routing", bs);
         Case c(o, bs, cores, comm.p);
+        session.report("Dispatch preparation", bs);
         peers.barrier();
         dispatch_server_dedup_kernel_do_v2(stream, &c.dispatch, c.variant);
-        check(aclrtSynchronizeStream(stream), "Dispatch completion");
+        session.synchronize("Dispatch preparation", bs);
         peers.barrier();
+        session.report("clear result flags", bs);
         const uint64_t blocks = uint64_t(bs) * o.topk * ((uint64_t(o.hidden) * 2 + 479) / 480);
         combine_clear_result_flags_kernel_do(stream, local_base(session), blocks, cores);
-        check(aclrtSynchronizeStream(stream), "Combine window preparation");
+        session.synchronize("clear result flags", bs);
+        session.report("Combine correctness", bs);
         peers.barrier();
         auto launch = [&]() { combine_server_dedup_kernel_do(stream, &c.combine); };
         launch();
-        check(aclrtSynchronizeStream(stream), "correctness Combine");
+        session.synchronize("Combine correctness", bs);
         auto error = c.precision(o.dtype == "bf16");
         peers.barrier();
         std::unique_ptr<Buffer> profileBuffer;
@@ -299,14 +303,16 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
             c.combine.timerMode = o.profile;
         }
         for (uint32_t i = 0; i < o.warmup; ++i) {
+            if (i % 10U == 0) session.report("warmup", bs, i, o.warmup);
             peers.barrier();
             launch();
-            check(aclrtSynchronizeStream(stream), "warmup");
+            session.synchronize("warmup", bs, i);
         }
         std::vector<float> times;
         times.reserve(o.iterations);
         Event start, end;
         for (uint32_t i = 0; i < o.iterations; ++i) {
+            if (i % 10U == 0) session.report("sampling", bs, i, o.iterations);
             // Every peer completed its previous kernel before this barrier
             // releases either rotating bank. Host coordination is untimed.
             if (o.profile) {
@@ -318,7 +324,7 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
             start.record(stream);
             launch();
             end.record(stream);
-            check(aclrtSynchronizeStream(stream), "sample completion");
+            session.synchronize("sampling", bs, i);
             float ms = 0;
             check(aclrtEventElapsedTime(&ms, start.value, end.value), "event elapsed");
             if (!std::isfinite(ms) || ms <= 0) throw std::runtime_error("Invalid Event duration");
@@ -332,6 +338,7 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
                 selectedProfiles.capture(profileData, cores, recv);
             }
         }
+        session.report("precision check and result gather", bs, o.iterations, o.iterations);
         c.precision(o.dtype == "bf16");
         samples.flush();
         if (o.profile) profileCsv.flush();

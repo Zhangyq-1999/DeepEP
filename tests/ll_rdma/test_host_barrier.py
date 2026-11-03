@@ -25,11 +25,12 @@ def test_project_build_owns_barrier():
     cmake = (ROOT / "cmake/device/CMakeLists.txt").read_text()
     ll_sources = cmake.split("set(_ll_sources", 1)[1].split("add_library(deepep_kernel_ll_plain", 1)[0]
     assert "csrc/kernels/dispatch/low_latency.cpp" in ll_sources
-    assert "csrc/kernels/combine/low_latency.cpp" in ll_sources
+    assert "${DEEPEP_LL_COMBINE_SOURCE}" in ll_sources
+    assert 'set(DEEPEP_LL_COMBINE_SOURCE "${DEEPEP_SOURCE_DIR}/csrc/kernels/combine/low_latency.cpp")' in cmake
     assert "low_latency/variants/${_mode}_g${_group}.cpp" in ll_sources
     for variant in ("plain", "reference"):
         assert f"add_library(deepep_kernel_ll_{variant} OBJECT ${{_ll_sources}})" in cmake
-    assert "add_library(deepep_kernels SHARED $<TARGET_OBJECTS:${_ll_variant}>)" in cmake
+    assert "add_library(deepep_kernels SHARED $<TARGET_OBJECTS:${_ll_variant}> ${_dispatch_objects})" in cmake
     # The legacy helper remains testable but is absent from the LL build and
     # from Session's runtime launch path; NDR uses its existing Host collective.
     assert "csrc/kernels/runtime/host_barrier.cpp" not in cmake
@@ -52,7 +53,7 @@ def test_initialization_diagnostics_and_bounded_local_poll():
     for phase in ("SHMEM init enter", "SHMEM init return", "workspace allocation enter",
                   "workspace memset return", "barrier launched; synchronize enter"):
         assert phase in session
-    launcher = (ROOT / "tests/elastic/test_ep_low_latency.py").read_text()
+    launcher = (ROOT / "tests/elastic/test_ep_low_latency.py").read_text(encoding="utf-8")
     assert "if args.trace_ops:" in launcher and "os.environ['DEEPEP_LL_INIT_TRACE'] = '1'" in launcher
 
 

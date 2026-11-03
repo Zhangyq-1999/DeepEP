@@ -28,7 +28,7 @@ def test_shared_session_lifecycle(tmp_path):
 #include <vector>
 inline int mpiInit=0, mpiEnd=0, aclInitCount=0, aclEnd=0, sessionInit=0, sessionEnd=0;
 inline int resets=0, aborts=0, calls=0, loads=0, failPhase=-1;
-inline bool failFinalize=false, busy=false;
+inline bool failFinalize=false, failStream=false, busy=false;
 inline unsigned char memory[128];
 inline std::vector<std::string> order;
 inline int test_setenv(const char*, const char*, int) { return 0; }
@@ -67,6 +67,9 @@ inline int aclrtCreateStream(aclrtStream* p) { *p=memory; return 0; }
 inline int aclrtDestroyStream(aclrtStream) { assert(!busy); return 0; }
 inline int aclrtResetDevice(int) { return 0; }
 inline int aclrtSynchronizeStream(aclrtStream) { busy=false; return 0; }
+inline int aclrtSynchronizeStreamWithTimeout(aclrtStream s,int timeout) {
+    assert(timeout==10000); return failStream ? 507046 : aclrtSynchronizeStream(s);
+}
 inline int aclrtMemset(void* p,size_t capacity,int value,size_t n) {
     assert(!busy && p==memory && capacity==sizeof(memory) && n==capacity);
     ++resets; std::memset(p,value,n); return 0;
@@ -141,6 +144,7 @@ int main(int argc,char** argv) {
     const std::string mode=argv[2];
     failPhase=mode=="phase-failure" ? 1:-1;
     failFinalize=mode=="finalize-failure";
+    failStream=mode=="stream-timeout";
     std::vector<std::string> args={"bench","--variants","base,opt,base",
         "--build-root",(root/"build").string(),"--output-dir",(root/"results").string()};
     std::vector<char*> pointers;
@@ -165,3 +169,9 @@ int main(int argc,char** argv) {
                     str(tmp_path / "test.cpp"), "-o", str(executable)], check=True, timeout=180)
     for mode in ("success", "phase-failure", "finalize-failure"):
         subprocess.run([str(executable), str(tmp_path / mode), mode], check=True, timeout=30)
+    timed = subprocess.run([str(executable), str(tmp_path / "stream-timeout"), "stream-timeout"],
+                           capture_output=True, text=True, timeout=10)
+    assert timed.returncode == 1
+    assert "rank=0 device=0" in timed.stderr and "status=507046" in timed.stderr
+    assert "stage=phase completion before reset" in timed.stderr and "stream_wait_limit=10s" in timed.stderr
+    assert not list((tmp_path / "stream-timeout").rglob("*.PASS"))

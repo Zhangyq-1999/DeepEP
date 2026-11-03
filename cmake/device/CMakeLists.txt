@@ -29,6 +29,10 @@ find_path(DEVICE_RT_INCLUDE rt.h HINTS
     NO_DEFAULT_PATH)
 # This NDR performance branch builds LL only. Keep plain and reference objects
 # separate so profiling switches reuse dependency-tracked objects.
+set(DEEPEP_DEVICE_COMPONENT "all" CACHE STRING "Build all LL sources, Dispatch objects, or Combine")
+if(NOT DEEPEP_DEVICE_COMPONENT MATCHES "^(all|dispatch|combine)$")
+    message(FATAL_ERROR "Unknown LL device component: ${DEEPEP_DEVICE_COMPONENT}")
+endif()
 if(NOT DEEPEP_LL_COMBINE_SOURCE)
     set(DEEPEP_LL_COMBINE_SOURCE "${DEEPEP_SOURCE_DIR}/csrc/kernels/combine/low_latency.cpp")
 endif()
@@ -46,6 +50,22 @@ endforeach()
 list(APPEND _ll_sources
     "${DEEPEP_SOURCE_DIR}/csrc/kernels/dispatch/low_latency/variants/fp16_g2.cpp"
     "${DEEPEP_SOURCE_DIR}/csrc/kernels/dispatch/low_latency/variants/bf16_g2.cpp")
+if(DEEPEP_DEVICE_COMPONENT STREQUAL "dispatch")
+    list(REMOVE_ITEM _ll_sources "${DEEPEP_LL_COMBINE_SOURCE}")
+elseif(DEEPEP_DEVICE_COMPONENT STREQUAL "combine")
+    set(_ll_sources "${DEEPEP_LL_COMBINE_SOURCE}")
+    # Reuse compiler outputs only. Each benchmark library still links its own
+    # complete kernel image, with the same symbol isolation as a full build.
+    if(NOT EXISTS "${DEEPEP_DISPATCH_OBJECTS_FILE}")
+        message(FATAL_ERROR "Configure the shared Dispatch build before Combine")
+    endif()
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${DEEPEP_DISPATCH_OBJECTS_FILE}")
+    file(STRINGS "${DEEPEP_DISPATCH_OBJECTS_FILE}" _dispatch_objects)
+    if(NOT _dispatch_objects)
+        message(FATAL_ERROR "Shared Dispatch object list is empty")
+    endif()
+    set_source_files_properties(${_dispatch_objects} PROPERTIES EXTERNAL_OBJECT TRUE GENERATED TRUE)
+endif()
 if(DEEPEP_LL_OPS_BASE)
     # This independent baseline needs no DeepEP Dispatch or Combine objects.
     set(_ll_sources "${DEEPEP_SOURCE_DIR}/tests/ll_cpp_bench/ops_shmem/device.cpp")
@@ -62,14 +82,20 @@ if(DEEPEP_LL_REFERENCE_PROFILE)
 else()
     set(_ll_variant deepep_kernel_ll_plain)
 endif()
-add_library(deepep_kernels SHARED $<TARGET_OBJECTS:${_ll_variant}>)
-if(DEEPEP_DEVICE_OUTPUT_NAME)
-    set_target_properties(deepep_kernels PROPERTIES OUTPUT_NAME "${DEEPEP_DEVICE_OUTPUT_NAME}")
-endif()
-if(DEEPEP_DEVICE_LOCAL_SYMBOLS)
-    # Several independently compiled kernels coexist in the benchmark process.
-    # Keep each library's launch stubs and registration data bound to that library.
-    target_link_options(deepep_kernels PRIVATE -Wl,-Bsymbolic)
+if(DEEPEP_DEVICE_COMPONENT STREQUAL "dispatch")
+    add_custom_target(deepep_dispatch_objects ALL DEPENDS ${_ll_variant})
+    file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/dispatch-objects.txt"
+        CONTENT "$<JOIN:$<TARGET_OBJECTS:${_ll_variant}>,\n>\n")
+else()
+    add_library(deepep_kernels SHARED $<TARGET_OBJECTS:${_ll_variant}> ${_dispatch_objects})
+    if(DEEPEP_DEVICE_OUTPUT_NAME)
+        set_target_properties(deepep_kernels PROPERTIES OUTPUT_NAME "${DEEPEP_DEVICE_OUTPUT_NAME}")
+    endif()
+    if(DEEPEP_DEVICE_LOCAL_SYMBOLS)
+        # Several independently compiled kernels coexist in the benchmark process.
+        # Keep each library's launch stubs and registration data bound to that library.
+        target_link_options(deepep_kernels PRIVATE -Wl,-Bsymbolic)
+    endif()
 endif()
 
 add_library(deepep_kernel_options INTERFACE)
@@ -136,7 +162,9 @@ foreach(_objects deepep_kernel_ll_plain deepep_kernel_ll_reference)
     target_link_libraries(${_objects} PRIVATE deepep_kernel_options)
 endforeach()
 
-target_link_options(deepep_kernels PRIVATE --cce-fatobj-link -Wl,-z,relro,-z,now,-z,noexecstack)
-target_link_libraries(deepep_kernels PRIVATE ascend_runtime ascendcl shmem ${CMAKE_DL_LIBS})
-set_target_properties(deepep_kernels PROPERTIES BUILD_WITH_INSTALL_RPATH TRUE
-    INSTALL_RPATH "$ORIGIN" INSTALL_RPATH_USE_LINK_PATH FALSE)
+if(TARGET deepep_kernels)
+    target_link_options(deepep_kernels PRIVATE --cce-fatobj-link -Wl,-z,relro,-z,now,-z,noexecstack)
+    target_link_libraries(deepep_kernels PRIVATE ascend_runtime ascendcl shmem ${CMAKE_DL_LIBS})
+    set_target_properties(deepep_kernels PROPERTIES BUILD_WITH_INSTALL_RPATH TRUE
+        INSTALL_RPATH "$ORIGIN" INSTALL_RPATH_USE_LINK_PATH FALSE)
+endif()

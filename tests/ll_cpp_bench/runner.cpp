@@ -50,10 +50,14 @@ int run_suite(int argc, char** argv, const std::filesystem::path& executable)
         llbench::Coordinator peers;
         llbench::Suite suite(argc, argv, executable);
         auto options = suite.options(peers.rank, peers.world, peers.localRank);
+        llbench::Progress progress(options.output, peers.rank, peers.localRank,
+                                  int(std::min(options.world, options.ranksPerHost)));
+        progress.report("MPI configuration");
         peers.verify(llbench::hash(options.signature() + suite.signature()));
         // Preload local groups once. Each module depends on a uniquely named
         // kernel library, so the base and experiment launch symbols stay separate.
         std::map<std::string, std::unique_ptr<Module>> modules;
+        progress.report("load kernel libraries");
         for (size_t i = 0; i < suite.variants.size(); ++i) {
             const auto path = suite.library(i).string();
             if (!modules.count(path)) modules.emplace(path, std::make_unique<Module>(path));
@@ -61,6 +65,7 @@ int run_suite(int argc, char** argv, const std::filesystem::path& executable)
             if (std::filesystem::exists(out / ("rank-" + std::to_string(peers.rank) + ".csv")))
                 throw std::runtime_error("Results already exist: " + out.string());
         }
+        progress.report("ACL initialization");
         check(aclInit(nullptr), "aclInit");
         check(aclrtSetDevice(options.device), "set device");
         aclrtStream stream = nullptr;
@@ -71,6 +76,7 @@ int run_suite(int argc, char** argv, const std::filesystem::path& executable)
             if (!peers.rank)
                 std::cout << "Initializing shared MPI/ACL/SHMEM session once for " << suite.variants.size() << " phases"
                           << std::endl;
+            progress.report("SHMEM initialization and workspace allocation");
             deepep::Session session(peers.rank, peers.world, llbench::workspaceBytes, "", options.timeout, false, false,
                                     true);
             llbench::Runtime runtime{options,
@@ -81,9 +87,11 @@ int run_suite(int argc, char** argv, const std::filesystem::path& executable)
                                      session.capacity(),
                                      shmemx_get_ffts_config(),
                                      cores,
-                                     session.ll_rdma_qps()};
+                                     session.ll_rdma_qps(), &progress};
             for (size_t i = 0; i < suite.variants.size(); ++i) {
-                check(aclrtSynchronizeStream(stream), "phase completion before reset");
+                progress.variant = suite.variants[i];
+                progress.report("workspace reset and peer rendezvous");
+                runtime.synchronize("phase completion before reset");
                 peers.barrier();
                 if (i) {
                     // Kernels retire their transport work before returning.
@@ -98,15 +106,18 @@ int run_suite(int argc, char** argv, const std::filesystem::path& executable)
                     std::cout << "phase=" << i << " variant=" << suite.variants[i]
                               << " output=" << runtime.options.output << std::endl;
                 modules.at(suite.library(i).string())->run(&runtime);
-                check(aclrtSynchronizeStream(stream), "phase completion");
+                progress.report("phase completion and peer rendezvous");
+                runtime.synchronize("phase completion");
                 peers.barrier();
                 marker(runtime.options.output, peers.rank, ".SAMPLED", "precision and sampling passed");
             }
+            progress.report("SHMEM finalize");
             peers.barrier();
             session.close(true);
             peers.barrier();
             if (!peers.rank) std::cout << "Shared SHMEM session finalized once" << std::endl;
         }
+        progress.report("ACL cleanup");
         check(aclrtDestroyStream(stream), "destroy stream");
         check(aclrtResetDevice(options.device), "reset device context");
         check(aclFinalize(), "aclFinalize");
@@ -114,6 +125,7 @@ int run_suite(int argc, char** argv, const std::filesystem::path& executable)
         for (size_t i = 0; i < suite.variants.size(); ++i)
             marker(suite.output(options.output, i), peers.rank, ".PASS",
                    "precision, sampling and shared SHMEM finalize passed");
+        progress.report("PASS");
         llbench::mpi_check(MPI_Finalize(), "MPI_Finalize");
         mpiActive = false;
         return 0;
@@ -131,7 +143,8 @@ int main(int argc, char** argv)
                      "--variants base,opt --build-root DIR --output-dir DIR\n"
                      "--tokens 32,48,64,72,256 --hidden 3584 --topk 8 --experts 384 --capacity 256\n"
                      "--dtype bf16|fp16 --route random|hotspot --seed 0 --warmup 10 --iters 100\n"
-                     "--devices LIST --entry-sync host|auto --profile 0|1|2 --profile-iters 10 --timeout 300\n";
+                     "--devices LIST --entry-sync host|auto --profile 0|1|2 --profile-iters 10 --timeout 300 "
+                     "--kernel-timeout 10 (seconds)\n";
         return 0;
     }
     return run_suite(argc, argv, std::filesystem::canonical("/proc/self/exe"));

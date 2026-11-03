@@ -161,21 +161,27 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
         std::cout << "ops-shmem-base: upstream " << LL_OPS_REV
                   << "; SHMEM QP Put + batch-boundary quiet; entry_sync=" << o.entrySync << std::endl;
     for (auto bs : o.tokens) {
+        session.report("ops input preparation", bs);
         DeviceCase item(o, bs, cores, ub, context.p);
         auto launch = [&] { ops_shmem_combine_do(stream, &item.args); };
+        session.report("Combine correctness", bs);
         peers.barrier();
         launch();
-        check(aclrtSynchronizeStream(stream), "correctness Combine");
+        session.synchronize("Combine correctness", bs);
         double error = item.precision(o.dtype == "bf16");
         peers.barrier();
         Event start, end;
         std::vector<float> times;
         for (uint32_t i = 0; i < o.warmup + o.iterations; ++i) {
+            const bool sampling = i >= o.warmup;
+            const auto iteration = sampling ? i - o.warmup : i;
+            if (iteration % 10U == 0)
+                session.report(sampling ? "sampling" : "warmup", bs, iteration, sampling ? o.iterations : o.warmup);
             peers.barrier();
             if (i >= o.warmup) start.record(stream);
             launch();
             if (i >= o.warmup) end.record(stream);
-            check(aclrtSynchronizeStream(stream), "Combine completion");
+            session.synchronize(sampling ? "sampling" : "warmup", bs, iteration);
             if (i >= o.warmup) {
                 float ms = 0;
                 check(aclrtEventElapsedTime(&ms, start.value, end.value), "elapsed Event");
@@ -185,6 +191,7 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
                         << '\n';
             }
         }
+        session.report("precision check and result gather", bs, o.iterations, o.iterations);
         item.precision(o.dtype == "bf16");
         samples.flush();
         auto gathered = peers.gather(times.data(), times.size() * sizeof(float));
