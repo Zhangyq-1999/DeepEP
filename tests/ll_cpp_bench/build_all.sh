@@ -12,8 +12,9 @@ while (($#)); do
             cat <<'USAGE'
 build_all.sh [--variants NAME[,NAME...]] [--ranks-per-host 4|16] [--jobs N] [--dry-run]
              [--cann-home DIR] [--mpi-home DIR] [--shmem-root DIR]
-Defaults: base/local-first (clean), ref-profile/local-first-profile (diagnostic).
-Local-first reduces local-host contributions before RDMA returns; no polling pause.
+Defaults: base/batch/batch-pipeline (clean), with matching diagnostic builds.
+batch: vector batch readiness, route filtering and pipelined local-first reduction.
+batch-pipeline: batch plus next-input prefetch overlapping return staging.
 Optional poll800/poll800-profile: Nop<800>() after each failed flag probe.
 SIMT selection/check experiments prepare, flag, prepare-flag are opt-in only.
 meta/meta-profile selects metadata only; prefetch/prefetch-profile selects overlap only.
@@ -47,15 +48,17 @@ IFS=, read -r -a names <<< "$variants"
 # Validate the complete selection before starting any build.
 for name in "${names[@]}"; do
     case "$name" in
-        local-first|local-first-profile|poll800|poll800-profile|meta|meta-profile|prefetch|prefetch-profile|prepare|flag|prepare-flag|prepare-profile|flag-profile|prepare-flag-profile|issue|probe|issue-probe|issue-profile|probe-profile|issue-probe-profile|base|remote|pipeline|return|ops-shmem-base|ref-profile|opt-profile|r36-profile|early-profile|remote-profile|pipeline-profile|return-profile) ;;
+        batch|batch-profile|batch-pipeline|batch-pipeline-profile|local-first|local-first-profile|poll800|poll800-profile|meta|meta-profile|prefetch|prefetch-profile|prepare|flag|prepare-flag|prepare-profile|flag-profile|prepare-flag-profile|issue|probe|issue-probe|issue-profile|probe-profile|issue-probe-profile|base|remote|pipeline|return|ops-shmem-base|ref-profile|opt-profile|r36-profile|early-profile|remote-profile|pipeline-profile|return-profile) ;;
         *) fail "Unknown experiment: $name (see --help)";;
     esac
 done
 if ((!dry)); then ll_bench_environment "$cann" "$mpi" "$shmem"; fi
 for name in "${names[@]}"; do
-    variant=opt profile=OFF small=OFF early=OFF remote=OFF defer=OFF issue=OFF probe=OFF recv=0 simt_meta=OFF simt_flag=OFF prefetch_return=OFF poll_nop=0 local_first=OFF
+    variant=opt profile=OFF small=OFF early=OFF remote=OFF defer=OFF issue=OFF probe=OFF recv=0 simt_meta=OFF simt_flag=OFF prefetch_return=OFF poll_nop=0 local_first=OFF batch_final=OFF
     if [[ $name == *-profile ]]; then profile=ON; fi
     case "$name" in
+        batch|batch-profile) local_first=ON; batch_final=ON;;
+        batch-pipeline|batch-pipeline-profile) local_first=ON; batch_final=ON; prefetch_return=ON;;
         local-first|local-first-profile) local_first=ON;;
         poll800|poll800-profile) poll_nop=800;;
         meta|meta-profile) simt_meta=ON;;
@@ -81,7 +84,7 @@ for name in "${names[@]}"; do
          --variant "$variant" --profile "$profile" --small-batch "$small"
          --recv-cores "$recv" --early-reduce "$early" --remote-first "$remote" --defer-return "$defer"
          --early-issue "$issue" --progress-probe "$probe" --simt-meta "$simt_meta" --simt-flag "$simt_flag"
-         --prefetch-return "$prefetch_return" --local-first "$local_first" --poll-nop "$poll_nop" --ranks-per-host "$ranks_per_host")
+         --prefetch-return "$prefetch_return" --local-first "$local_first" --batch-final "$batch_final" --poll-nop "$poll_nop" --ranks-per-host "$ranks_per_host")
     printf '\nBuilding %s\n' "$name"
     if ((dry)); then printf '%q ' "${cmd[@]}"; printf '\n'; else "${cmd[@]}"; fi
 done

@@ -61,7 +61,8 @@ public:
         }
 #endif
     }
-    __aicore__ inline void Probe(bool ready, uint32_t token, uint32_t slot, uint32_t blocks, uint64_t begin)
+    __aicore__ inline void Probe(bool ready, uint32_t token, uint32_t slot, uint32_t blocks, uint64_t begin,
+                                 bool wholeToken = true)
     {
 #ifdef DEEPEP_LL_COMBINE_PROFILE
         if (!record_) return;
@@ -82,7 +83,7 @@ public:
                 values_[ProbeMaxSlot] = slot;
             }
         }
-        if (ready) {
+        if (ready && wholeToken) {
             MarkOnce(FinalFirstReady);
             Mark(FinalLastReady);
         }
@@ -198,10 +199,11 @@ public:
         if (profile_) profile_->SampleMax(total, maximum, id0, id1, begin, a, b);
 #endif
     }
-    __aicore__ inline void Probe(bool ready, uint32_t token, uint32_t slot, uint32_t blocks, uint64_t begin)
+    __aicore__ inline void Probe(bool ready, uint32_t token, uint32_t slot, uint32_t blocks, uint64_t begin,
+                                 bool wholeToken = true)
     {
 #ifdef DEEPEP_LL_COMBINE_PROFILE
-        if (profile_) profile_->Probe(ready, token, slot, blocks, begin);
+        if (profile_) profile_->Probe(ready, token, slot, blocks, begin, wholeToken);
 #endif
     }
     __aicore__ inline void Set(Word word, uint64_t value)

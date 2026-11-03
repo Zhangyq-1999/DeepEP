@@ -271,7 +271,8 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
     const uint32_t returnOptions = deepep_ll_combine_return_options();
     if (returnOptions != (DEEPEP_BENCH_REMOTE_FIRST | (DEEPEP_BENCH_DEFER_RETURN << 1) |
                           (DEEPEP_BENCH_EARLY_ISSUE << 2) | (DEEPEP_BENCH_PROGRESS_PROBE << 3) | (DEEPEP_BENCH_SIMT_META << 4) |
-                          (DEEPEP_BENCH_SIMT_FLAG << 5) | (DEEPEP_BENCH_PREFETCH_RETURN << 6) | (DEEPEP_BENCH_LOCAL_FIRST << 7) | (uint32_t(DEEPEP_BENCH_POLL_NOP) << 16U)))
+                          (DEEPEP_BENCH_SIMT_FLAG << 5) | (DEEPEP_BENCH_PREFETCH_RETURN << 6) | (DEEPEP_BENCH_LOCAL_FIRST << 7) |
+                          (DEEPEP_BENCH_BATCH_FINAL << 8) | (uint32_t(DEEPEP_BENCH_POLL_NOP) << 16U)))
         throw std::runtime_error("Mismatched Host/device return options");
     if (!profileBuild) o.profile = 0;
     if (profileBuild && o.profile) o.iterations = o.profileIterations;
@@ -305,7 +306,7 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
         if (!summary) throw std::runtime_error("Cannot open summary");
         summary << "ep,tokens,hidden,topk,experts,dtype,route,seed,capacity,warmup,source_id,samples,active_"
                    "aiv,recv_cores,small_batch,early_"
-                   "reduce,remote_first,defer_return,early_issue,progress_probe,simt_meta,simt_flag,prefetch_return,local_first,poll_nop,ranks_per_host,original,entry_sync,profile_build,profile_level,rank_max_mean_us,"
+                   "reduce,remote_first,defer_return,early_issue,progress_probe,simt_meta,simt_flag,prefetch_return,local_first,batch_final,poll_nop,ranks_per_host,original,entry_sync,profile_build,profile_level,rank_max_mean_us,"
                    "rank_max_min_us,"
                    "rank_max_max_us,p50_us,p99_us\n";
     }
@@ -315,7 +316,8 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
               << " remote_first=" << (returnOptions & 1U) << " defer_return=" << ((returnOptions >> 1) & 1U)
               << " early_issue=" << ((returnOptions >> 2) & 1U) << " progress_probe=" << ((returnOptions >> 3) & 1U)
               << " simt_meta=" << ((returnOptions >> 4) & 1U) << " simt_flag=" << ((returnOptions >> 5) & 1U)
-              << " prefetch_return=" << ((returnOptions >> 6) & 1U) << " local_first=" << ((returnOptions >> 7) & 1U) << " poll_nop=" << (returnOptions >> 16U)
+              << " prefetch_return=" << ((returnOptions >> 6) & 1U) << " local_first=" << ((returnOptions >> 7) & 1U)
+              << " batch_final=" << ((returnOptions >> 8) & 1U) << " poll_nop=" << (returnOptions >> 16U)
               << " ranks_per_host=" << o.ranksPerHost << " device=" << o.device
               << " original=" << DEEPEP_LL_COMBINE_ORIGINAL << " entry_sync=" << o.entrySync
               << " profile_build=" << profileBuild << " profile_level=" << o.profile << std::endl;
@@ -403,7 +405,8 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
                     << deepep_ll_combine_small_batch_enabled() << ',' << deepep_ll_combine_early_reduce_enabled() << ','
                     << (returnOptions & 1U) << ',' << ((returnOptions >> 1) & 1U) << ',' << ((returnOptions >> 2) & 1U) << ','
                     << ((returnOptions >> 3) & 1U) << ',' << ((returnOptions >> 4) & 1U) << ','
-                    << ((returnOptions >> 5) & 1U) << ',' << ((returnOptions >> 6) & 1U) << ',' << ((returnOptions >> 7) & 1U) << ',' << (returnOptions >> 16U) << ',' << o.ranksPerHost << ',' << DEEPEP_LL_COMBINE_ORIGINAL
+                    << ((returnOptions >> 5) & 1U) << ',' << ((returnOptions >> 6) & 1U) << ',' << ((returnOptions >> 7) & 1U) << ','
+                    << ((returnOptions >> 8) & 1U) << ',' << (returnOptions >> 16U) << ',' << o.ranksPerHost << ',' << DEEPEP_LL_COMBINE_ORIGINAL
                     << ',' << o.entrySync << ',' << profileBuild << ',' << o.profile << ',' << s.mean << ',' << s.min
                     << ',' << s.max << ',' << s.p50 << ',' << s.p99 << '\n';
             summary.flush();

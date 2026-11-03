@@ -77,7 +77,7 @@ template<class T> void TestDataCopyPad(GlobalTensor<T> d,LocalTensor<T> s,DataCo
 using namespace AscendC;
 using namespace CombineDedup;
 
-template<class T> void Check(uint32_t bs,uint32_t h,uint32_t k,uint32_t participant,bool dedup,uint32_t delay,uint32_t partialTasks,uint32_t recv=8, uint32_t sourceRank=0, uint32_t ranksPerHost=4) {
+template<class T> void Check(uint32_t bs,uint32_t h,uint32_t k,uint32_t participant,bool dedup,uint32_t delay,uint32_t partialTasks,uint32_t recv=8, uint32_t sourceRank=0, uint32_t ranksPerHost=4, bool blockFront=false) {
     auto layout=EpCombineM45Layout(100,bs,h,k,recv);
     assert(layout.inputLanes && layout.totalBytes<=kEpServerDedupCombineRecvUbBytes);
     const uint32_t usable=kEpServerDedupCombineRecvUbBytes-kEpServerDedupCombineResidentUbBytes;
@@ -97,7 +97,7 @@ template<class T> void Check(uint32_t bs,uint32_t h,uint32_t k,uint32_t particip
         for(uint32_t j=0;j<k;++j){
             weights[t*k+j]=float((t+j)%7+1)/8;
             const bool local = t%4==0 || (t%4>=2 && j%2==t%2);
-            const uint32_t host = local ? sourceRank/ranksPerHost : 1-sourceRank/ranksPerHost;
+            const uint32_t host = local ? sourceRank/ranksPerHost : (sourceRank/ranksPerHost+1U+j%3U)%4U;
             routes[t*k+j]=int32_t((host*ranksPerHost+j%ranksPerHost)*48+j%48);
             if(local)localMasks[t]|=1U<<j;
             bool active=!dedup || ((masks[t]>>j)&1U);
@@ -114,6 +114,11 @@ template<class T> void Check(uint32_t bs,uint32_t h,uint32_t k,uint32_t particip
                 std::memcpy(packets+(t*k+j)*packetBytes+byte/480*512+byte%480,&value,2);
             }
         }
+    }
+    if(blockFront) {
+        assert(participant==0 && bs/recv>2);
+        for(uint32_t t=0;t<bs;++t)for(uint32_t j=0;j<k;++j)
+            if(arrival[t*k+j]) arrival[t*k+j]=t<2 ? 151U : 1U;
     }
     std::vector<uint16_t> output(bs*h+64,0x6a6a);
     std::vector<std::vector<uint8_t>> oldStores(layout.outputLanes,std::vector<uint8_t>(layout.outputBytes));
@@ -143,6 +148,7 @@ template<class T> void Check(uint32_t bs,uint32_t h,uint32_t k,uint32_t particip
     tick=contributions=earlyObserved=nopCalls=0;
     reads.clear();
     uint32_t retired=op.Process();
+    if(blockFront) assert(!reads.empty() && reads.front()/k>=2U);
     if(dedup){for(uint32_t lane=0;lane<layout.outputLanes;++lane)if(!((retired>>lane)&1U))WaitFlag<HardEvent::MTE3_V>(lane);}
     else op.DrainM6();
     SetFlag<HardEvent::MTE3_S>(7);WaitFlag<HardEvent::MTE3_S>(7);
@@ -162,8 +168,19 @@ template<class T> void Check(uint32_t bs,uint32_t h,uint32_t k,uint32_t particip
         localCount+=__builtin_popcount(localMasks[t] & (dedup?masks[t]:k==32?0xffffffffU:(1U<<k)-1));
     assert(profileData[CombineProfile::LocalContributions]==localCount);
     assert(profileData[CombineProfile::RemoteContributions]==expectedContributions-localCount);
+#ifdef DEEPEP_LL_COMBINE_BATCH_FINAL
+    if (EpCombineM5TokenCount(bs,recv)>2U) {
+        assert(profileData[CombineProfile::BatchWholeTokens]==count);
+        assert(profileData[CombineProfile::BatchGroupCalls]==0);
+    } else {
+        assert(profileData[CombineProfile::BatchWholeTokens]==0);
+        assert(profileData[CombineProfile::BatchGroupCalls]==profileData[CombineProfile::ProbeCalls]);
+        if (!delay && count) assert(profileData[CombineProfile::BatchGroupCalls]<=2U*count+8U);
+    }
+#else
     assert(profileData[CombineProfile::LocalProbeCalls]+profileData[CombineProfile::RemoteProbeCalls]
            ==profileData[CombineProfile::ProbeCalls]);
+#endif
 #endif
 #ifdef DEEPEP_LL_COMBINE_PROGRESS_PROBE
     assert(profileData[CombineProfile::ProbeConfirmedSlots] == expectedContributions);
@@ -230,10 +247,16 @@ int main(){
     Check<half>(256,3584,8,27,false,1,0,28);
 #endif
 #ifdef DEEPEP_LL_COMBINE_LOCAL_FIRST
-    // Physical host widths and both source hosts; include the larger BS case.
-    for(uint32_t width:{4,16})for(uint32_t rank:{0U,width,width*2-1})
+    // Physical host widths and all four source hosts; include the larger BS case.
+    for(uint32_t width:{4,16})for(uint32_t rank:{0U,width,width*2-1,width*2,width*4-1})
         for(uint32_t bs:{32,48,64,72,256})for(bool dedup:{false,true})
             Check<bfloat16_t>(bs,3584,8,0,dedup,1,7,28,rank,width);
+#endif
+#ifdef DEEPEP_LL_COMBINE_BATCH_FINAL
+    // Ready tokens behind two delayed tokens must progress. Cover every K so
+    // vector route masks cross byte and word boundaries, not just K=8/32.
+    Check<bfloat16_t>(256,3584,8,0,true,1,7,28,32,16,true);
+    for(uint32_t k=1;k<=32;++k)Check<bfloat16_t>(73,256,k,0,true,1,7,8,63,16);
 #endif
     std::puts("PASS production M5: delayed arrivals, BF16/FP16 results, M4 retirement, masks, tails and guards");
 }

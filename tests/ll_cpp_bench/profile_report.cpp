@@ -188,7 +188,10 @@ void detail(std::ostream& out, const Record& r)
             << " max=" << r[RdmaStageWaitMaxTicks] << "(peer=" << r[RdmaStageWaitMaxPeer] << ')'
             << " defer_gap_ticks=" << r[RdmaDeferGapTicks] << '\n';
     }
-    if (r.receive && r[LocalProbeCalls] + r[RemoteProbeCalls]) {
+    if (r.receive && r[BatchGroupCalls] + r[BatchWholeTokens])
+        out << "    batch: group_checks=" << r[BatchGroupCalls] << " whole_tokens=" << r[BatchWholeTokens]
+            << " route_ticks=" << r[BatchRouteTicks] << '\n';
+    if (r.receive && r[LocalContributions] + r[RemoteContributions]) {
         out << "    final_local: contributions=" << r[LocalContributions]
             << " probes/misses=" << r[LocalProbeCalls] << '/' << r[LocalProbeMisses]
             << " probe_ticks=" << r[LocalProbeTicks] << " reduce_ticks=" << r[LocalReduceTicks] << '\n';
@@ -310,10 +313,10 @@ void report(const fs::path& directory)
                     r.v[w] = integer(csv.cells[columns[w]]);
                     r.present[w] = true;
                 }
-            if ((r[Schema] != kSchema && r[Schema] != 6U && r[Schema] != 5U && r[Schema] != 4U && r[Schema] != 3U && r[Schema] != 2U) || r[Complete] != 1 ||
+            if (r[Schema] < 2U || r[Schema] > kSchema || r[Complete] != 1 ||
                 r[Rank] != rank || !r.present[FlushDone] ||
                 !r.present[Entry] || !r[World] || rank >= r[World] || (r[Level] != 1 && r[Level] != 2))
-                throw std::runtime_error("Incomplete profile or unsupported schema (requires schema 2..7)");
+                throw std::runtime_error("Incomplete profile or unsupported schema (requires schema 2..8)");
             auto it = cases.find(uint32_t(r[Tokens]));
             if (it == cases.end() || !it->second.events.count(r.iteration))
                 throw std::runtime_error("Profile has no matching Event sample");
@@ -363,7 +366,7 @@ void report(const fs::path& directory)
         while (csv.next()) {
             std::cout << "CONFIG";
             for (const char* key : {"tokens", "hidden", "topk", "experts", "dtype", "route", "seed", "warmup",
-                                    "small_batch", "early_reduce", "local_first", "recv_cores", "remote_first", "defer_return",
+                                    "small_batch", "early_reduce", "local_first", "batch_final", "recv_cores", "remote_first", "defer_return",
                                     "entry_sync", "source_id"})
                 if (csv.column(key) >= 0) std::cout << ' ' << key << '=' << csv.get(key);
             std::cout << '\n';

@@ -9,7 +9,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
-@pytest.mark.parametrize("mode", ["plain", "early", "local"])
+@pytest.mark.parametrize("mode", ["plain", "early", "local", "batch"])
 @pytest.mark.parametrize("profile", [False, True])
 def test_benchmark_build_handshake(tmp_path, mode, profile):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
@@ -45,11 +45,14 @@ int main() {
     flags = []
     if mode != "plain":
         flags.append("-DDEEPEP_LL_COMBINE_" + ("EARLY_REDUCE" if mode == "early" else "LOCAL_FIRST") + "=1")
+    if mode == "batch":
+        flags.append("-DDEEPEP_LL_COMBINE_BATCH_FINAL=1")
     if profile:
         flags.append("-DDEEPEP_LL_COMBINE_PROFILE=1")
     for name in ("REMOTE_FIRST", "DEFER_RETURN", "EARLY_ISSUE", "PROGRESS_PROBE",
-                 "SIMT_META", "SIMT_FLAG", "PREFETCH_RETURN", "POLL_NOP", "LOCAL_FIRST"):
-        flags.append(f"-DDEEPEP_BENCH_{name}={int(name == 'LOCAL_FIRST' and mode == 'local')}")
+                 "SIMT_META", "SIMT_FLAG", "PREFETCH_RETURN", "POLL_NOP", "LOCAL_FIRST", "BATCH_FINAL"):
+        enabled = (name == "LOCAL_FIRST" and mode in ("local", "batch")) or (name == "BATCH_FINAL" and mode == "batch")
+        flags.append(f"-DDEEPEP_BENCH_{name}={int(enabled)}")
     exe = tmp_path / "handshake.exe"
     subprocess.run([zig, "c++", "-std=c++17", "-O1", "-UNDEBUG", *flags,
                     "-I" + str(ROOT / "csrc"), str(source), "-o", str(exe)], check=True, timeout=120)

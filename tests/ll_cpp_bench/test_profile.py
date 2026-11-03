@@ -138,6 +138,16 @@ int main() {
     assert(sample[ProbeFlagBlocks] == 135);
     assert(sample[ProbeMaxToken] == 32 && sample[ProbeMaxSlot] == 0xffffffffU);
     assert(sample[FinalFirstReady] && sample[FinalLastReady] >= sample[FinalFirstReady]);
+    DeviceProfile group;
+    group.Init(reinterpret_cast<uint8_t*>(sample), 2);
+    group.Probe(true, 7, 0xffffffffU, 120, group.DetailClock(), false);
+    group.Finish(0, 4, 72);
+    assert(sample[ProbeCalls] == 1 && sample[ProbeMisses] == 0);
+    assert(!sample[FinalFirstReady] && !sample[FinalLastReady]); // local group != whole token
+    group.MarkOnce(FinalFirstReady);
+    group.Mark(FinalLastReady);
+    group.Finish(0, 4, 72);
+    assert(sample[FinalFirstReady] && sample[FinalLastReady] >= sample[FinalFirstReady]);
     DeviceProfile tails;
     tails.Init(reinterpret_cast<uint8_t*>(sample), 2);
     tails.Missing(7, 4, 44, 1, 15);  // slot 2, block 14

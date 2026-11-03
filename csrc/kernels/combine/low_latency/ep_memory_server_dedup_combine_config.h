@@ -8,6 +8,9 @@
 #include "../../dispatch/low_latency/common/ep_memory_server_dedup_protocol.h"
 #include "../../dispatch/low_latency/common/ll_core_config.h"
 
+#if defined(DEEPEP_LL_COMBINE_BATCH_FINAL) && !defined(DEEPEP_LL_COMBINE_LOCAL_FIRST)
+#error "batch-final requires local-first"
+#endif
 #if defined(DEEPEP_LL_COMBINE_LOCAL_FIRST) && (defined(DEEPEP_LL_COMBINE_EARLY_REDUCE) || \
     defined(DEEPEP_LL_COMBINE_PROGRESS_PROBE) || defined(DEEPEP_LL_COMBINE_SIMT_FLAG))
 #error "local-first cannot combine with early-reduce, progress-probe or simt-flag"
@@ -149,6 +152,20 @@ COMBINE_DEDUP_EP_COMBINE_CONSTEXPR uint32_t EpCombineM5WorkBytes(uint32_t h, uin
     // The intermediate B floats are reduced with full 256B vector loads.
     return EpCombineAlign(k * ((h * 2U + 479U) / 480U) * 4U, 256U);
 }
+COMBINE_DEDUP_EP_COMBINE_CONSTEXPR uint32_t EpCombineM5SnapshotBytes(uint32_t h, uint32_t k, uint32_t owned)
+{
+    const uint32_t flags = EpCombineM5FlagBytes(h, k);
+#ifdef DEEPEP_LL_COMBINE_BATCH_FINAL
+    const uint32_t routes = EpCombineAlign(owned * k * 4U, 256U);
+    return flags > routes ? flags : routes;
+#else
+    return flags;
+#endif
+}
+COMBINE_DEDUP_EP_COMBINE_CONSTEXPR uint32_t EpCombineM5CompareBytes(uint32_t k, uint32_t owned)
+{
+    return EpCombineAlign((owned * k + 7U) / 8U, 32U);
+}
 // Offsets are relative to the scratch after resident control buffers. Only
 // phase metadata changes meaning; output slots stay live across M4 -> M5.
 struct EpCombineM45WorkspaceLayout {
@@ -174,11 +191,19 @@ COMBINE_DEDUP_EP_COMBINE_CONSTEXPR EpCombineM45WorkspaceLayout EpCombineM45Layou
         ((owned * 4U + 31U) / 32U * 32U) +  // local slot masks
 #endif
         2U * ((owned * 4U + 31U) / 32U * 32U) + (owned * k * 4U + 31U) / 32U * 32U +
-                           EpCombineM5FlagBytes(h, k) + EpCombineM5WorkBytes(h, k) + 32U;
+                           EpCombineM5SnapshotBytes(h, k, uint32_t(owned)) + EpCombineM5WorkBytes(h, k) + 32U
+#ifdef DEEPEP_LL_COMBINE_BATCH_FINAL
+                           + 2U * EpCombineM5CompareBytes(k, uint32_t(owned))
+#endif
+                           ;
     const uint64_t phase = partial > final ? partial : final;
     const uint32_t compute = EpCombineAlign(h * 4U, 256U);
     // Incremental reduction retains two independent token sums, plus cast/product.
-    const uint32_t computeBuffers = EpCombineIncrementalReduce(bs) && owned > 1U ? 4U : 3U;
+    const uint32_t computeBuffers = EpCombineIncrementalReduce(bs) && owned > 1U
+#ifdef DEEPEP_LL_COMBINE_BATCH_FINAL
+                                   && owned <= 2U
+#endif
+                                   ? 4U : 3U;
     const uint64_t fixed = kEpServerDedupCombineResidentUbBytes + computeBuffers * compute + phase;
     const uint32_t input = ((h * 2U + 479U) / 480U) * 480U;
     const uint32_t output = ((h * 2U + 479U) / 480U) * 512U;

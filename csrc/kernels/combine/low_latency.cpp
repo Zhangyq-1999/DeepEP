@@ -78,6 +78,9 @@ extern "C" DEEPEP_EXPORT uint32_t deepep_ll_combine_return_options()
 #ifdef DEEPEP_LL_COMBINE_LOCAL_FIRST
     options |= 128U;
 #endif
+#ifdef DEEPEP_LL_COMBINE_BATCH_FINAL
+    options |= 256U;
+#endif
     return options;
 }
 

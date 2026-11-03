@@ -5,7 +5,7 @@ mpi=${MPI_HOME:-/usr/local/mpich-3.2.1}
 cann=${ASCEND_HOME_PATH:-}
 shmem=${SHMEM_ROOT:-}
 build="$root/build/ll-cpp-base"
-local_first=OFF poll_nop=0 ranks_per_host=16 issue=OFF probe=OFF simt_meta=OFF simt_flag=OFF prefetch_return=OFF
+batch_final=OFF local_first=OFF poll_nop=0 ranks_per_host=16 issue=OFF probe=OFF simt_meta=OFF simt_flag=OFF prefetch_return=OFF
 small=OFF early=OFF profile=OFF remote_first=OFF defer_return=OFF recv=0 jobs=4 variant=auto ops_source=${OPS_SOURCE_DIR:-}
 while (($#)); do
     case "$1" in
@@ -15,8 +15,9 @@ while (($#)); do
             echo '         [--ops-source DIR] optional pinned ops-transformer checkout'
             echo '         [--remote-first ON|OFF] [--defer-return ON|OFF] [--early-issue ON|OFF] [--progress-probe ON|OFF] [--ranks-per-host 4|16]'
             echo '         [--local-first ON|OFF] [--poll-nop 0..65535] [--simt-meta ON|OFF] [--simt-flag ON|OFF] [--prefetch-return ON|OFF]'
+            echo '         [--batch-final ON|OFF] requires --local-first ON; vector batch checks and pipelined reduction'
             exit 0;;
-        --shmem-root|--cann-home|--mpi-home|--build-dir|--variant|--profile|--small-batch|--early-reduce|--recv-cores|--jobs|--remote-first|--defer-return|--ops-source|--early-issue|--progress-probe|--ranks-per-host|--simt-meta|--simt-flag|--prefetch-return|--poll-nop|--local-first)
+        --shmem-root|--cann-home|--mpi-home|--build-dir|--variant|--profile|--small-batch|--early-reduce|--recv-cores|--jobs|--remote-first|--defer-return|--ops-source|--early-issue|--progress-probe|--ranks-per-host|--simt-meta|--simt-flag|--prefetch-return|--poll-nop|--local-first|--batch-final)
             (($# >= 2)) || { echo "Missing value: $1" >&2; exit 2; }
             key=$1 value=$2; shift 2
             case "$key" in
@@ -26,6 +27,7 @@ while (($#)); do
                 --remote-first) remote_first=$value;; --defer-return) defer_return=$value;;
                 --ops-source) ops_source=$value;; --early-issue) issue=$value;; --progress-probe) probe=$value;; --ranks-per-host) ranks_per_host=$value;;
                 --local-first) local_first=$value;; --poll-nop) poll_nop=$value;; --simt-meta) simt_meta=$value;; --simt-flag) simt_flag=$value;; --prefetch-return) prefetch_return=$value;;
+                --batch-final) batch_final=$value;;
             esac;;
         *) echo "Unknown build option: $1" >&2; exit 2;;
     esac
@@ -36,6 +38,10 @@ done
 [[ $ranks_per_host =~ ^(4|16)$ && $issue =~ ^(ON|OFF)$ && $probe =~ ^(ON|OFF)$ ]] || { echo 'Invalid topology or experiment option' >&2; exit 2; }
 [[ $simt_meta =~ ^(ON|OFF)$ && $simt_flag =~ ^(ON|OFF)$ && $prefetch_return =~ ^(ON|OFF)$ ]] || { echo 'SIMT/prefetch options must be ON or OFF' >&2; exit 2; }
 [[ $local_first =~ ^(ON|OFF)$ ]] || { echo 'local-first must be ON or OFF' >&2; exit 2; }
+[[ $batch_final =~ ^(ON|OFF)$ ]] || { echo 'batch-final must be ON or OFF' >&2; exit 2; }
+if [[ $batch_final == ON && $local_first != ON ]]; then
+    echo 'batch-final requires --local-first ON' >&2; exit 2
+fi
 if [[ $local_first == ON && ( $early == ON || $probe == ON || $simt_flag == ON ) ]]; then
     echo 'local-first cannot combine with early-reduce, progress-probe or simt-flag' >&2; exit 2
 fi
@@ -79,6 +85,7 @@ cmake -S "$root/tests/ll_cpp_bench" -B "$build" -G 'Unix Makefiles' \
     "-DDEEPEP_LL_COMBINE_SIMT_META=$simt_meta" "-DDEEPEP_LL_COMBINE_SIMT_FLAG=$simt_flag" \
     "-DDEEPEP_LL_COMBINE_PREFETCH_RETURN=$prefetch_return" \
     "-DDEEPEP_LL_COMBINE_LOCAL_FIRST=$local_first" \
+    "-DDEEPEP_LL_COMBINE_BATCH_FINAL=$batch_final" \
     "-DDEEPEP_LL_COMBINE_POLL_NOP=$poll_nop"
 cmake --build "$build" --parallel "$jobs"
 printf 'Built runner: %s/ll_combine_bench\nVariant module: %s/libll_bench_variant.so\n' "$build" "$build"

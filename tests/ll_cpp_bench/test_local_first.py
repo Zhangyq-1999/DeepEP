@@ -9,7 +9,8 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.mark.parametrize("profile", [False, True])
-def test_local_first_reduction(tmp_path, profile):
+@pytest.mark.parametrize("batch", [False, True])
+def test_local_first_reduction(tmp_path, profile, batch):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
     if not zig:
         pytest.skip("Set DEEPEP_TEST_ZIG for CPU execution")
@@ -17,6 +18,8 @@ def test_local_first_reduction(tmp_path, profile):
     (tmp_path / "shmem.h").write_text(
         "#pragma once\ninline void dcci_cachelines(uint8_t*, uint64_t) {}\n")
     flags = ["-DDEEPEP_LL_COMBINE_LOCAL_FIRST=1"]
+    if batch:
+        flags.append("-DDEEPEP_LL_COMBINE_BATCH_FINAL=1")
     if profile:
         flags.append("-DDEEPEP_LL_COMBINE_PROFILE=1")
     subprocess.run([zig, "c++", "-std=c++17", "-O1", "-ffp-contract=off", "-UNDEBUG", *flags,
@@ -36,6 +39,9 @@ def test_local_first_build_isolation():
         (["--local-first", "ON", "--progress-probe", "ON"], "cannot combine"),
         (["--local-first", "ON", "--simt-flag", "ON"], "cannot combine"),
         (["--local-first", "bad"], "must be ON or OFF"),
+        (["--batch-final", "bad"], "must be ON or OFF"),
+        (["--batch-final", "ON"], "requires --local-first"),
+        (["--variant", "base", "--local-first", "ON", "--batch-final", "ON"], "Use --variant opt"),
     ]:
         result = subprocess.run(command + args, capture_output=True, text=True, timeout=10)
         assert result.returncode != 0 and message in result.stderr

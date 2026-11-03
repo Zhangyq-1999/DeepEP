@@ -83,6 +83,9 @@ public:
         profile_.Set(CombineProfile::OutputLanes, outputLanes_);
         if (count_ == 0U) return 0U;
         for (uint32_t lane = 0; lane < inputLanes_; ++lane) SetFlag<HardEvent::V_MTE2>(lane);
+#ifdef DEEPEP_LL_COMBINE_BATCH_FINAL
+        return ProcessBatched();
+#endif
 #if defined(DEEPEP_LL_COMBINE_EARLY_REDUCE) || defined(DEEPEP_LL_COMBINE_LOCAL_FIRST)
         if (incrementalReduce_) return ProcessEarly();
 #endif
@@ -143,15 +146,22 @@ private:
         packetBytes_ = blocks_ * 512U;
         // The shared Host budget uses the largest contiguous Recv-core segment.
         const uint32_t owned = EpCombineM5TokenCount(bs, participants);
+#ifdef DEEPEP_LL_COMBINE_BATCH_FINAL
+        batchIncremental_ = owned <= 2U;
+#endif
         masks_ = Allocate<uint32_t>(EpCombineAlign(owned * 4U, 32U));
         pending_ = Allocate<uint32_t>(EpCombineAlign(owned * 4U, 32U));
 #ifdef DEEPEP_LL_COMBINE_LOCAL_FIRST
         localMasks_ = Allocate<uint32_t>(EpCombineAlign(owned * 4U, 32U));
 #endif
         weights_ = Allocate<float>(EpCombineAlign(owned * k * 4U, 32U));
-        flags_ = Allocate<float>(EpCombineM5FlagBytes(h, k));
+        flags_ = Allocate<float>(EpCombineM5SnapshotBytes(h, k, owned));
         work_ = Allocate<float>(EpCombineM5WorkBytes(h, k));
         probeSum_ = Allocate<float>(32U);
+#ifdef DEEPEP_LL_COMBINE_BATCH_FINAL
+        routeMask_ = Allocate<uint8_t>(EpCombineM5CompareBytes(k, owned));
+        routeUpper_ = Allocate<uint8_t>(EpCombineM5CompareBytes(k, owned));
+#endif
         cast_ = scratch.ReinterpretCast<float>();
         product_ = scratch[computeBytes].ReinterpretCast<float>();
         sum_ = scratch[2U * computeBytes].ReinterpretCast<float>();
@@ -177,6 +187,29 @@ private:
         if (sourceIndices_ == nullptr || expertsPerRank_ == 0U || ranksPerHost_ == 0U) { Trap(); return; }
         GlobalTensor<int32_t> routes;
         routes.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t*>(sourceIndices_));
+#ifdef DEEPEP_LL_COMBINE_BATCH_FINAL
+        // One route DMA and vector range test for all tokens owned by this core.
+        // flags_ is idle until polling; its shared Host budget covers this view.
+        const uint64_t routeStart = profile_.DetailClock();
+        auto ids = flags_.ReinterpretCast<int32_t>();
+        DataCopyPad(ids, routes[uint64_t(begin_) * k_], {1U, count_ * k_ * 4U, 0U, 0U, 0U}, {false, 0U, 0U, 0});
+        Sync<HardEvent::MTE2_V>();
+        const int32_t lower = int32_t(rank_ / ranksPerHost_ * ranksPerHost_ * expertsPerRank_);
+        Compares(routeMask_, ids, lower, CMPMODE::GE, count_ * k_);
+        Compares(routeUpper_, ids, lower + int32_t(ranksPerHost_ * expertsPerRank_), CMPMODE::LT, count_ * k_);
+        PipeBarrier<PIPE_V>();
+        And(routeMask_.ReinterpretCast<uint16_t>(), routeMask_.ReinterpretCast<uint16_t>(),
+            routeUpper_.ReinterpretCast<uint16_t>(), EpCombineM5CompareBytes(k_, count_) / 2U);
+        Sync<HardEvent::V_S>();
+        auto bits = routeMask_.ReinterpretCast<uint32_t>();
+        for (uint32_t p = 0U; p < count_; ++p) {
+            const uint32_t bit = p * k_, shift = bit % 32U;
+            uint32_t local = bits.GetValue(bit / 32U) >> shift;
+            if (shift && shift + k_ > 32U) local |= bits.GetValue(bit / 32U + 1U) << (32U - shift);
+            localMasks_.SetValue(p, local & (k_ == 32U ? 0xffffffffU : (1U << k_) - 1U));
+        }
+        profile_.Elapsed(CombineProfile::BatchRouteTicks, routeStart);
+#else
         // Reuse probe scratch before its first Vector use. Each active return
         // keeps its original top-k slot, including a remote FIRST_HOP partial.
         auto ids = work_.ReinterpretCast<int32_t>();
@@ -193,6 +226,7 @@ private:
             // Finish Scalar reads before reusing this route snapshot for DMA.
             Sync<HardEvent::S_MTE2>();
         }
+#endif
 #endif
         profile_.Elapsed(CombineProfile::FinalMetaLoadTicks, metaStart);
         const uint64_t pendingStart = profile_.DetailClock();
@@ -269,15 +303,16 @@ private:
 #endif
         return ready;
     }
-    __aicore__ inline void InspectMissing(uint32_t token, bool ready, uint32_t firstSlot, uint32_t slots)
+    __aicore__ inline void InspectMissing(uint32_t token, bool ready, uint32_t firstSlot, uint32_t slots,
+                                         uint32_t selectedMask = 0U, bool tokenReady = true)
     {
 #ifdef DEEPEP_LL_COMBINE_PROFILE
         if (!profile_.DetailClock()) return;
         const uint64_t begin = profile_.DetailClock();
         uint32_t mask = 0U, first = 0xffffffffU, count = 0U;
         if (!ready) {
-            const uint32_t active = enableDedup_ ? masks_.GetValue(token - begin_)
-                : (k_ == 32U ? 0xffffffffU : (1U << k_) - 1U);
+            const uint32_t active = selectedMask ? selectedMask : (enableDedup_ ? masks_.GetValue(token - begin_)
+                : (k_ == 32U ? 0xffffffffU : (1U << k_) - 1U));
             for (uint32_t s = 0; s < slots; ++s) {
                 if (!((active >> (firstSlot + s)) & 1U)) continue;
                 for (uint32_t b = 0; b < blocks_; ++b) {
@@ -291,7 +326,7 @@ private:
         }
         // A successful single-slot probe does not confirm the whole token.
         // A failed sum with no missing active flag is also not a ready event.
-        if (mask || (ready && firstSlot == 0U && slots == k_))
+        if (mask || (ready && tokenReady && firstSlot == 0U && slots == k_))
             profile_.Missing(token, mask, first, count, blocks_);
         profile_.Elapsed(CombineProfile::TailInspectTicks, begin);
 #endif
@@ -554,7 +589,167 @@ private:
         profile_.Mark(CombineProfile::FinalLastStore);
     }
 
+#ifdef DEEPEP_LL_COMBINE_BATCH_FINAL
+    __aicore__ inline uint32_t ActiveMask(uint32_t token)
+    {
+        return enableDedup_ ? masks_.GetValue(token - begin_)
+            : (k_ == 32U ? 0xffffffffU : (1U << k_) - 1U);
+    }
+    __aicore__ inline bool ProbeMask(uint32_t token, uint32_t mask, bool local)
+    {
+        if (mask == 0U) return true;
+        const uint64_t start = profile_.DetailClock();
+        auto src = resultFlags_[uint64_t(token) * k_ * packetBytes_ / 4U + 120U];
+        DataCopy(flags_, src, {uint16_t(k_ * blocks_), 1U, 15U, 0U});
+        Sync<HardEvent::MTE2_V>();
+        profile_.Elapsed(CombineProfile::ProbeLoadTicks, start);
+        const uint64_t checkStart = profile_.DetailClock();
+        // Mask whole slots on Vector, then check every selected 512B block in
+        // one reduction and one V_S handoff. Never scalar-read block flags here.
+        uint64_t laneMask[2] = {1U, 0U};
+        for (uint32_t slot = 0U; slot < k_; ++slot)
+            if (((mask >> slot) & 1U) == 0U)
+                Duplicate<float>(flags_[slot * blocks_ * 8U], 0.0f, laneMask, uint8_t(blocks_), 1U, 1U);
+        PipeBarrier<PIPE_V>();
+        ReduceSum(probeSum_, flags_, work_, 1U, k_ * blocks_, 1U);
+        Sync<HardEvent::V_S>();
+        const bool ready = probeSum_.GetValue(0U) == float(GetBitCount<1>(uint64_t(mask)) * blocks_);
+        profile_.Elapsed(CombineProfile::ProbeCheckTicks, checkStart);
+        profile_.Probe(ready, token, 0xffffffffU, k_ * blocks_, start, false);
+        InspectMissing(token, ready, 0U, k_, mask, false);
+        profile_.Add(CombineProfile::BatchGroupCalls);
+        profile_.Elapsed(local ? CombineProfile::LocalProbeTicks : CombineProfile::RemoteProbeTicks, start);
+        profile_.Add(local ? CombineProfile::LocalProbeCalls : CombineProfile::RemoteProbeCalls);
+        if (!ready) profile_.Add(local ? CombineProfile::LocalProbeMisses : CombineProfile::RemoteProbeMisses);
+        return ready;
+    }
+    template<class T>
+    __aicore__ inline void ConsumeMask(uint32_t token, uint32_t mask, uint32_t accumulator,
+                                      uint32_t& members, bool local)
+    {
+        if (!mask) return;
+        auto sum = sum_[accumulator * computeElements_];
+        uint32_t next = 0U, loaded = 0U, consumed = 0U;
+        for (; next < k_ && loaded < inputLanes_; ++next)
+            if ((mask >> next) & 1U) Load(token, next, loaded++);
+        for (uint32_t k = 0U; k < k_; ++k) {
+            if (((mask >> k) & 1U) == 0U) continue;
+            const uint32_t lane = (inputSequence_ + consumed) % inputLanes_;
+            const uint64_t inputStart = profile_.DetailClock();
+            WaitFlag<HardEvent::MTE2_V>(lane);
+            profile_.Elapsed(CombineProfile::FinalInputWaitTicks, inputStart);
+            const uint64_t castStart = profile_.DetailClock();
+            Cast(cast_, inputs_[finalLayout_.inputOffsets[lane] / 2U].template ReinterpretCast<T>(),
+                 RoundMode::CAST_NONE, h_);
+            SetFlag<HardEvent::V_MTE2>(lane);
+            profile_.Elapsed(CombineProfile::FinalComputeIssueTicks, castStart);
+            // Refill the released input lane before issuing this contribution's
+            // multiply/add, as in the baseline multi-lane reduction pipeline.
+            while (next < k_ && ((mask >> next) & 1U) == 0U) ++next;
+            if (next < k_) Load(token, next++, loaded++);
+            const uint64_t computeStart = profile_.DetailClock();
+            PipeBarrier<PIPE_V>();
+            const float weight = weights_.GetValue((token - begin_) * k_ + k);
+            if (members == 0U) Muls(sum, cast_, weight, h_);
+            else {
+                Muls(product_, cast_, weight, h_);
+                PipeBarrier<PIPE_V>();
+                Add(sum, sum, product_, h_);
+            }
+            PipeBarrier<PIPE_V>();
+            profile_.Elapsed(CombineProfile::FinalComputeIssueTicks, computeStart);
+            profile_.Elapsed(local ? CombineProfile::LocalReduceTicks : CombineProfile::RemoteReduceTicks, computeStart);
+            profile_.Add(local ? CombineProfile::LocalContributions : CombineProfile::RemoteContributions);
+            ++members;
+            ++consumed;
+        }
+        inputSequence_ += consumed;
+    }
+    template<class T>
+    __aicore__ inline void StoreBatched(uint32_t token, uint32_t accumulator, uint32_t completed)
+    {
+        const uint32_t lane = finalLayout_.outputSlots[completed % outputLanes_];
+        const uint64_t waitStart = profile_.DetailClock();
+        WaitFlag<HardEvent::MTE3_V>(lane);
+        profile_.Elapsed(CombineProfile::FinalOutputWaitTicks, waitStart);
+        const uint64_t packStart = profile_.DetailClock();
+        auto output = outputs_[lane * outputBytes_ / 2U];
+        Cast(output.template ReinterpretCast<T>(), sum_[accumulator * computeElements_], RoundMode::CAST_RINT, h_);
+        SetFlag<HardEvent::V_MTE3>(lane);
+        WaitFlag<HardEvent::V_MTE3>(lane);
+        profile_.Elapsed(CombineProfile::FinalOutputPackTicks, packStart);
+        const uint64_t storeStart = profile_.DetailClock();
+        DataCopyPad(output_[uint64_t(token) * h_], output, {1U, h_ * 2U, 0U, 0U, 0U});
+        SetFlag<HardEvent::MTE3_V>(lane);
+        profile_.Elapsed(CombineProfile::FinalStoreIssueTicks, storeStart);
+        profile_.Mark(CombineProfile::FinalLastStore);
+    }
+    template<class T>
+    __aicore__ inline void BatchLoop()
+    {
+        if (!batchIncremental_) {
+            // Many owned tokens: scan all pending tokens, without parking two
+            // accumulators on missing remote returns and blocking ready tokens.
+            uint32_t remaining = count_, scan = 0U, completed = 0U;
+            while (remaining) {
+                const uint32_t task = pending_.GetValue(scan), token = task & 0xffffU;
+                if (!Probe(token, task >> 16U)) {
+                    PauseAfterFlagMiss(profile_);
+                    if (++scan == remaining) scan = 0U;
+                    continue;
+                }
+                const uint32_t mask = ActiveMask(token), local = mask & localMasks_.GetValue(token - begin_);
+                uint32_t members = 0U;
+                ConsumeMask<T>(token, local, 0U, members, true);
+                ConsumeMask<T>(token, mask & ~local, 0U, members, false);
+                StoreBatched<T>(token, 0U, completed++);
+                profile_.Add(CombineProfile::BatchWholeTokens);
+                pending_.SetValue(scan, pending_.GetValue(--remaining));
+                if (scan == remaining) scan = 0U;
+            }
+        } else {
+            // At most two tokens: retain their FP32 sums while RDMA returns
+            // arrive. Each local/remote class has a single vector readiness test.
+            uint32_t phase[2] = {}, members[2] = {}, completed = 0U;
+            while (completed < count_) {
+                for (uint32_t i = 0U; i < count_; ++i) {
+                    if (phase[i] == 2U) continue;
+                    const uint32_t token = begin_ + i, mask = ActiveMask(token);
+                    const uint32_t local = mask & localMasks_.GetValue(i);
+                    const bool localPhase = phase[i] == 0U;
+                    const uint32_t selected = localPhase ? local : mask & ~local;
+                    if (!ProbeMask(token, selected, localPhase)) {
+                        PauseAfterFlagMiss(profile_);
+                        continue;
+                    }
+                    // Mark arrival before reduction; computation is not flag wait.
+                    if (!localPhase) {
+                        profile_.MarkOnce(CombineProfile::FinalFirstReady);
+                        profile_.Mark(CombineProfile::FinalLastReady);
+                        profile_.Missing(token, 0U, 0xffffffffU, 0U, blocks_);
+                    }
+                    ConsumeMask<T>(token, selected, i, members[i], localPhase);
+                    if (++phase[i] == 2U) StoreBatched<T>(token, i, completed++);
+                }
+            }
+        }
+    }
+    __aicore__ inline uint32_t ProcessBatched()
+    {
+        if (dtype_ == DispatchDedup::DISPATCH_DEDUP_DATA_TYPE_FP16) BatchLoop<half>();
+        else BatchLoop<bfloat16_t>();
+        ClearFlags();
+        const uint64_t drainStart = profile_.DetailClock();
+        for (uint32_t lane = 0; lane < inputLanes_; ++lane) WaitFlag<HardEvent::V_MTE2>(lane);
+        profile_.Elapsed(CombineProfile::FinalInputDrainTicks, drainStart);
+        return retiredOutputs_;
+    }
+#endif
     CombineProfile::View profile_;
+#ifdef DEEPEP_LL_COMBINE_BATCH_FINAL
+    bool batchIncremental_ = false;
+    LocalTensor<uint8_t> routeMask_, routeUpper_;
+#endif
 #ifdef DEEPEP_LL_COMBINE_LOCAL_FIRST
     GM_ADDR sourceIndices_ = nullptr;
     uint32_t rank_ = 0U, expertsPerRank_ = 0U, ranksPerHost_ = 0U;

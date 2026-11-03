@@ -180,6 +180,9 @@ enum Word : uint32_t {
     RemoteProbeMisses,
     RemoteReduceTicks,
     RemoteContributions,
+    BatchGroupCalls,
+    BatchWholeTokens,
+    BatchRouteTicks,
     Rank,
     Core,
     Tokens,
@@ -191,8 +194,8 @@ enum Word : uint32_t {
     Count
 };
 constexpr uint32_t kWords = 192U;
-constexpr uint64_t kSchema = 7U;
+constexpr uint64_t kSchema = 8U;
 constexpr Word kDetailBegin = InitPrefixTicks;
-constexpr Word kDetailEnd = RemoteContributions;
+constexpr Word kDetailEnd = BatchRouteTicks;
 static_assert(Count <= kWords && StageRows <= 64U, "profile record bounds");
 }  // namespace CombineProfile

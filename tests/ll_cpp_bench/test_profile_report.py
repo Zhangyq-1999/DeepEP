@@ -246,12 +246,15 @@ def test_tail_link_and_recurrence_use_actual_slot_map(reporter, tmp_path):
     assert "first/last/ready=30/60/70" in out
 
 
-def test_local_first_fields_in_reports(reporter, tmp_path):
+@pytest.mark.parametrize("batch_mode", [None, "group", "whole"])
+def test_local_first_fields_in_reports(reporter, tmp_path, batch_mode):
     directory = tmp_path / "0-local-first-profile"
     directory.mkdir()
     fixture_data(directory)
     config = dict(ep=2, tokens=32, hidden=3584, topk=8, experts=384, dtype="bf16", route="random",
                   seed=0, warmup=10, samples=3, entry_sync="host", profile_build=1, local_first=1)
+    if batch_mode:
+        config["batch_final"] = 1
     write_csv(directory / "summary.csv", list(config), [config])
     write_csv(directory / "rank-max.csv", ["tokens", "iteration", "rank", "us"],
               [dict(tokens=32, iteration=i, rank=r, us=v) for i, r, v in [(0, 0, 10), (1, 1, 30), (2, 0, 13)]])
@@ -262,16 +265,32 @@ def test_local_first_fields_in_reports(reporter, tmp_path):
             reader = csv.DictReader(f)
             fields, rows = reader.fieldnames, list(reader)
         for row in rows:
-            row["schema"] = 7
+            row["schema"] = 8 if batch_mode else 7
             if row["role"] == "receive":
                 row.update(local_contributions=2, remote_contributions=3, local_probe_calls=5, remote_probe_calls=8,
                            local_probe_misses=3, remote_probe_misses=5, local_probe_ticks=10, remote_probe_ticks=30,
                            local_reduce_ticks=7, remote_reduce_ticks=9)
+                if batch_mode:
+                    row.update(batch_group_calls=13 if batch_mode == "group" else 0,
+                               batch_whole_tokens=16 if batch_mode == "whole" else 0, batch_route_ticks=12)
+                if batch_mode == "whole":
+                    row.update(local_probe_calls=0, remote_probe_calls=0, local_probe_misses=0,
+                               remote_probe_misses=0, local_probe_ticks=0, remote_probe_ticks=0)
         write_csv(path, fields, rows)
         records.extend(rows)
     write_csv(directory / "diagnostic.csv", fields, records)
     full = subprocess.check_output([str(reporter), str(directory)], text=True)
-    assert "final_local: contributions=2 probes/misses=5/3 probe_ticks=10 reduce_ticks=7" in full
-    assert "final_remote: contributions=3 probes/misses=8/5 probe_ticks=30 reduce_ticks=9" in full
     compact = subprocess.check_output([str(reporter), "--suite", str(tmp_path)], text=True)
-    assert "final_by_host local/remote contributions=2/3 probe_ticks=10/30 misses=3/5 calls=5/8 reduce_ticks=7/9" in compact
+    if batch_mode == "whole":
+        assert "final_local: contributions=2 probes/misses=0/0 probe_ticks=0 reduce_ticks=7" in full
+        assert "final_remote: contributions=3 probes/misses=0/0 probe_ticks=0 reduce_ticks=9" in full
+        assert "final_by_host local/remote contributions=2/3 probe_ticks=0/0 misses=0/0 calls=0/0 reduce_ticks=7/9" in compact
+    else:
+        assert "final_local: contributions=2 probes/misses=5/3 probe_ticks=10 reduce_ticks=7" in full
+        assert "final_remote: contributions=3 probes/misses=8/5 probe_ticks=30 reduce_ticks=9" in full
+        assert "final_by_host local/remote contributions=2/3 probe_ticks=10/30 misses=3/5 calls=5/8 reduce_ticks=7/9" in compact
+    if batch_mode:
+        assert "batch_final=1" in full
+        group, whole = (13, 0) if batch_mode == "group" else (0, 16)
+        assert f"batch: group_checks={group} whole_tokens={whole} route_ticks=12" in full
+        assert f"batch group_checks/whole_tokens/route_ticks={group}/{whole}/12" in compact

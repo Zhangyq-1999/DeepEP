@@ -100,7 +100,10 @@ void compact_record(const Record& r)
               << " meta_batches=" << r[MetadataBatches] << " tail_inspect=" << r[TailInspectTicks]
               << " pause=calls/ticks:" << r[PollPauseCalls] << '/' << r[PollPauseTicks]
               << " packets/defer/gap=" << r[RdmaPackets] << '/' << r[RdmaDeferredPackets] << '/' << r[RdmaDeferGapTicks] << '\n';
-    if (r.receive && r[LocalProbeCalls] + r[RemoteProbeCalls]) {
+    if (r.receive && r[BatchGroupCalls] + r[BatchWholeTokens])
+        std::cout << "  batch group_checks/whole_tokens/route_ticks=" << r[BatchGroupCalls] << '/'
+                  << r[BatchWholeTokens] << '/' << r[BatchRouteTicks] << '\n';
+    if (r.receive && r[LocalContributions] + r[RemoteContributions]) {
         std::cout << "  final_by_host local/remote contributions=" << r[LocalContributions] << '/' << r[RemoteContributions]
                   << " probe_ticks=" << r[LocalProbeTicks] << '/' << r[RemoteProbeTicks]
                   << " misses=" << r[LocalProbeMisses] << '/' << r[RemoteProbeMisses]
