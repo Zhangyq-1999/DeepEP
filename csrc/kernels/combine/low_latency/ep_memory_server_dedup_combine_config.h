@@ -19,9 +19,20 @@ constexpr uint32_t kEpServerDedupCombineMaxTokenNum = 10000U;
 // M1/M2 keep all resources distinct: three row arrays, compare mask, one
 // 512-row table-2 cache, per-level detector/work/result/zero buffers and flags.
 constexpr uint32_t kEpServerDedupCombineUbBytes = 190U * 1024U;
-// CANN 9.1 __NPU_ARCH__=3510 exposes 248 KiB after the 8 KiB system
-// reservation. Recv M4/M5 share 240 KiB; M1/M3 retain their budget.
+// Mixed SIMD/SIMT kernels reserve at least 32 KiB for SIMT DCache, in
+// addition to the 8 KiB system reservation. TPipe uses the dynamic UB arena:
+// launch it explicitly and use the same limit for M4/M5 lane placement.
+#if defined(DEEPEP_LL_COMBINE_SIMT_META) || defined(DEEPEP_LL_COMBINE_SIMT_FLAG)
+constexpr uint32_t kEpServerDedupCombineRecvUbBytes = 216U * 1024U;
+constexpr uint32_t kEpServerDedupCombineLaunchUbBytes = kEpServerDedupCombineRecvUbBytes;
+static_assert(kEpServerDedupCombineUbBytes <= kEpServerDedupCombineLaunchUbBytes, "send arena fits launch");
+static_assert(kEpServerDedupCombineLaunchUbBytes + (8U + 32U) * 1024U <= 256U * 1024U,
+              "reserve system UB and SIMT DCache");
+#else
+// Pure SIMD keeps its original launch and 240 KiB receive arena.
 constexpr uint32_t kEpServerDedupCombineRecvUbBytes = 240U * 1024U;
+constexpr uint32_t kEpServerDedupCombineLaunchUbBytes = 0U;
+#endif
 constexpr uint32_t kEpServerDedupCombineM4MaxInputLanes = 3U;
 constexpr uint32_t kEpServerDedupCombineM5MaxInputLanes = 7U;  // MTE2_V(7) belongs to probe
 constexpr uint32_t kEpServerDedupCombineM5MaxOutputLanes = 2U;

@@ -66,15 +66,17 @@ bash tests/ll_cpp_bench/run_all.sh 第一台打印的RUN_ID
 
 每次设备 stream 等待默认最多 10 秒，可用 `run_all.sh --kernel-timeout 20` 改为 20 秒。超时或设备错误会打印 rank、设备、BS、轮次和阶段，然后调用 `MPI_Abort` 终止本次作业，不继续采样或写入 PASS。该限制使用 [CANN 的带超时 stream 同步接口](https://www.hiascend.com/document/detail/en/CANNCommunityEdition/910/API/runtimeapi/aclcppdevg_03_0077.html)，不修改原版 kernel。SHMEM 初始化仍使用独立的 `--timeout` 参数，MPI 作业总时限由 `--job-timeout` 控制。
 
-`prepare` 用 SIMT 筛选 FIRST_HOP 回传任务，保持原来的行顺序和核归属。每次最多加载 8 条已分配给本核的元数据，合并 MTE2 完成等待。上一包暂存到 GM 时，先发起下一包的输入读取，再等待暂存并提交 Put。组内末包仍立即提交，缓冲容量和 CQ 回收规则不变。
+`prepare` 用 SIMT 筛选 FIRST_HOP 回传任务，保持原来的行顺序和核归属。每次最多加载 8 条已分配给本核的元数据，合并 MTE2 完成等待。上一包暂存到 GM 时，先发起下一包的输入读取，再等待暂存并提交 Put。组内末包仍立即提交，GM 暂存容量和 CQ 回收规则不变。
 
 `flag` 保留 MTE2 对 GM 的整批读取。SIMT 只检查已搬入 UB 的快照，每个线程处理一个 slot，检查该 slot 的全部块尾标记。所有有效 slot 到齐后，算子才按原有 FP32 顺序归约。这项实验没有减少需要确认的数据块，也没有把逐块检查改成只检查最后一块。
+
+启用任一 SIMT 开关后，启动参数显式申请 216 KiB 动态 UB，接收核也按这个容量计算缓冲布局。SIMT 需要至少 32 KiB Data Cache，加上系统预留的 8 KiB，不能继续使用纯 SIMD 的 240 KiB 接收缓冲。发送核保留 190 KiB；base 和未启用 SIMT 的版本保持原配置。容量约束见 [CANN 的 UB 划分说明](https://asc.gitcode.com/api/SIMT-API/SIMD_SIMT_hybrid_programming_intro/programming_model.html)。这会影响部分形状的并行缓冲数量，性能对比需包含这一变化。
 
 需要拆开 `prepare` 时，可选择 `meta`、`meta-profile`，只测试任务筛选和元数据加载；或选择 `prefetch`、`prefetch-profile`，只测试输入读取与回传提交的重叠。
 
 `SIMT_FLAG` 与旧的 `PROGRESS_PROBE`、`EARLY_REDUCE` 使用不同检查流程，不能同时启用；`PREFETCH_RETURN` 与旧的 `EARLY_ISSUE` 选择不同的提交时机，也不能同时启用。脚本会拒绝这些组合，避免某个开关被另一项实验覆盖。
 
-这些实验尚未完成 CANN 编译和设备性能验证。Host 检查不能证明时延收益；先看干净版 Event，再用打点版解释差异。入口仍只执行 Host MPI Barrier，不调用设备 RDMA 同步接口。
+SIMT 实验首次 EP8 设备测试在 `prepare` 的 BS32 精度检查阶段报 VEC 访问 UB 越界。当前版本修正了启动参数和接收缓冲容量，Host 检查覆盖这些边界，修复后仍需重编并在设备上复测。Host 检查不能证明时延收益；先看干净版 Event，再用打点版解释差异。入口仍只执行 Host MPI Barrier，不调用设备 RDMA 同步接口。
 
 参数仍可覆盖，例如：
 

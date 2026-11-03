@@ -117,7 +117,7 @@ extern "C" DEEPEP_EXPORT void combine_server_dedup_kernel_do(void* stream,
                                                              const deepep::EpServerDedupCombineKernelArgs* args)
 {
     const auto& a = *args;
-    combine_server_dedup_kernel<<<a.coreNum, DEEPEP_KERNEL_LAUNCH_UB(0), stream>>>(
+    combine_server_dedup_kernel<<<a.coreNum, DEEPEP_KERNEL_LAUNCH_UB(CombineDedup::kEpServerDedupCombineLaunchUbBytes), stream>>>(
         a.commArgs, a.expertOut, a.destinationIndex, a.sendCounts, a.expertScales, a.tokenType, a.relayReadIndex,
         a.sourceMask, a.yOut, a.tilingData, a.stageTimer, a.timerMode);
 }
