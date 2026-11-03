@@ -12,6 +12,7 @@
 #include <iostream>
 #include <memory>
 #include "variant_api.hpp"
+#include "entry_sync.hpp"
 #include "runtime/ll_core_config.hpp"
 #include "host/mem/shmem_host_heap.h"
 #include "host/data_plane/shmem_host_rma.h"
@@ -323,6 +324,7 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
               << " profile_build=" << profileBuild << " profile_level=" << o.profile << std::endl;
     if (o.rank == 0 && profileBuild)
         std::cout << "Diagnostic build: use --profile OFF when rebuilding for clean Event performance." << std::endl;
+    llbench::EntrySync entry(session);
     for (auto bs : o.tokens) {
         session.report("input allocation and routing", bs);
         Case c(o, bs, cores, comm.p);
@@ -336,9 +338,10 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
         combine_clear_result_flags_kernel_do(stream, local_base(session), blocks, cores);
         session.synchronize("clear result flags", bs);
         session.report("Combine correctness", bs);
-        peers.barrier();
+        entry.before();
         auto launch = [&]() { combine_server_dedup_kernel_do(stream, &c.combine); };
         launch();
+        entry.submitted();
         session.synchronize("Combine correctness", bs);
         auto error = c.precision(o.dtype == "bf16");
         peers.barrier();
@@ -353,8 +356,9 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
         }
         for (uint32_t i = 0; i < o.warmup; ++i) {
             if (i % 10U == 0) session.report("warmup", bs, i, o.warmup);
-            peers.barrier();
+            entry.before();
             launch();
+            entry.submitted();
             session.synchronize("warmup", bs, i);
         }
         std::vector<float> times;
@@ -362,17 +366,18 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
         Event start, end;
         for (uint32_t i = 0; i < o.iterations; ++i) {
             if (i % 10U == 0) session.report("sampling", bs, i, o.iterations);
-            // Every peer completed its previous kernel before this barrier
-            // releases either rotating bank. Host coordination is untimed.
+            // Synchronization precedes start Event. Each rank completed its
+            // previous kernel before entering; Notify gates the complete queue.
             if (o.profile) {
                 // Clear outside the Event so missing core exports cannot reuse an older sample.
                 std::fill(profileData.begin(), profileData.end(), 0U);
                 profileBuffer->upload(profileData.data(), profileBuffer->bytes);
             }
-            peers.barrier();
+            entry.before();
             start.record(stream);
             launch();
             end.record(stream);
+            entry.submitted();
             session.synchronize("sampling", bs, i);
             float ms = 0;
             check(aclrtEventElapsedTime(&ms, start.value, end.value), "event elapsed");

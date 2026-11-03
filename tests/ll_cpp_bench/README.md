@@ -72,7 +72,7 @@ bash tests/ll_cpp_bench/run_all.sh 第一台打印的RUN_ID
 
 每次启动都会生成新的结果目录，保留此前数据。两台机器分别显示本机进度，包含 SHMEM 初始化、输入准备、Dispatch、Combine 精度检查、预热、采样和资源释放。预热和采样每 10 轮更新一次完成数。状态没有变化时，脚本每 15 秒打印当前阶段和等待时间；这表示尚未收到新进度，不能单凭它判断卡死。
 
-进度文件保存在 `node-N/progress.txt`，由本机第一个 rank 更新。更新发生在 Event 计时之外、下一次 MPI Barrier 之前，不向设备 kernel 增加打点。第一台在测试结束后按 BS 打印对比表和诊断数据；分析时通常提供第一台的 `summary.txt` 即可。
+进度文件保存在 `node-N/progress.txt`，由本机第一个 rank 更新。更新发生在 Event 计时之外、下一轮入口同步之前，不向 Combine kernel 增加打点。第一台在测试结束后按 BS 打印对比表和诊断数据；分析时通常提供第一台的 `summary.txt` 即可。
 
 每次设备 stream 等待默认最多 10 秒，可用 `run_all.sh --kernel-timeout 20` 改为 20 秒。超时或设备错误会打印 rank、设备、BS、轮次和阶段，然后调用 `MPI_Abort` 终止本次作业，不继续采样或写入 PASS。该限制使用 [CANN 的带超时 stream 同步接口](https://www.hiascend.com/document/detail/en/CANNCommunityEdition/910/API/runtimeapi/aclcppdevg_03_0077.html)，不修改原版 kernel。SHMEM 初始化仍使用独立的 `--timeout` 参数，MPI 作业总时限由 `--job-timeout` 控制。
 
@@ -80,7 +80,7 @@ bash tests/ll_cpp_bench/run_all.sh 第一台打印的RUN_ID
 
 [Nop](https://asc.gitcode.com/api/SIMD-API/basic_api/scalar_compute/Nop.html) 的参数表示延迟周期数。当前 Ascend C 实现还在 Nop 前后执行 `PIPE_ALL`，调用可能等待本核在途搬运，实际间隔还包含读取和检查开销。打点中的 `poll_pause_calls`、`poll_pause_ticks` 记录暂停次数和完整调用耗时；原有 probe 时间不包含暂停。暂停可能减少重复读取，也可能推迟就绪发现，应以干净版 Event 判断收益。
 
-自定义间隔可在 `build.sh --variant opt` 后设置 `--poll-nop 400`，`0` 表示不暂停；`build_all.sh` 的 `poll800` 固定使用 800。base 拒绝该开关，保留独立的冻结 kernel。入口仍只执行 Host MPI Barrier，不调用设备 RDMA 同步接口。
+自定义间隔可在 `build.sh --variant opt` 后设置 `--poll-nop 400`，`0` 表示不暂停；`build_all.sh` 的 `poll800` 固定使用 800。base 拒绝该开关，保留独立的冻结 kernel。入口同步由测试程序单独下发，见下文“采样与结果”。
 
 旧的 `meta`、`flag` 等 SIMT 实验继续保留供复查。启用它们时，启动参数和接收缓冲均限制为 216 KiB，为系统及 SIMT Data Cache 留出空间，详见 [CANN 的 UB 划分说明](https://asc.gitcode.com/api/SIMT-API/SIMD_SIMT_hybrid_programming_intro/programming_model.html)。默认版本均不启用 SIMT，保持纯 SIMD 的缓冲配置。
 
@@ -328,15 +328,21 @@ bash tests/ll_cpp_bench/run_all.sh \
 
 每种 BS 先运行一次 Dispatch，生成真实的路由表和专家输入。用例把 Dispatch 输出当作恒等专家的输出，使用均匀权重执行 Combine，并检查结果是否回到原输入。正式采样前后各检查一次精度，检查按 BF16 或 FP16 的舍入误差设置容差。
 
-所有 EP 默认使用 Host MPI 同步。每轮先确认上一轮的设备任务完成，再通过 `MPI_Barrier` 等待所有 rank。Barrier 返回后，各 rank 提交以下任务：
+所有 EP 默认使用独立的设备同步 kernel。每轮先确认上一轮设备任务完成，再向测试 stream 排入以下任务：
 
 ```text
-起始 Event → Combine → 结束 Event
+等待本卡 Notify → 设备同步 kernel → 起始 Event → Combine → 结束 Event
 ```
 
-预热也在每轮提交前执行 MPI Barrier。用例不再插入设备门控或 SHMEM 入口同步 kernel，原版 Combine 内部保持不变。MPI 同步位于 Event 计时之外，只协调 Host 提交；各卡仍可能存在设备启动偏差，分析时需要结合 CANN profiling 确认。
+Host 完成整组提交后，在控制 stream 发布 Notify，允许测试 stream 开始执行。这样可以避免设备同步已经结束、Host 却尚未提交 Combine 的空档。Event 只包围 Combine，入口同步和 Notify 等待均在计时外。预热和精度检查也使用相同的入口同步。
 
-`--entry-sync host` 是默认配置，`auto` 同样选择 Host MPI 同步。旧的 `device` 选项已移除。
+同步 kernel 按对端选择通路：MTE 可达时优先通过映射地址发布标记，其余对端使用 RoCE。这样，同一 1825 上的两张卡不会互发 RDMA 同步请求。各 rank 分轮交换到达标记，确认全部 rank 已进入本轮后退出同步 kernel。它只使用一个 AIV，不修改 Combine 源码。
+
+这一通路选择参考了 [fix_1825_sync_error 的修复](https://gitcode.com/vallenChen/shmem/commit/8aacd2bb072bca900d75ea79ed185da43ac3be7c)。参考分支将 `sync_vec` 限定在 UB/HCCS 可达域；本用例额外处理跨机 RoCE 通知，保留原有 SHMEM 依赖版本。更新代码后，两台机器重新运行 `build_all.sh` 即可，无需切换或重编 SHMEM。
+
+`--entry-sync device` 为默认配置，`auto` 同样选择设备同步。使用 `--entry-sync host` 可恢复每轮提交前的 `MPI_Barrier`，用于对照之前的数据。设备同步模式仍用 MPI 完成初始化、参数核对、版本切换和结果汇总，预热与采样前不再调用 MPI Barrier。
+
+入口同步已通过 Host 模拟检查，CANN 编译和设备运行仍需验证。它减少 Host 下发差异引入的等待，但各卡的 kernel 调度仍可能有偏差；实际变化需要同配置对照，不能直接当作 Combine 内核优化收益。
 
 `rank-N.csv` 保存每个 rank 的全部采样。rank 0 的 `rank-max.csv` 保留每轮最慢 rank 的编号和 Event 耗时；`summary.csv` 按同轮最慢 rank 汇总，再计算均值、最小值、最大值、p50 和 p99，单位为 μs。汇总也记录实际核数、原版标识、启动同步方式、实验开关和打点状态。双机输出分布在各自主机，完整采样需要保留两边目录。
 
@@ -369,7 +375,7 @@ bash tests/ll_cpp_bench/launch.sh \
     --ep 4 --variants ref-profile,opt-profile --run-id ep4-profile-ab -- \
     --devices 6,7,14,15 --tokens 32,48,64,72 \
     --hidden 3584 --topk 8 --experts 384 --capacity 256 --dtype bf16 \
-    --route random --seed 0 --entry-sync host \
+    --route random --seed 0 --entry-sync device \
     --warmup 10 --profile-iters 10 --profile 2
 ```
 
@@ -461,7 +467,7 @@ bash tests/ll_cpp_bench/summarize.sh results/ll-cpp/RUN_ID/3-ref-profile
 | `--seed` | 0 | 路由随机种子 |
 | `--warmup` / `--iters` | 10 / 100 | 预热轮数与无打点运行的采样轮数 |
 | `--profile-iters` | 10 | 启用打点时的采样轮数 |
-| `--entry-sync` | host | 每轮提交前执行 Host MPI Barrier；auto 同样选择 host |
+| `--entry-sync` | device | 每轮 Combine 前下发独立设备同步；host 使用 MPI Barrier；auto 选择 device |
 | `--profile` | 0 | 0 关闭，1 记录阶段边界，2 增加热循环打点；干净构建自动保持关闭 |
 | `--timeout` | 300 | SHMEM 初始化和控制操作超时，单位为秒 |
 | `--kernel-timeout` | 10 | 单次设备 stream 等待上限，单位为秒；包含准备 Dispatch 和采样 Combine |
