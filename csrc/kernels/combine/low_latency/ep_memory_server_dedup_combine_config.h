@@ -8,6 +8,11 @@
 #include "../../dispatch/low_latency/common/ep_memory_server_dedup_protocol.h"
 #include "../../dispatch/low_latency/common/ll_core_config.h"
 
+#if defined(DEEPEP_LL_COMBINE_LOCAL_FIRST) && (defined(DEEPEP_LL_COMBINE_EARLY_REDUCE) || \
+    defined(DEEPEP_LL_COMBINE_PROGRESS_PROBE) || defined(DEEPEP_LL_COMBINE_SIMT_FLAG))
+#error "local-first cannot combine with early-reduce, progress-probe or simt-flag"
+#endif
+
 namespace CombineDedup {
 // Resident capacity is shared across ranks, independently of active core count.
 constexpr uint32_t kCombineNotifyRows = DispatchDedup::kLlMaxRecvCoreNum;
@@ -72,7 +77,9 @@ COMBINE_DEDUP_EP_COMBINE_CONSTEXPR uint32_t EpCombineRecvCoreCount(uint32_t core
 }
 COMBINE_DEDUP_EP_COMBINE_CONSTEXPR bool EpCombineEarlyReduce(uint32_t bs)
 {
-#ifdef DEEPEP_LL_COMBINE_EARLY_REDUCE
+#ifdef DEEPEP_LL_COMBINE_LOCAL_FIRST
+    return true;
+#elif defined(DEEPEP_LL_COMBINE_EARLY_REDUCE)
     return bs <= 72U;
 #else
     return false;
@@ -155,11 +162,15 @@ COMBINE_DEDUP_EP_COMBINE_CONSTEXPR EpCombineM45WorkspaceLayout EpCombineM45Layou
     const uint64_t partial = EpCombineM4TaskBytes(tokens, recvCores) + 384U +
                              EpCombineAlign(kEpServerDedupCombineM4TableRows * k * 8U, 32U) +
                              ((h * 2U + 479U) / 480U) * 480U;
-    const uint64_t final = 2U * ((owned * 4U + 31U) / 32U * 32U) + (owned * k * 4U + 31U) / 32U * 32U +
+    const uint64_t final =
+#ifdef DEEPEP_LL_COMBINE_LOCAL_FIRST
+        ((owned * 4U + 31U) / 32U * 32U) +  // local slot masks
+#endif
+        2U * ((owned * 4U + 31U) / 32U * 32U) + (owned * k * 4U + 31U) / 32U * 32U +
                            EpCombineM5FlagBytes(h, k) + EpCombineM5WorkBytes(h, k) + 32U;
     const uint64_t phase = partial > final ? partial : final;
     const uint32_t compute = EpCombineAlign(h * 4U, 256U);
-    // Early reduction retains two independent token sums, plus cast/product.
+    // Incremental reduction retains two independent token sums, plus cast/product.
     const uint32_t computeBuffers = EpCombineEarlyReduce(bs) && owned > 1U ? 4U : 3U;
     const uint64_t fixed = kEpServerDedupCombineResidentUbBytes + computeBuffers * compute + phase;
     const uint32_t input = ((h * 2U + 479U) / 480U) * 480U;

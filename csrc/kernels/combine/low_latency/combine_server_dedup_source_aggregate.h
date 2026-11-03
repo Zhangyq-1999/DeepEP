@@ -22,6 +22,16 @@ using namespace AscendC;
 // are handed off after MTE2/Vector completion, while M4 MTE3 may still run.
 class ServerDedupSourceAggregate {
 public:
+#ifdef DEEPEP_LL_COMBINE_LOCAL_FIRST
+    __aicore__ inline void SetSourceRoutes(GM_ADDR indices, uint32_t rank, uint32_t expertsPerRank,
+                                          uint32_t ranksPerHost)
+    {
+        sourceIndices_ = indices;
+        rank_ = rank;
+        expertsPerRank_ = expertsPerRank;
+        ranksPerHost_ = ranksPerHost;
+    }
+#endif
     __aicore__ inline void SetProfile(CombineProfile::DeviceProfile* profile) { profile_.Bind(profile); }
     __aicore__ inline void Init(LocalTensor<uint8_t> scratch, GM_ADDR result, GM_ADDR masks, GM_ADDR weights,
                                 GM_ADDR yOut, uint32_t bs, uint32_t h, uint32_t k, uint8_t dtype, uint32_t participant,
@@ -73,7 +83,7 @@ public:
         profile_.Set(CombineProfile::OutputLanes, outputLanes_);
         if (count_ == 0U) return 0U;
         for (uint32_t lane = 0; lane < inputLanes_; ++lane) SetFlag<HardEvent::V_MTE2>(lane);
-#ifdef DEEPEP_LL_COMBINE_EARLY_REDUCE
+#if defined(DEEPEP_LL_COMBINE_EARLY_REDUCE) || defined(DEEPEP_LL_COMBINE_LOCAL_FIRST)
         if (earlyReduce_) return ProcessEarly();
 #endif
         uint32_t remaining = count_, scan = 0U, completed = 0U;
@@ -122,7 +132,7 @@ private:
         h_ = h;
         k_ = k;
         dtype_ = dtype;
-#ifdef DEEPEP_LL_COMBINE_EARLY_REDUCE
+#if defined(DEEPEP_LL_COMBINE_EARLY_REDUCE) || defined(DEEPEP_LL_COMBINE_LOCAL_FIRST)
         earlyReduce_ = EpCombineEarlyReduce(bs);
         computeElements_ = computeBytes / sizeof(float);
 #endif
@@ -135,6 +145,9 @@ private:
         const uint32_t owned = EpCombineM5TokenCount(bs, participants);
         masks_ = Allocate<uint32_t>(EpCombineAlign(owned * 4U, 32U));
         pending_ = Allocate<uint32_t>(EpCombineAlign(owned * 4U, 32U));
+#ifdef DEEPEP_LL_COMBINE_LOCAL_FIRST
+        localMasks_ = Allocate<uint32_t>(EpCombineAlign(owned * 4U, 32U));
+#endif
         weights_ = Allocate<float>(EpCombineAlign(owned * k * 4U, 32U));
         flags_ = Allocate<float>(EpCombineM5FlagBytes(h, k));
         work_ = Allocate<float>(EpCombineM5WorkBytes(h, k));
@@ -160,6 +173,27 @@ private:
         if (enableDedup_) DataCopyPad(masks_, maskGm[begin_], {1U, count_ * 4U, 0U, 0U, 0U}, {false, 0U, 0U, 0U});
         DataCopyPad(weights_, weightGm[uint64_t(begin_) * k], {1U, count_ * k * 4U, 0U, 0U, 0U}, {false, 0U, 0U, 0.0f});
         Sync<HardEvent::MTE2_S>();
+#ifdef DEEPEP_LL_COMBINE_LOCAL_FIRST
+        if (sourceIndices_ == nullptr || expertsPerRank_ == 0U || ranksPerHost_ == 0U) { Trap(); return; }
+        GlobalTensor<int32_t> routes;
+        routes.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t*>(sourceIndices_));
+        // Reuse probe scratch before its first Vector use. Each active return
+        // keeps its original top-k slot, including a remote FIRST_HOP partial.
+        auto ids = work_.ReinterpretCast<int32_t>();
+        for (uint32_t p = 0U; p < count_; ++p) {
+            DataCopyPad(ids, routes[uint64_t(begin_ + p) * k_], {1U, k_ * 4U, 0U, 0U, 0U}, {false, 0U, 0U, 0});
+            Sync<HardEvent::MTE2_S>();
+            uint32_t local = 0U;
+            for (uint32_t slot = 0U; slot < k_; ++slot) {
+                const int32_t expert = ids.GetValue(slot);
+                if (expert >= 0 && uint32_t(expert) / expertsPerRank_ / ranksPerHost_ == rank_ / ranksPerHost_)
+                    local |= 1U << slot;
+            }
+            localMasks_.SetValue(p, local);
+            // Finish Scalar reads before reusing this route snapshot for DMA.
+            Sync<HardEvent::S_MTE2>();
+        }
+#endif
         profile_.Elapsed(CombineProfile::FinalMetaLoadTicks, metaStart);
         const uint64_t pendingStart = profile_.DetailClock();
         for (uint32_t p = 0; p < count_; ++p) {
@@ -337,7 +371,7 @@ private:
         SetFlag<HardEvent::MTE2_V>(lane);
         profile_.Elapsed(CombineProfile::FinalInputIssueTicks, issueStart);
     }
-#ifdef DEEPEP_LL_COMBINE_EARLY_REDUCE
+#if defined(DEEPEP_LL_COMBINE_EARLY_REDUCE) || defined(DEEPEP_LL_COMBINE_LOCAL_FIRST)
     struct TokenProgress {
         uint32_t token = 0U, nextK = 0U, members = 0U;
     };
@@ -365,16 +399,35 @@ private:
         profile_.Add(CombineProfile::EarlyAdvanceCalls);
         const uint32_t mask = enableDedup_ ? masks_.GetValue(state.token - begin_) : 0U;
         auto sum = sum_[accumulator * computeElements_];
-        for (; state.nextK < k_; ++state.nextK) {
-            const uint32_t k = state.nextK;
+#ifdef DEEPEP_LL_COMBINE_LOCAL_FIRST
+        const uint32_t scanEnd = 2U * k_;
+        const uint32_t localMask = localMasks_.GetValue(state.token - begin_);
+#else
+        const uint32_t scanEnd = k_;
+#endif
+        for (; state.nextK < scanEnd; ++state.nextK) {
+            const uint32_t k = state.nextK < k_ ? state.nextK : state.nextK - k_;
             if (enableDedup_ && ((mask >> k) & 1U) == 0U) continue;
-            if (!ProbeContribution(state.token, k)) {
+#ifdef DEEPEP_LL_COMBINE_LOCAL_FIRST
+            const bool local = ((localMask >> k) & 1U) != 0U;
+            if (local != (state.nextK < k_)) continue;
+            const uint64_t probeStart = profile_.DetailClock();
+#endif
+            const bool ready = ProbeContribution(state.token, k);
+#ifdef DEEPEP_LL_COMBINE_LOCAL_FIRST
+            profile_.Elapsed(local ? CombineProfile::LocalProbeTicks : CombineProfile::RemoteProbeTicks, probeStart);
+            profile_.Add(local ? CombineProfile::LocalProbeCalls : CombineProfile::RemoteProbeCalls);
+            if (!ready) profile_.Add(local ? CombineProfile::LocalProbeMisses : CombineProfile::RemoteProbeMisses);
+#endif
+            if (!ready) {
                 PauseAfterFlagMiss(profile_);
                 profile_.Add(CombineProfile::EarlyStalls);
                 return false;
             }
-            // Keep the original ascending-slot FP32 accumulation order. Load
-            // retains M4 output retirement and input-lane ownership checks.
+            // Ascending slots within each class; local-first scans local then
+            // remote, while early-reduce keeps the original single pass. The
+            // FP32 sum stays in UB across waits; only the final output is cast.
+            // Load retains M4 output retirement and input-lane ownership checks.
             Load(state.token, k, 0U);
             const uint32_t lane = inputSequence_ % inputLanes_;
             const uint64_t inputStart = profile_.DetailClock();
@@ -395,6 +448,10 @@ private:
             }
             PipeBarrier<PIPE_V>();
             profile_.Elapsed(CombineProfile::FinalComputeIssueTicks, computeStart);
+#ifdef DEEPEP_LL_COMBINE_LOCAL_FIRST
+            profile_.Elapsed(local ? CombineProfile::LocalReduceTicks : CombineProfile::RemoteReduceTicks, computeStart);
+            profile_.Add(local ? CombineProfile::LocalContributions : CombineProfile::RemoteContributions);
+#endif
             ++state.members;
             ++inputSequence_;
         }
@@ -498,6 +555,11 @@ private:
     }
 
     CombineProfile::View profile_;
+#ifdef DEEPEP_LL_COMBINE_LOCAL_FIRST
+    GM_ADDR sourceIndices_ = nullptr;
+    uint32_t rank_ = 0U, expertsPerRank_ = 0U, ranksPerHost_ = 0U;
+    LocalTensor<uint32_t> localMasks_;
+#endif
     bool enableDedup_ = false;
     bool uncached_ = false;
     LocalTensor<uint8_t> scratch_;
@@ -511,7 +573,7 @@ private:
     EpCombineM5WorkspaceLayout finalLayout_{};
     uint32_t inputLanes_ = 0U, outputLanes_ = 0U, inputSequence_ = 0U;
     uint32_t sharedOutputLanes_ = 0U, retiredOutputs_ = 0U;
-#ifdef DEEPEP_LL_COMBINE_EARLY_REDUCE
+#if defined(DEEPEP_LL_COMBINE_EARLY_REDUCE) || defined(DEEPEP_LL_COMBINE_LOCAL_FIRST)
     bool earlyReduce_ = false;
     uint32_t computeElements_ = 0U;
 #endif

@@ -244,3 +244,34 @@ def test_tail_link_and_recurrence_use_actual_slot_map(reporter, tmp_path):
     assert "same-slot=r1/t7/k2:3" in out
     assert "k2:r0/c31/RDMA/PARTIAL" in out and "first=k2/b14" in out
     assert "first/last/ready=30/60/70" in out
+
+
+def test_local_first_fields_in_reports(reporter, tmp_path):
+    directory = tmp_path / "0-local-first-profile"
+    directory.mkdir()
+    fixture_data(directory)
+    config = dict(ep=2, tokens=32, hidden=3584, topk=8, experts=384, dtype="bf16", route="random",
+                  seed=0, warmup=10, samples=3, entry_sync="host", profile_build=1, local_first=1)
+    write_csv(directory / "summary.csv", list(config), [config])
+    write_csv(directory / "rank-max.csv", ["tokens", "iteration", "rank", "us"],
+              [dict(tokens=32, iteration=i, rank=r, us=v) for i, r, v in [(0, 0, 10), (1, 1, 30), (2, 0, 13)]])
+    records = []
+    for rank in (0, 1):
+        path = directory / f"rank-{rank}-profile.csv"
+        with path.open() as f:
+            reader = csv.DictReader(f)
+            fields, rows = reader.fieldnames, list(reader)
+        for row in rows:
+            row["schema"] = 7
+            if row["role"] == "receive":
+                row.update(local_contributions=2, remote_contributions=3, local_probe_calls=5, remote_probe_calls=8,
+                           local_probe_misses=3, remote_probe_misses=5, local_probe_ticks=10, remote_probe_ticks=30,
+                           local_reduce_ticks=7, remote_reduce_ticks=9)
+        write_csv(path, fields, rows)
+        records.extend(rows)
+    write_csv(directory / "diagnostic.csv", fields, records)
+    full = subprocess.check_output([str(reporter), str(directory)], text=True)
+    assert "final_local: contributions=2 probes/misses=5/3 probe_ticks=10 reduce_ticks=7" in full
+    assert "final_remote: contributions=3 probes/misses=8/5 probe_ticks=30 reduce_ticks=9" in full
+    compact = subprocess.check_output([str(reporter), "--suite", str(tmp_path)], text=True)
+    assert "final_by_host local/remote contributions=2/3 probe_ticks=10/30 misses=3/5 calls=5/8 reduce_ticks=7/9" in compact

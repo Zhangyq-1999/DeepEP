@@ -170,6 +170,16 @@ enum Word : uint32_t {
     TailObservations,
     PollPauseTicks,
     PollPauseCalls,
+    LocalProbeTicks,
+    LocalProbeCalls,
+    LocalProbeMisses,
+    LocalReduceTicks,
+    LocalContributions,
+    RemoteProbeTicks,
+    RemoteProbeCalls,
+    RemoteProbeMisses,
+    RemoteReduceTicks,
+    RemoteContributions,
     Rank,
     Core,
     Tokens,
@@ -181,8 +191,8 @@ enum Word : uint32_t {
     Count
 };
 constexpr uint32_t kWords = 192U;
-constexpr uint64_t kSchema = 6U;
+constexpr uint64_t kSchema = 7U;
 constexpr Word kDetailBegin = InitPrefixTicks;
-constexpr Word kDetailEnd = PollPauseCalls;
+constexpr Word kDetailEnd = RemoteContributions;
 static_assert(Count <= kWords && StageRows <= 64U, "profile record bounds");
 }  // namespace CombineProfile

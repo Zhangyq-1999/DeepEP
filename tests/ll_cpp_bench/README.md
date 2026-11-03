@@ -27,14 +27,20 @@ git pull --ff-only origin perf/ll-combine-small-batch
 bash tests/ll_cpp_bench/build_all.sh
 ```
 
-`build_all.sh` 默认更新以下 2 个构建目录，每个构建使用 4 个编译任务。Dispatch 用于准备 Combine 的输入和路由，同一配置只编译一次，各版本复用它的目标文件。每个版本再单独编译 Combine，并链接成独立的 kernel 库。
+`build_all.sh` 默认更新以下 4 个构建目录，每个构建使用 4 个编译任务。Dispatch 用于准备 Combine 的输入和路由，同一配置只编译一次，各版本复用它的目标文件。每个版本再单独编译 Combine，并链接成独立的 kernel 库。
 
 已有目录继续用于增量编译。只修改 Combine 时，Dispatch 无需重编；修改 Dispatch 或它依赖的头文件时，构建系统自动重编受影响的部分。共享目标文件保存在 `build/ll-cpp-dispatch`，不同编译器、SDK 和每机 rank 数使用独立目录。更新代码后，两台机器都执行一次 `build_all.sh`，更新所有选中的版本。
 
 | 构建名 | 启用的实验 | 打点 |
 | --- | --- | --- |
 | `base` | 冻结的上游原版 | 关闭 |
+| `local-first` | 源卡先归约本机贡献，再归约跨机贡献 | 关闭 |
 | `ref-profile` | 实验开关全部关闭，用作打点对照 | 开启 |
+| `local-first-profile` | 与 `local-first` 相同 | 开启 |
+
+`local-first` 复用 Dispatch 的原始专家路由，按每机参与 rank 数判断贡献来源。源卡先按 slot 顺序累加本机贡献，再按 slot 顺序累加跨机贡献。每份贡献的所有块尾 flag 到齐后，算子才读取数据。中间和保留在 UB 的 FP32 缓冲中，最终写回时再转为 BF16 或 FP16。
+
+每个接收核最多交替推进两个 token。一个 token 尚未就绪时，算子会尝试另一个 token，已完成的累加不会重复执行。这个实验改变了浮点累加顺序，结果可能与 base 有舍入差异。跨机 FIRST_HOP 的部分归约和回传流程保持原样。CPU 测试已覆盖固定顺序、不同权重、延迟到达和缓冲复用；设备精度与性能仍需实测。
 
 EP8 实测中，轮询暂停没有带来稳定收益，默认构建和运行均关闭 Nop。筛选、flag 检查和归约继续使用 Vector。此前的 SIMT 筛选实验也保持关闭。
 
@@ -52,7 +58,7 @@ bash tests/ll_cpp_bench/run_all.sh
 bash tests/ll_cpp_bench/run_all.sh 第一台打印的RUN_ID
 ```
 
-默认先跑干净版 `base`，再跑打点版 `ref-profile`。每版测试 **BS32、48、64、72、256**，形状为 EP8、H3584、TopK 8、384 个专家、BF16、随机路由、seed 0、capacity 256。每个 BS 预热 10 轮；干净版采样 100 轮，打点版采样 10 轮。`--iters` 和 `--profile-iters` 分别控制两类采样次数。
+默认先跑干净版 `base` 和 `local-first`，再跑对应的两个打点版。每版测试 **BS32、48、64、72、256**，形状为 EP8、H3584、TopK 8、384 个专家、BF16、随机路由、seed 0、capacity 256。每个 BS 预热 10 轮；干净版采样 100 轮，打点版采样 10 轮。`--iters` 和 `--profile-iters` 分别控制两类采样次数。
 
 干净版在编译时关闭打点，使用独立 kernel。打点版在预热前启用所选打点级别，让预热和采样执行相同路径。一次运行可同时包含两类版本，`--profile 2` 只作用于支持打点的构建。
 
@@ -108,7 +114,7 @@ bash tests/ll_cpp_bench/run_all.sh --hosts HOST0,HOST1 --node-rank 0 \
 
 跨机适配使用 `aclshmemx_roce_qp_put_nbi`，在原有批次边界调用 `aclshmemx_roce_qp_quiet`。这与原仓 Hcomm 的批量提交、CQE 策略有差异，结果用于比较 SHMEM 后端上的算法方案。单机也运行这套分层算法，只执行机内阶段。原来的 `base` 继续使用冻结的 DeepEP kernel。
 
-两边分别按需编译，默认 `build_all.sh` 构建前文的 2 个版本：
+两边分别按需编译，默认 `build_all.sh` 构建前文的 4 个版本：
 
 ```bash
 bash tests/ll_cpp_bench/build_all.sh --ranks-per-host 16 --variants base,ops-shmem-base
@@ -167,6 +173,7 @@ base 和 opt 使用各自的 Combine kernel 源码。base 从上游提交 `5b38b
 | 编译参数 | 默认值 | 作用 |
 | --- | --- | --- |
 | `--ranks-per-host 4` | 16 | 编译每机参与 rank 数；便捷脚本 `build_all.sh` 默认传 4 |
+| `--local-first ON` | OFF | 源卡先累加本机贡献，再累加跨机贡献；各组内部按 slot 顺序累加 |
 | `--poll-nop 800` | 0 | 每次 flag 检查失败后暂停；base 不启用 |
 | `--simt-meta ON` | OFF | SIMT 稳定筛选 FIRST_HOP 任务，合并最多 8 条元数据的完成等待 |
 | `--simt-flag ON` | OFF | SIMT 检查 UB 快照中的所有有效块尾标记 |
@@ -180,6 +187,8 @@ base 和 opt 使用各自的 Combine kernel 源码。base 从上游提交 `5b38b
 | `--defer-return ON` | OFF | 多输出槽时，用下一包准备掩盖上一包 GM 暂存；组内末包立即提交 |
 
 回传顺序与暂存流水的分析和新增打点见 [回传优化对照](RETURN_PIPELINE_AB.md)。这两个开关默认关闭，先独立对比，再测试组合。
+
+`--local-first` 适用于当前全部 BS，与 `--early-reduce`、`--progress-probe` 和 `--simt-flag` 互斥。前者改变最终归约的顺序，`--remote-first` 则改变发送侧的回传顺序，两者含义不同。
 
 显式接收核数支持 8～36，并须小于实际 AIV 总核数。其余核负责 DIRECT 回传，TERMINAL 暂存仍由全部核参与。各 rank 使用相同的核数配置；最后 8 核负责组内就绪通知。
 
@@ -343,6 +352,8 @@ bash tests/ll_cpp_bench/launch.sh \
 
 打点回显中的 `E` 行给出逐轮最慢 rank 与耗时。`D` 行标识全局中位轮和最慢轮，`S`、`R` 分别展示该轮最慢 rank 的发送核与接收核。`P` 行列出 Put 返回相对本核入口较晚的候选核。各核时间保留 tick；分析跨核、跨 rank 的绝对先后需要时钟校准。
 
+`local-first-profile` 的 `final_by_host` 行分别列出本机与跨机的贡献数、轮询耗时、未就绪次数、检查次数和归约指令下发耗时。轮询耗时包含读取、检查和诊断开销，不能直接当作网络传输时间。`local_reduce_ticks`、`remote_reduce_ticks` 属于 `final_compute_issue_ticks` 的细分项，不重复相加。
+
 新增的 `T` 行按真实 Dispatch 路由表定位最后一次未齐备的 token、slot 和块编号。`producers` 给出生产方 rank、核、回传类型，以及最后一跳使用的 `RDMA`、`UBMEM` 或本卡搬运。`PARTIAL` 表示生产方还要先汇集机内贡献；最后一跳走 RDMA，不代表根因已经定位到 RDMA 链路。
 
 `Tfreq` 统计每轮最慢 rank 上接收尾核的缺失记录。`producer>receiver/path/type:n` 表示这组收发关系在多少轮出现；同一轮只计一次。`same-slot` 给出重复次数最多的接收 rank、token 和 slot。它统计的是被观察到的最后一次未齐备快照，不是所有包的时延分布。
@@ -383,7 +394,7 @@ bash tests/ll_cpp_bench/summarize.sh results/ll-cpp/RUN_ID/4-ref-profile
 
 `notify_local_ready` 分开本卡准备等待与通知发布。`direct_first_submit`、`direct_last_submit` 和 `direct_pending_end` 标出首个提交调用、末个调用返回以及待提交任务处理完的位置。`final_first_ready`、`final_last_ready` 标出成功检查数据就绪的位置；`final_last_store` 标出末个输出写回的下发位置。最终输出完成仍以原有 drain 和 kernel 收尾为准。
 
-时间字段使用设备原始 tick。`entry_tick` 保留原始值，其余阶段时间戳均减去本核入口时间；缺失阶段留空。`profile_init_end` 标出诊断记录初始化完成的位置，可据此分开打点初始化与业务初始化。一级打点中的二级字段留空。schema 6 每核使用 1536 B 记录，在原有收尾完成后集中写出。
+时间字段使用设备原始 tick。`entry_tick` 保留原始值，其余阶段时间戳均减去本核入口时间；缺失阶段留空。`profile_init_end` 标出诊断记录初始化完成的位置，可据此分开打点初始化与业务初始化。一级打点中的二级字段留空。schema 7 每核使用 1536 B 记录，在原有收尾完成后集中写出。
 
 分析时先选择同一配置、同一轮的记录，比较发送核与接收核的任务量和阶段耗时。常见判断如下：
 

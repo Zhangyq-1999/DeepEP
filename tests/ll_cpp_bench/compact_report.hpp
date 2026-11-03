@@ -100,6 +100,13 @@ void compact_record(const Record& r)
               << " meta_batches=" << r[MetadataBatches] << " tail_inspect=" << r[TailInspectTicks]
               << " pause=calls/ticks:" << r[PollPauseCalls] << '/' << r[PollPauseTicks]
               << " packets/defer/gap=" << r[RdmaPackets] << '/' << r[RdmaDeferredPackets] << '/' << r[RdmaDeferGapTicks] << '\n';
+    if (r.receive && r[LocalProbeCalls] + r[RemoteProbeCalls]) {
+        std::cout << "  final_by_host local/remote contributions=" << r[LocalContributions] << '/' << r[RemoteContributions]
+                  << " probe_ticks=" << r[LocalProbeTicks] << '/' << r[RemoteProbeTicks]
+                  << " misses=" << r[LocalProbeMisses] << '/' << r[RemoteProbeMisses]
+                  << " calls=" << r[LocalProbeCalls] << '/' << r[RemoteProbeCalls]
+                  << " reduce_ticks=" << r[LocalReduceTicks] << '/' << r[RemoteReduceTicks] << '\n';
+    }
 }
 void suite_report(const fs::path& root)
 {

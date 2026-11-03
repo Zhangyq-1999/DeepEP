@@ -282,6 +282,7 @@ def build_configuration(environment=None):
     result["ll_combine_small_batch"] = enabled("DEEPEP_LL_COMBINE_SMALL_BATCH", env)
     result["ll_combine_recv_cores"] = combine_recv_cores(env)
     result["ll_combine_early_reduce"] = enabled("DEEPEP_LL_COMBINE_EARLY_REDUCE", env)
+    result["ll_combine_local_first"] = enabled("DEEPEP_LL_COMBINE_LOCAL_FIRST", env)
     result["ll_count_histogram"] = enabled("DEEPEP_LL_COUNT_HISTOGRAM", env)
     result["ll_metadata_cores"] = metadata_cores(env)
     if result["ll_stage_timer"] and result["ll_reference_profile"]:
@@ -499,6 +500,7 @@ class CMakeBuild(build_ext):
             f"-DDEEPEP_LL_COMBINE_SMALL_BATCH={'ON' if configuration.get('ll_combine_small_batch', False) else 'OFF'}",
             f"-DDEEPEP_LL_COMBINE_RECV_CORES={configuration.get('ll_combine_recv_cores', 0)}",
             f"-DDEEPEP_LL_COMBINE_EARLY_REDUCE={'ON' if configuration.get('ll_combine_early_reduce', False) else 'OFF'}",
+            f"-DDEEPEP_LL_COMBINE_LOCAL_FIRST={'ON' if configuration.get('ll_combine_local_first', False) else 'OFF'}",
             f"-DDEEPEP_LL_COUNT_HISTOGRAM={'ON' if configuration.get('ll_count_histogram', False) else 'OFF'}",
             f"-DDEEPEP_LL_METADATA_CORES={configuration.get('ll_metadata_cores', 4)}",
             f"-DPython_EXECUTABLE={sys.executable}",

@@ -75,6 +75,9 @@ extern "C" DEEPEP_EXPORT uint32_t deepep_ll_combine_return_options()
 #if defined(DEEPEP_LL_COMBINE_POLL_NOP) && DEEPEP_LL_COMBINE_POLL_NOP > 0
     options |= uint32_t(DEEPEP_LL_COMBINE_POLL_NOP) << 16U;
 #endif
+#ifdef DEEPEP_LL_COMBINE_LOCAL_FIRST
+    options |= 128U;
+#endif
     return options;
 }
 
@@ -84,7 +87,7 @@ extern "C" DEEPEP_EXPORT uint32_t deepep_ll_combine_return_options()
 extern "C" [[bisheng::core_ratio(0, 1)]] __global__ __aicore__ void combine_server_dedup_kernel(
     GM_ADDR commArgs, GM_ADDR expertOut, GM_ADDR destinationIndex, GM_ADDR sendCounts, GM_ADDR expertScales,
     GM_ADDR tokenType, GM_ADDR relayReadIndex, GM_ADDR sourceMask, GM_ADDR yOut, GM_ADDR tilingData, GM_ADDR stageTimer,
-    uint32_t timerMode)
+    uint32_t timerMode, GM_ADDR sourceIndices)
 {
     CombineProfile::DeviceProfile profile;
     profile.Init(stageTimer, timerMode);
@@ -106,7 +109,7 @@ extern "C" [[bisheng::core_ratio(0, 1)]] __global__ __aicore__ void combine_serv
     CombineDedup::CombineMemoryServerDedupKernel<Group> kernel;                                                 \
     kernel.SetProfile(&profile);                                                                                \
     kernel.Init(commArgs, expertOut, destinationIndex, sendCounts, expertScales, tokenType, relayReadIndex,     \
-                sourceMask, yOut, td->bs, td->h, td->topK, td->moeExpertNum, td->dtype, 0, magic, enableDedup); \
+                sourceMask, yOut, td->bs, td->h, td->topK, td->moeExpertNum, td->dtype, 0, magic, enableDedup, sourceIndices); \
     profile.Mark(CombineProfile::InitEnd);                                                                      \
     kernel.Process()
     if (td->tilingKey == uint8_t(DispatchDedup::LlTilingKey::Group2)) { COMBINE_RUN(2U); }
@@ -122,7 +125,7 @@ extern "C" DEEPEP_EXPORT void combine_server_dedup_kernel_do(void* stream,
     const auto& a = *args;
     combine_server_dedup_kernel<<<a.coreNum, DEEPEP_KERNEL_LAUNCH_UB(CombineDedup::kEpServerDedupCombineLaunchUbBytes), stream>>>(
         a.commArgs, a.expertOut, a.destinationIndex, a.sendCounts, a.expertScales, a.tokenType, a.relayReadIndex,
-        a.sourceMask, a.yOut, a.tilingData, a.stageTimer, a.timerMode);
+        a.sourceMask, a.yOut, a.tilingData, a.stageTimer, a.timerMode, a.sourceIndices);
 }
 
 extern "C" [[bisheng::core_ratio(0, 1)]] __global__ __aicore__ void combine_clear_result_flags_kernel(

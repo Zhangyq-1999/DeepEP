@@ -130,6 +130,7 @@ class EPHandle:
         self.destination_index = None
         self.relay_read_index = None
         self.source_mask = None
+        self.ll_source_indices = None
         self.source_weights = None
         self.send_counts = None
         self.expert_recv_counts = None
@@ -539,6 +540,7 @@ class ElasticBuffer:
                     result.destination_index = tensors["destination_index"]
                     result.relay_read_index = tensors["relay_read_index"]
                     result.source_mask = tensors["source_mask"]
+                    result.ll_source_indices = tensors["indices"]
                     result.source_weights = tensors["source_weights"]
                     result.send_counts = tensors["send_counts"]
                     # Expert counts remain kernel scratch; handle count tensors stay None.
@@ -628,6 +630,7 @@ class ElasticBuffer:
                     "token_type": handle.token_type,
                     "relay_read_index": handle.relay_read_index,
                     "source_mask": handle.source_mask,
+                    "source_indices": handle.ll_source_indices,
                     "comm_args": runtime.low_latency_comm_args,
                     "tiling": self._upload_low_latency(tiling, x.device),
                 }

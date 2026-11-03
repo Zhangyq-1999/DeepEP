@@ -35,7 +35,7 @@ public:
     __aicore__ inline void Init(GM_ADDR commArgs, GM_ADDR expertOut, GM_ADDR assistInfoForCombine, GM_ADDR sendCounts,
                                 GM_ADDR expertScales, GM_ADDR tokenType, GM_ADDR relayReadIndex, GM_ADDR sourceMask,
                                 GM_ADDR yOut, uint32_t bs, uint32_t h, uint32_t topK, uint32_t experts, uint8_t dtype,
-                                uint8_t quantMode, int64_t magic, bool enableDedup = true)
+                                uint8_t quantMode, int64_t magic, bool enableDedup = true, GM_ADDR sourceIndices = nullptr)
     {
         (void)quantMode;
 
@@ -58,6 +58,9 @@ public:
         typesAddr_ = tokenType;
         weightsAddr_ = expertScales;
         masksAddr_ = sourceMask;
+#ifdef DEEPEP_LL_COMBINE_LOCAL_FIRST
+        sourceIndices_ = sourceIndices;
+#endif
         outputAddr_ = yOut;
         // Load the device-produced prefix through MTE2 rather than caching a
         // mutable GM scalar across launches. This 32B temporary becomes the
@@ -183,6 +186,10 @@ private:
     __aicore__ inline void AggregateSourceTokensM6()
     {
         ServerDedupSourceAggregate aggregate;
+#ifdef DEEPEP_LL_COMBINE_LOCAL_FIRST
+        aggregate.SetSourceRoutes(sourceIndices_, uint32_t(args_->rank), experts_ / uint32_t(args_->rankSize),
+                                  DispatchDedup::kLlPhysicalRanksPerHost);
+#endif
 #ifdef DEEPEP_LL_COMBINE_PROFILE
         aggregate.SetProfile(profileOwner_);
 #endif
@@ -202,6 +209,10 @@ private:
     __aicore__ inline uint32_t AggregateSourceTokens()
     {
         ServerDedupSourceAggregate aggregate;
+#ifdef DEEPEP_LL_COMBINE_LOCAL_FIRST
+        aggregate.SetSourceRoutes(sourceIndices_, uint32_t(args_->rank), experts_ / uint32_t(args_->rankSize),
+                                  DispatchDedup::kLlPhysicalRanksPerHost);
+#endif
 #ifdef DEEPEP_LL_COMBINE_PROFILE
         aggregate.SetProfile(profileOwner_);
 #endif
@@ -655,6 +666,9 @@ private:
     LocalTensor<uint16_t> payloadUb_;
     LocalTensor<float> preparePublish_, prepareInput_, prepareWork_, prepareSum_, prepareZero_;
     LocalTensor<float> readyInput_, readyWork_, readySum_, readyZero_, notifyUb_;
+#ifdef DEEPEP_LL_COMBINE_LOCAL_FIRST
+    GM_ADDR sourceIndices_ = nullptr;
+#endif
 };
 }  // namespace CombineDedup
 #endif

@@ -14,6 +14,7 @@ option(DEEPEP_LL_COMBINE_PROFILE "Build optional Combine diagnostics" OFF)
 option(DEEPEP_LL_OPS_BASE "Build the ops-transformer SHMEM adaptation" OFF)
 option(DEEPEP_LL_COMBINE_ORIGINAL "Use the unaltered upstream Combine kernel" ON)
 option(DEEPEP_LL_COMBINE_SMALL_BATCH "Cache partial tasks and trim idle lanes" OFF)
+option(DEEPEP_LL_COMBINE_LOCAL_FIRST "Accumulate local-host returns before remote returns" OFF)
 option(DEEPEP_LL_COMBINE_EARLY_REDUCE "Reduce ready contributions for BS <= 72" OFF)
 option(DEEPEP_LL_COMBINE_REMOTE_FIRST "Return cross-host results before local-host results" OFF)
 option(DEEPEP_LL_COMBINE_DEFER_RETURN "Overlap return staging with next-packet preparation" OFF)
@@ -28,6 +29,9 @@ if(NOT DEEPEP_LL_COMBINE_POLL_NOP MATCHES "^(0|[1-9][0-9]*)$")
 endif()
 if(DEEPEP_LL_COMBINE_POLL_NOP GREATER 65535)
     message(FATAL_ERROR "poll-nop must be an integer in [0,65535]")
+endif()
+if(DEEPEP_LL_COMBINE_LOCAL_FIRST AND (DEEPEP_LL_COMBINE_EARLY_REDUCE OR DEEPEP_LL_COMBINE_PROGRESS_PROBE OR DEEPEP_LL_COMBINE_SIMT_FLAG))
+    message(FATAL_ERROR "local-first cannot combine with early-reduce, progress-probe or simt-flag")
 endif()
 if(DEEPEP_LL_COMBINE_SIMT_FLAG AND (DEEPEP_LL_COMBINE_PROGRESS_PROBE OR DEEPEP_LL_COMBINE_EARLY_REDUCE))
     message(FATAL_ERROR "SIMT flag checks cannot be combined with progress-probe or early-reduce")
@@ -56,7 +60,7 @@ if(DEEPEP_LL_OPS_BASE)
        DEEPEP_LL_COMBINE_EARLY_REDUCE OR DEEPEP_LL_COMBINE_REMOTE_FIRST OR DEEPEP_LL_COMBINE_DEFER_RETURN OR
        DEEPEP_LL_COMBINE_EARLY_ISSUE OR DEEPEP_LL_COMBINE_PROGRESS_PROBE OR
        DEEPEP_LL_COMBINE_SIMT_META OR DEEPEP_LL_COMBINE_SIMT_FLAG OR DEEPEP_LL_COMBINE_PREFETCH_RETURN OR
-       DEEPEP_LL_COMBINE_POLL_NOP OR NOT DEEPEP_LL_COMBINE_RECV_CORES STREQUAL "0")
+       DEEPEP_LL_COMBINE_LOCAL_FIRST OR DEEPEP_LL_COMBINE_POLL_NOP OR NOT DEEPEP_LL_COMBINE_RECV_CORES STREQUAL "0")
         message(FATAL_ERROR "ops-shmem-base has no DeepEP experiment flags or instrumentation")
     endif()
     include("${CMAKE_CURRENT_LIST_DIR}/ops_shmem/source.cmake")
@@ -65,7 +69,7 @@ elseif(DEEPEP_LL_COMBINE_ORIGINAL)
        DEEPEP_LL_COMBINE_REMOTE_FIRST OR DEEPEP_LL_COMBINE_DEFER_RETURN OR
        DEEPEP_LL_COMBINE_EARLY_ISSUE OR DEEPEP_LL_COMBINE_PROGRESS_PROBE OR
        DEEPEP_LL_COMBINE_SIMT_META OR DEEPEP_LL_COMBINE_SIMT_FLAG OR DEEPEP_LL_COMBINE_PREFETCH_RETURN OR
-       DEEPEP_LL_COMBINE_POLL_NOP OR NOT DEEPEP_LL_COMBINE_RECV_CORES STREQUAL "0")
+       DEEPEP_LL_COMBINE_LOCAL_FIRST OR DEEPEP_LL_COMBINE_POLL_NOP OR NOT DEEPEP_LL_COMBINE_RECV_CORES STREQUAL "0")
         message(FATAL_ERROR "Original Combine cannot enable experimental options or profiling; use --variant opt")
     endif()
     include("${CMAKE_CURRENT_LIST_DIR}/baseline.cmake")
@@ -120,6 +124,7 @@ target_compile_definitions(ll_bench_variant PRIVATE DEEPEP_LL_RDMA=1 DEEPEP_LL_M
     $<$<BOOL:${DEEPEP_LL_COMBINE_SMALL_BATCH}>:DEEPEP_LL_COMBINE_SMALL_BATCH=1>
     $<$<BOOL:${DEEPEP_LL_COMBINE_SIMT_META}>:DEEPEP_LL_COMBINE_SIMT_META=1>
     $<$<BOOL:${DEEPEP_LL_COMBINE_SIMT_FLAG}>:DEEPEP_LL_COMBINE_SIMT_FLAG=1>
+    $<$<BOOL:${DEEPEP_LL_COMBINE_LOCAL_FIRST}>:DEEPEP_LL_COMBINE_LOCAL_FIRST=1>
     $<$<BOOL:${DEEPEP_LL_COMBINE_EARLY_REDUCE}>:DEEPEP_LL_COMBINE_EARLY_REDUCE=1>)
 target_compile_definitions(ll_bench_variant PRIVATE
     DEEPEP_BENCH_REMOTE_FIRST=$<BOOL:${DEEPEP_LL_COMBINE_REMOTE_FIRST}>
@@ -129,6 +134,7 @@ target_compile_definitions(ll_bench_variant PRIVATE
     DEEPEP_BENCH_SIMT_META=$<BOOL:${DEEPEP_LL_COMBINE_SIMT_META}>
     DEEPEP_BENCH_SIMT_FLAG=$<BOOL:${DEEPEP_LL_COMBINE_SIMT_FLAG}>
     DEEPEP_BENCH_PREFETCH_RETURN=$<BOOL:${DEEPEP_LL_COMBINE_PREFETCH_RETURN}>
+    DEEPEP_BENCH_LOCAL_FIRST=$<BOOL:${DEEPEP_LL_COMBINE_LOCAL_FIRST}>
     DEEPEP_BENCH_POLL_NOP=${DEEPEP_LL_COMBINE_POLL_NOP})
 # Hash the compiled source tree, including uncommitted edits, for cross-rank checks.
 file(GLOB_RECURSE _identity_files CONFIGURE_DEPENDS
@@ -157,4 +163,4 @@ if(DEEPEP_LL_OPS_BASE)
         "implementation=ops-shmem-base\nupstream=${LL_OPS_REV}\ntransport=SHMEM QP Put; quiet at upstream batch boundary\n")
 endif()
 file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/bench-build.txt" CONTENT
-    "source=${_source_id}\noriginal=${DEEPEP_LL_COMBINE_ORIGINAL}\nbaseline_revision=${LL_COMBINE_BASELINE_REV}\ncombine_source=${DEEPEP_LL_COMBINE_SOURCE}\nsmall_batch=${DEEPEP_LL_COMBINE_SMALL_BATCH}\nrecv_cores=${DEEPEP_LL_COMBINE_RECV_CORES}\nearly_reduce=${DEEPEP_LL_COMBINE_EARLY_REDUCE}\nremote_first=${DEEPEP_LL_COMBINE_REMOTE_FIRST}\ndefer_return=${DEEPEP_LL_COMBINE_DEFER_RETURN}\nearly_issue=${DEEPEP_LL_COMBINE_EARLY_ISSUE}\nprogress_probe=${DEEPEP_LL_COMBINE_PROGRESS_PROBE}\nsimt_meta=${DEEPEP_LL_COMBINE_SIMT_META}\nsimt_flag=${DEEPEP_LL_COMBINE_SIMT_FLAG}\npoll_nop=${DEEPEP_LL_COMBINE_POLL_NOP}\nprefetch_return=${DEEPEP_LL_COMBINE_PREFETCH_RETURN}\nranks_per_host=${DEEPEP_LL_PHYSICAL_RANKS_PER_HOST}\nprofile=${DEEPEP_LL_COMBINE_PROFILE}\nmpi=${MPI_CXX_COMPILER}\nshmem=${SHMEM_ROOT}\n")
+    "source=${_source_id}\noriginal=${DEEPEP_LL_COMBINE_ORIGINAL}\nbaseline_revision=${LL_COMBINE_BASELINE_REV}\ncombine_source=${DEEPEP_LL_COMBINE_SOURCE}\nsmall_batch=${DEEPEP_LL_COMBINE_SMALL_BATCH}\nrecv_cores=${DEEPEP_LL_COMBINE_RECV_CORES}\nearly_reduce=${DEEPEP_LL_COMBINE_EARLY_REDUCE}\nremote_first=${DEEPEP_LL_COMBINE_REMOTE_FIRST}\ndefer_return=${DEEPEP_LL_COMBINE_DEFER_RETURN}\nearly_issue=${DEEPEP_LL_COMBINE_EARLY_ISSUE}\nprogress_probe=${DEEPEP_LL_COMBINE_PROGRESS_PROBE}\nsimt_meta=${DEEPEP_LL_COMBINE_SIMT_META}\nsimt_flag=${DEEPEP_LL_COMBINE_SIMT_FLAG}\nlocal_first=${DEEPEP_LL_COMBINE_LOCAL_FIRST}\npoll_nop=${DEEPEP_LL_COMBINE_POLL_NOP}\nprefetch_return=${DEEPEP_LL_COMBINE_PREFETCH_RETURN}\nranks_per_host=${DEEPEP_LL_PHYSICAL_RANKS_PER_HOST}\nprofile=${DEEPEP_LL_COMBINE_PROFILE}\nmpi=${MPI_CXX_COMPILER}\nshmem=${SHMEM_ROOT}\n")

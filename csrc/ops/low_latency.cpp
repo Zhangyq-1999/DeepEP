@@ -408,6 +408,7 @@ void bind_low_latency(py::module_& module)
         args.tokenType = get("token_type", {c}, "int32");
         args.relayReadIndex = get("relay_read_index", {c, k, 2}, "int32");
         args.sourceMask = get("source_mask", {b}, "int32");
+        args.sourceIndices = get("source_indices", {b, k}, "int32");
         args.yOut = get("output", {b, h}, dtype.c_str());
         args.tilingData = get("tiling", {sizeof(CombineDedup::EpServerDedupCombineTilingData)}, "uint8");
         session.workspace();

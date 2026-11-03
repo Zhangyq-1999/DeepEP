@@ -28,7 +28,7 @@ Benchmark options (with or without a preceding --):
          --warmup N --iters N --profile-iters N --profile 0|1|2 --timeout SECONDS
          --kernel-timeout SECONDS (default 10; bounded stream wait)
 Defaults: EP8, four ranks/host, devices 12,13,14,15 on each host; hosts 90.90.93.84,90.90.93.184, port 29671.
-          base (clean) and ref-profile (diagnostic); BS 32,48,64,72,256; H3584/K8/E384/BF16.
+          base/local-first (clean), ref-profile/local-first-profile (diagnostic); BS 32,48,64,72,256; H3584/K8/E384/BF16.
           Warmup 10; clean samples 100; diagnostic samples 10, level 2.
 Rebuild with the same --ranks-per-host value. Use 16 for single-host EP16 or dual-host EP32.
 All selected variants share one MPI/ACL/SHMEM initialization.

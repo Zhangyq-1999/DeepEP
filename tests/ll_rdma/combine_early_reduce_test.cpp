@@ -36,7 +36,7 @@ inline void ReduceSum(LocalTensor<float> d,LocalTensor<float> s,LocalTensor<floa
 }
 inline uint8_t* packets=nullptr;
 inline uint32_t packetBytes=0,blocks=0,tick=0,earlyObserved=0;
-inline std::vector<uint32_t> arrival;
+inline std::vector<uint32_t> arrival, reads;
 inline std::vector<bool> published;
 inline void PublishReady() {
     ++tick;assert(tick<100000);
@@ -55,6 +55,7 @@ template<class T> void TestDataCopy(LocalTensor<T> dst,GlobalTensor<T> src,DataC
     else if(packets && reinterpret_cast<uint8_t*>(src.p)>=packets &&
             reinterpret_cast<uint8_t*>(src.p)<packets+arrival.size()*packetBytes){
         auto index=(reinterpret_cast<uint8_t*>(src.p)-packets)/packetBytes;
+        reads.push_back(uint32_t(index));
         assert(published[index]); // no data read ahead of all block flags
     }
     DataCopy(dst,src,params);
@@ -76,7 +77,7 @@ template<class T> void TestDataCopyPad(GlobalTensor<T> d,LocalTensor<T> s,DataCo
 using namespace AscendC;
 using namespace CombineDedup;
 
-template<class T> void Check(uint32_t bs,uint32_t h,uint32_t k,uint32_t participant,bool dedup,uint32_t delay,uint32_t partialTasks,uint32_t recv=8) {
+template<class T> void Check(uint32_t bs,uint32_t h,uint32_t k,uint32_t participant,bool dedup,uint32_t delay,uint32_t partialTasks,uint32_t recv=8, uint32_t sourceRank=0, uint32_t ranksPerHost=4) {
     auto layout=EpCombineM45Layout(100,bs,h,k,recv);
     assert(layout.inputLanes && layout.totalBytes<=kEpServerDedupCombineRecvUbBytes);
     const uint32_t usable=kEpServerDedupCombineRecvUbBytes-kEpServerDedupCombineResidentUbBytes;
@@ -84,6 +85,8 @@ template<class T> void Check(uint32_t bs,uint32_t h,uint32_t k,uint32_t particip
     auto scratch=reinterpret_cast<uint8_t*>(arena.data())+64;
     std::vector<uint32_t> masks(bs);
     std::vector<float> weights(bs*k);
+    std::vector<int32_t> routes(bs*k);
+    std::vector<uint32_t> localMasks(bs);
     blocks=(h*2+479)/480;packetBytes=blocks*512;
     std::vector<uint64_t> result(uint64_t(bs)*k*packetBytes/8,0);
     packets=reinterpret_cast<uint8_t*>(result.data());
@@ -93,10 +96,20 @@ template<class T> void Check(uint32_t bs,uint32_t h,uint32_t k,uint32_t particip
         if(t%3==0)masks[t]=k==32?0xffffffffU:(1U<<k)-1;
         for(uint32_t j=0;j<k;++j){
             weights[t*k+j]=float((t+j)%7+1)/8;
+            const bool local = t%4==0 || (t%4>=2 && j%2==t%2);
+            const uint32_t host = local ? sourceRank/ranksPerHost : 1-sourceRank/ranksPerHost;
+            routes[t*k+j]=int32_t((host*ranksPerHost+j%ranksPerHost)*48+j%48);
+            if(local)localMasks[t]|=1U<<j;
             bool active=!dedup || ((masks[t]>>j)&1U);
             arrival[t*k+j]=active?(delay?1+(j*37+t*19)%151:1):0;published[t*k+j]=!active;
             for(uint32_t x=0;x<h;++x){
                 T value=T(float(int((t*13+j*7+x)%97)-48)/32);
+                // FP32 reassociation is observable: (2^24 + 1) - 2^24 !=
+                // (2^24 - 2^24) + 1. BF16 represents all three inputs exactly.
+                if constexpr(std::is_same_v<T,bfloat16_t>) if(k>=3 && j<3 && x==0){
+                    value=T(j==0?16777216.0f:j==1?1.0f:-16777216.0f);
+                    weights[t*k+j]=1.0f;
+                }
                 uint32_t byte=x*2;
                 std::memcpy(packets+(t*k+j)*packetBytes+byte/480*512+byte%480,&value,2);
             }
@@ -112,6 +125,9 @@ template<class T> void Check(uint32_t bs,uint32_t h,uint32_t k,uint32_t particip
         SetFlag<HardEvent::MTE3_V>(lane);
     }
     ServerDedupSourceAggregate op;
+#ifdef DEEPEP_LL_COMBINE_LOCAL_FIRST
+    op.SetSourceRoutes(reinterpret_cast<GM_ADDR>(routes.data()),sourceRank,48,ranksPerHost);
+#endif
 #ifdef DEEPEP_LL_COMBINE_PROFILE
     std::vector<uint64_t> profileData(CombineProfile::kWords, 0);
     CombineProfile::DeviceProfile profile;
@@ -125,6 +141,7 @@ template<class T> void Check(uint32_t bs,uint32_t h,uint32_t k,uint32_t particip
     else op.InitDirectShared({scratch},packets,reinterpret_cast<GM_ADDR>(weights.data()),reinterpret_cast<GM_ADDR>(output.data()),
         bs,h,k,dtype,participant,recv,layout,true);
     tick=contributions=earlyObserved=nopCalls=0;
+    reads.clear();
     uint32_t retired=op.Process();
     if(dedup){for(uint32_t lane=0;lane<layout.outputLanes;++lane)if(!((retired>>lane)&1U))WaitFlag<HardEvent::MTE3_V>(lane);}
     else op.DrainM6();
@@ -139,6 +156,15 @@ template<class T> void Check(uint32_t bs,uint32_t h,uint32_t k,uint32_t particip
     for (uint32_t t=begin; t<begin+count; ++t)
         expectedContributions += dedup ? __builtin_popcount(masks[t]) : k;
     assert(profileData[CombineProfile::Contributions] == expectedContributions);
+#ifdef DEEPEP_LL_COMBINE_LOCAL_FIRST
+    uint32_t localCount=0;
+    for(uint32_t t=begin;t<begin+count;++t)
+        localCount+=__builtin_popcount(localMasks[t] & (dedup?masks[t]:k==32?0xffffffffU:(1U<<k)-1));
+    assert(profileData[CombineProfile::LocalContributions]==localCount);
+    assert(profileData[CombineProfile::RemoteContributions]==expectedContributions-localCount);
+    assert(profileData[CombineProfile::LocalProbeCalls]+profileData[CombineProfile::RemoteProbeCalls]
+           ==profileData[CombineProfile::ProbeCalls]);
+#endif
 #ifdef DEEPEP_LL_COMBINE_PROGRESS_PROBE
     assert(profileData[CombineProfile::ProbeConfirmedSlots] == expectedContributions);
 #endif
@@ -155,10 +181,27 @@ template<class T> void Check(uint32_t bs,uint32_t h,uint32_t k,uint32_t particip
     for(uint32_t t=0;t<bs;++t)for(uint32_t x=0;x<h;++x){
         if(t<begin || t>=begin+count){assert(output[t*h+x]==0x6a6a);continue;}
         float sum=0;bool first=true;
-        for(uint32_t j=0;j<k;++j)if(!dedup || ((masks[t]>>j)&1U)){
+#ifdef DEEPEP_LL_COMBINE_LOCAL_FIRST
+        const uint32_t passes=2;
+#else
+        const uint32_t passes=1;
+#endif
+        std::vector<uint32_t> expectedReads;
+        for(uint32_t pass=0;pass<passes;++pass)for(uint32_t j=0;j<k;++j)if(!dedup || ((masks[t]>>j)&1U)){
+#ifdef DEEPEP_LL_COMBINE_LOCAL_FIRST
+            if(bool((localMasks[t]>>j)&1U)!=(pass==0))continue;
+#endif
+            expectedReads.push_back(t*k+j);
             T value;uint32_t byte=x*2;std::memcpy(&value,packets+(t*k+j)*packetBytes+byte/480*512+byte%480,2);
             float product=float(value)*weights[t*k+j];sum=first?product:sum+product;first=false;
         }
+#ifdef DEEPEP_LL_COMBINE_LOCAL_FIRST
+        if(x==0){
+            std::vector<uint32_t> actual;
+            for(auto r:reads)if(r/k==t)actual.push_back(r);
+            assert(actual==expectedReads); // independent of ready order/retries
+        }
+#endif
         T expected=T(sum);uint16_t bits;std::memcpy(&bits,&expected,2);assert(output[t*h+x]==bits);
     }
     for(uint32_t t=begin;t<begin+count;++t)for(uint32_t j=0;j<k;++j)for(uint32_t b=0;b<blocks;++b){
@@ -182,9 +225,15 @@ int main(){
     for(uint32_t recv:{32,36})for(uint32_t bs:{32,48,64,72})
         for(uint32_t participant=0;participant<recv;++participant)
             for(bool dedup:{false,true})Check<bfloat16_t>(bs,256,8,participant,dedup,1,5,recv);
-    #if defined(DEEPEP_LL_COMBINE_PROGRESS_PROBE) || defined(DEEPEP_LL_COMBINE_SIMT_FLAG)
+    #if defined(DEEPEP_LL_COMBINE_PROGRESS_PROBE) || defined(DEEPEP_LL_COMBINE_SIMT_FLAG) || defined(DEEPEP_LL_COMBINE_LOCAL_FIRST)
     Check<bfloat16_t>(256,3584,8,0,true,1,7,28);
     Check<half>(256,3584,8,27,false,1,0,28);
+#endif
+#ifdef DEEPEP_LL_COMBINE_LOCAL_FIRST
+    // Physical host widths and both source hosts; include the larger BS case.
+    for(uint32_t width:{4,16})for(uint32_t rank:{0U,width,width*2-1})
+        for(uint32_t bs:{32,48,64,72,256})for(bool dedup:{false,true})
+            Check<bfloat16_t>(bs,3584,8,0,dedup,1,7,28,rank,width);
 #endif
     std::puts("PASS production M5: delayed arrivals, BF16/FP16 results, M4 retirement, masks, tails and guards");
 }

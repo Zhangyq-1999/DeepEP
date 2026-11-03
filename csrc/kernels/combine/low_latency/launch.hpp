@@ -12,12 +12,16 @@ struct EpServerDedupCombineKernelArgs {
     uint8_t* stageTimer;
     uint32_t timerMode;
     uint32_t coreNum;
+    // Original Dispatch expert IDs, int32[B,K]; only local-first consumes them.
+    // Append after the frozen baseline's 96-byte argument prefix.
+    uint8_t* sourceIndices;
 };
 static_assert(std::is_standard_layout<EpServerDedupCombineKernelArgs>::value, "combine launch ABI");
-static_assert(sizeof(EpServerDedupCombineKernelArgs) == 96, "combine launch ABI");
+static_assert(sizeof(EpServerDedupCombineKernelArgs) == 104, "combine launch ABI");
 static_assert(offsetof(EpServerDedupCombineKernelArgs, stageTimer) == 80, "timer address");
 static_assert(offsetof(EpServerDedupCombineKernelArgs, timerMode) == 88, "timer mode");
 static_assert(offsetof(EpServerDedupCombineKernelArgs, coreNum) == 92, "active cores");
+static_assert(offsetof(EpServerDedupCombineKernelArgs, sourceIndices) == 96, "source routes");
 }  // namespace deepep
 extern "C" void combine_server_dedup_kernel_do(void* stream, const deepep::EpServerDedupCombineKernelArgs* args);
 extern "C" void combine_clear_result_flags_kernel_do(void* stream, uint8_t* local, uint64_t blocks, uint32_t cores);
