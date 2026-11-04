@@ -2,8 +2,8 @@
 #include <cstdint>
 
 namespace CombineProfile {
-// One 1792-byte record per AIV. Timestamps precede StageRows; detail counters
-// are exported only at level 2. Schema 9 adds coalesced return diagnostics.
+// One 2048-byte record per AIV. Schema 10 adds readiness publication and
+// last-missed producer diagnostics. Detailed counters require level 2.
 enum Word : uint32_t {
     Entry,
     ProfileInitEnd,
@@ -57,6 +57,9 @@ enum Word : uint32_t {
     CoalesceFirstReady,
     CoalesceLastReady,
     CoalesceReceiveEnd,
+    CoreNotifyBegin,
+    CoreNotifyEnd,
+    ReadyObserved,
     StageRows,
     DirectRows,
     PartialRows,
@@ -199,6 +202,16 @@ enum Word : uint32_t {
     CoalesceBytes,
     CoalesceUnpackRows,
     CoalesceForwardRows,
+    ReadyPollMaxTicks,
+    NotifyPollMaxTicks,
+    ReadyInspectTicks,
+    NotifyInspectTicks,
+    ReadyMissingRank,
+    ReadyMissingCore,
+    ReadyMissingCount,
+    NotifyMissingCore,
+    NotifyMissingCount,
+    NotifyStores,
     CoalesceWorker,
     Rank,
     Core,
@@ -210,9 +223,9 @@ enum Word : uint32_t {
     Level,
     Count
 };
-constexpr uint32_t kWords = 224U;
-constexpr uint64_t kSchema = 9U;
+constexpr uint32_t kWords = 256U;
+constexpr uint64_t kSchema = 10U;
 constexpr Word kDetailBegin = InitPrefixTicks;
-constexpr Word kDetailEnd = CoalesceForwardRows;
+constexpr Word kDetailEnd = NotifyStores;
 static_assert(Count <= kWords && StageRows <= 64U, "profile record bounds");
 }  // namespace CombineProfile

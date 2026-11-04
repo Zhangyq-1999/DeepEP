@@ -59,7 +59,9 @@ def test_local_coverage_crossing_stages_and_tail(reporter, tmp_path):
         fields, rows = reader.fieldnames, list(reader)
     for row in rows:
         if row['role'] == 'receive':
-            row.update(ready_begin=5, ready_end=25, partial_begin=20, partial_end=40,
+            row.update(core_notify_begin=3, core_notify_end=5, ready_begin=5, ready_observed=23,
+                       ready_end=25, partial_begin=20, partial_end=40,
+                       ready_missing_rank=0, ready_missing_core=55, ready_missing_count=1,
                        final_begin=40, tail_observations=2, tail_first_seen=50, tail_last_seen=60,
                        tail_ready=70, tail_slot=3, tail_token=7, tail_missing_blocks=2)
     write_csv(path, fields, rows)
@@ -70,6 +72,11 @@ def test_local_coverage_crossing_stages_and_tail(reporter, tmp_path):
     ready = next(e for e in events if e['name'] == 'group ready wait')
     partial = next(e for e in events if e['name'] == 'FIRST_HOP partial')
     assert ready['tid'] != partial['tid']  # crossing events keep their true endpoints
+    spans = {e['name']: e for e in events if e['ph'] == 'X'}
+    assert spans['per-core SIMT publish']['dur'] == pytest.approx(.002)
+    assert spans['group ready polling']['dur'] == pytest.approx(.018)
+    assert spans['ready inspect and reset']['dur'] == pytest.approx(.002)
+    assert spans['profiled body']['args']['ready_missing_core'] == 55
     tail = next(e for e in events if e['name'] == 'tail_ready')
     assert tail['ph'] == 'i' and tail['args']['tail_token'] == 7
 

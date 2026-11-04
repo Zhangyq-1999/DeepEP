@@ -89,6 +89,15 @@ public:
         }
 #endif
     }
+    __aicore__ inline void MaxElapsed(Word word, uint64_t begin)
+    {
+#ifdef DEEPEP_LL_COMBINE_PROFILE
+        if (level_ >= 2U) {
+            const uint64_t ticks = AscendC::GetSystemCycle() - begin;
+            if (ticks > values_[word]) values_[word] = ticks;
+        }
+#endif
+    }
     __aicore__ inline void Set(Word word, uint64_t value)
     {
 #ifdef DEEPEP_LL_COMBINE_PROFILE
@@ -161,6 +170,12 @@ private:
 // Optional shared view for helpers also exercised independently by CPU models.
 class View {
 public:
+    __aicore__ inline void MaxElapsed(Word word, uint64_t begin)
+    {
+#ifdef DEEPEP_LL_COMBINE_PROFILE
+        if (profile_) profile_->MaxElapsed(word, begin);
+#endif
+    }
     __aicore__ inline void Missing(uint32_t token, uint32_t mask, uint32_t first, uint32_t count, uint32_t blocks)
     {
 #ifdef DEEPEP_LL_COMBINE_PROFILE

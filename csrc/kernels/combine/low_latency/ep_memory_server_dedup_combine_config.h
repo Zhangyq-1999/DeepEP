@@ -7,6 +7,7 @@
 #include <cstdint>
 #include "../../dispatch/low_latency/common/ep_memory_server_dedup_protocol.h"
 #include "../../dispatch/low_latency/common/ll_core_config.h"
+#include "combine_notify_layout.h"
 
 #if defined(DEEPEP_LL_COMBINE_BATCH_FINAL) && !defined(DEEPEP_LL_COMBINE_LOCAL_FIRST)
 #error "batch-final requires local-first"
@@ -19,7 +20,9 @@
 namespace CombineDedup {
 // Resident capacity is shared across ranks, independently of active core count.
 constexpr uint32_t kCombineNotifyRows = DispatchDedup::kLlMaxRecvCoreNum;
-constexpr uint32_t kCombineReadyInputBytes = DispatchDedup::kLlRanksPerGroup * 32U + 256U;
+constexpr uint32_t kCombineReadyInputBytes =
+    (DEEPEP_LL_COMBINE_NOTIFY == 2 ? kCoreReadyRowBytes : DispatchDedup::kLlRanksPerGroup * 32U) + 256U;
+constexpr uint32_t kCombineReadyZeroBytes = DEEPEP_LL_COMBINE_NOTIFY == 2 ? kCoreReadyRowBytes : 512U;
 constexpr uint32_t kCombinePrepareRowBytes = DispatchDedup::kLlMaxCoreNum * 32U;
 static_assert(kCombinePrepareRowBytes * DispatchDedup::kLlNotifyCoreNum == 18432U, "prepare/ready boundary");
 static_assert(DispatchDedup::kLlRanksPerGroup * 32U <= 512U, "ready row capacity");
@@ -30,7 +33,7 @@ constexpr uint32_t kEpServerDedupCombineUbBytes = 190U * 1024U;
 // Mixed SIMD/SIMT kernels reserve at least 32 KiB for SIMT DCache, in
 // addition to the 8 KiB system reservation. TPipe uses the dynamic UB arena:
 // launch it explicitly and use the same limit for M4/M5 lane placement.
-#if defined(DEEPEP_LL_COMBINE_SIMT_META) || defined(DEEPEP_LL_COMBINE_SIMT_FLAG)
+#if defined(DEEPEP_LL_COMBINE_SIMT_META) || defined(DEEPEP_LL_COMBINE_SIMT_FLAG) || DEEPEP_LL_COMBINE_NOTIFY > 0
 constexpr uint32_t kEpServerDedupCombineRecvUbBytes = 216U * 1024U;
 constexpr uint32_t kEpServerDedupCombineLaunchUbBytes = kEpServerDedupCombineRecvUbBytes;
 static_assert(kEpServerDedupCombineUbBytes <= kEpServerDedupCombineLaunchUbBytes, "send arena fits launch");
@@ -49,7 +52,7 @@ constexpr uint32_t kEpServerDedupCombineTableRows = 512U;
 // than 256 blocks, so packing never narrows an oversized vector repeat count.
 static_assert(kEpServerDedupCombineUbBytes / (480U + 512U) <= 255U, "M3 vector repeat budget");
 constexpr uint32_t kEpServerDedupCombineFixedUbBytes = kEpServerDedupCombineTableRows * 12U + 256U + (kCombinePrepareRowBytes + 256U) + 512U +
-                                                       32U + kCombinePrepareRowBytes + kCombineReadyInputBytes + 256U + 32U + 512U +
+                                                       32U + kCombinePrepareRowBytes + kCombineReadyInputBytes + 256U + 32U + kCombineReadyZeroBytes +
                                                        kCombineNotifyRows * 32U;
 #if defined(__CCE__) && defined(__CCE_IS_AICORE__)
 #define COMBINE_DEDUP_EP_COMBINE_CONSTEXPR __aicore__ inline constexpr

@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
 @pytest.mark.parametrize("profile", [False, True])
 @pytest.mark.parametrize("small", [False, True])
 @pytest.mark.parametrize("returns", [False, True, "new", "simt", "poll", "local", "batch", "batch-pipeline",
-                                     "card-all", "card-row", "server-all", "server-row"])
+                                     "card-all", "card-row", "server-all", "server-row", "notify-simt", "notify-core"])
 def test_all_combine_profile_paths_compile(tmp_path, profile, small, returns):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
     if not zig:
@@ -27,6 +27,7 @@ def test_all_combine_profile_paths_compile(tmp_path, profile, small, returns):
 namespace AscendC {
 template<class T> void Adds(LocalTensor<T> d,LocalTensor<T> s,T x,uint32_t n) { for(uint32_t i=0;i<n;++i)d.p[i]=s.p[i]+x; }
 template<class T> void ReduceSum(LocalTensor<T>,LocalTensor<T>,LocalTensor<T>,uint32_t,uint32_t,uint32_t) {}
+template<class T> void ReduceSum(LocalTensor<T>,LocalTensor<T>,LocalTensor<T>,int32_t) {}
 template<class T> void Gather(LocalTensor<T>,LocalTensor<T>,LocalTensor<uint32_t>,uint32_t,uint32_t) {}
 struct ProfileCopyParams {uint32_t dstStride,srcStride,dstRepeat,srcRepeat;};
 template<class T> void Copy(LocalTensor<T>,LocalTensor<T>,uint64_t,uint8_t,ProfileCopyParams) {}
@@ -44,6 +45,9 @@ int main() {}
         flags = ["-DDEEPEP_LL_RDMA=1", "-DDEEPEP_LL_PHYSICAL_RANKS_PER_HOST=4",
                  f'-DDEEPEP_LL_COMBINE_COALESCE={1 if returns.startswith("card-") else 2}',
                  f'-DDEEPEP_LL_COMBINE_COALESCE_ROWS={int(returns.endswith("-row"))}']
+    elif returns in ("notify-simt", "notify-core"):
+        flags += [f'-DDEEPEP_LL_COMBINE_NOTIFY={1 if returns == "notify-simt" else 2}',
+                  "-DDEEPEP_LL_COMBINE_REMOTE_FIRST=1"]
     elif returns == "poll":
         flags += ["-DDEEPEP_LL_COMBINE_POLL_NOP=800", "-DDEEPEP_LL_PHYSICAL_RANKS_PER_HOST=4"]
     elif returns in ("local", "batch", "batch-pipeline"):

@@ -14,6 +14,7 @@
 #include "combine_stage_wire.h"
 #include "combine_server_dedup_source_aggregate.h"
 #include "combine_server_dedup_select.h"
+#include "combine_notify.h"
 
 namespace CombineDedup {
 using namespace AscendC;
@@ -112,7 +113,7 @@ public:
         readyInput_ = Allocate<float>(kCombineReadyInputBytes);
         readyWork_ = Allocate<float>(256U);
         readySum_ = Allocate<float>(32U);
-        readyZero_ = Allocate<float>(512U);
+        readyZero_ = Allocate<float>(kCombineReadyZeroBytes);
         notifyUb_ = Allocate<float>(kCombineNotifyRows * 32U);
         const uint32_t rowBytes = EpCombineAlign(tokens_ == 0U ? 4U : tokens_ * 4U, 256U);
         typeUb_ = Allocate<int32_t>(rowBytes);
@@ -146,12 +147,14 @@ public:
 #endif
         if (core_ >= sendCores_) {
             if (enableDedup_) {
+#if DEEPEP_LL_COMBINE_NOTIFY != 2
                 if (core_ >= notifyBegin_) {
 
                     NotifyServerCard();
 
                     // Notification has been issued; do not add an MTE3 drain.
                 }
+#endif
 
 #ifndef DEEPEP_LL_COMBINE_SMALL_BATCH
                 WaitServerReady();
@@ -336,12 +339,21 @@ private:
         profile_.Elapsed(CombineProfile::StageDrainTicks, drainStart);
         profile_.Mark(CombineProfile::StageDrained);
         const uint64_t publishStart = profile_.DetailClock();
+#if DEEPEP_LL_COMBINE_NOTIFY == 2
+        // MTE3 -> Scalar -> SIMT is an explicit payload-before-flag chain.
+        // A producer with zero assigned rows must publish as well.
+        Sync<HardEvent::MTE3_S>();
+        profile_.Mark(CombineProfile::CoreNotifyBegin);
+        PublishReadySimt(true);
+        profile_.Mark(CombineProfile::CoreNotifyEnd);
+#else
         Duplicate<float>(preparePublish_, 0.0f, 64U);
         Sync<HardEvent::V_S>();
         for (uint32_t j = 0; j < 8U; ++j) preparePublish_.SetValue(j * 8U, 1.0f);
         Sync<HardEvent::S_MTE3>();
         auto done = Control(args_->rank, COMBINE_DEDUP_EP_SERVER_DEDUP_COMBINE_PREPARE_DONE_OFFSET);
         DataCopyPad(done[core_ * 8U], preparePublish_, {8U, 32U, 0U, kCombinePrepareRowBytes - 32U, 0U});
+#endif
         profile_.Elapsed(CombineProfile::StagePublishTicks, publishStart);
     }
     __aicore__ inline void CacheTableRows(uint32_t row, uint32_t start, uint32_t task, uint32_t count,
@@ -589,29 +601,107 @@ private:
         profile_.Mark(CombineProfile::PartialEnd);
     }
     __aicore__ inline void WaitFlags(GlobalTensor<float> gm, LocalTensor<float> input, LocalTensor<float> work,
-                                     LocalTensor<float> sum, uint32_t flags, bool incoming)
+                                     LocalTensor<float> sum, uint32_t flags, bool incoming, bool dense = false)
     {
+        const uint32_t bytes = dense ? flags * 4U : flags * 32U;
+#ifdef DEEPEP_LL_COMBINE_PROFILE
+        bool missed = false;
+        auto snapshot = incoming ? readyZero_ : prepareZero_;
+#endif
         while (true) {
             const uint64_t loadStart = profile_.DetailClock();
             // The previous reduction has completed before MTE2 overwrites input.
             Sync<HardEvent::V_MTE2>();
-            DataCopyPad(input, gm, {1U, flags * 32U, 0U, 0U, 0U}, {false, 0U, 0U, 0.0f});
+            DataCopyPad(input, gm, {1U, bytes, 0U, 0U, 0U}, {false, 0U, 0U, 0.0f});
             Sync<HardEvent::MTE2_V>();
             profile_.Elapsed(incoming ? CombineProfile::ReadyPollLoadTicks : CombineProfile::NotifyPollLoadTicks,
                              loadStart);
             const uint64_t checkStart = profile_.DetailClock();
-            ReduceSum<float>(sum, input, work, 1U, flags, 1U);
+            if (dense) ReduceSum<float>(sum, input, work, int32_t(flags));
+            else ReduceSum<float>(sum, input, work, 1U, flags, 1U);
             Sync<HardEvent::V_S>();
-            const bool ready = sum.GetValue(0U) == float(flags);
+            // Dense rows contain zero padding after each producer rank's cores.
+            const bool ready = sum.GetValue(0U) == float(dense ? Group * coreNum_ : flags);
             profile_.Elapsed(incoming ? CombineProfile::ReadyPollCheckTicks : CombineProfile::NotifyPollCheckTicks,
                              checkStart);
             profile_.Add(incoming ? CombineProfile::ReadyPollCalls : CombineProfile::NotifyPollCalls);
             profile_.Add(incoming ? CombineProfile::ReadyPollMisses : CombineProfile::NotifyPollMisses,
                          ready ? 0U : 1U);
-            if (ready) return;
+            profile_.MaxElapsed(incoming ? CombineProfile::ReadyPollMaxTicks : CombineProfile::NotifyPollMaxTicks,
+                                loadStart);
+            if (ready) {
+                if (incoming) profile_.Mark(CombineProfile::ReadyObserved);
+#ifdef DEEPEP_LL_COMBINE_PROFILE
+                // Inspect only the LAST missed snapshot, after readiness. Do
+                // not add a scalar scan of every flag to every polling round.
+                if (missed) InspectReadySnapshot(snapshot, flags, incoming, dense);
+#endif
+                return;
+            }
+#ifdef DEEPEP_LL_COMBINE_PROFILE
+            if (loadStart) {
+                const uint64_t copyStart = profile_.DetailClock();
+                Adds<float>(snapshot, input, 0.0f, bytes / 4U);
+                Sync<HardEvent::V_S>();
+                missed = true;
+                profile_.Elapsed(incoming ? CombineProfile::ReadyInspectTicks : CombineProfile::NotifyInspectTicks,
+                                 copyStart);
+            }
+#endif
             PauseAfterFlagMiss(profile_);
         }
     }
+#ifdef DEEPEP_LL_COMBINE_PROFILE
+    __aicore__ inline void InspectReadySnapshot(LocalTensor<float> snapshot, uint32_t flags, bool incoming, bool dense)
+    {
+        const uint64_t begin = profile_.DetailClock();
+        uint32_t first = 0xffffffffU, count = 0U;
+        for (uint32_t i = 0U; i < flags; ++i) {
+            if (dense && i % kCoreReadyPeerWords >= coreNum_) continue;
+            if (snapshot.GetValue(dense ? i : i * 8U) != 1.0f) {
+                if (!count) first = i;
+                ++count;
+            }
+        }
+        if (incoming) {
+            profile_.Set(CombineProfile::ReadyMissingRank, uint32_t(args_->rank) / Group * Group +
+                         (dense ? first / kCoreReadyPeerWords : first));
+            profile_.Set(CombineProfile::ReadyMissingCore, dense ? first % kCoreReadyPeerWords : 0xffffffffU);
+            profile_.Set(CombineProfile::ReadyMissingCount, count);
+        } else {
+            profile_.Set(CombineProfile::NotifyMissingCore, first);
+            profile_.Set(CombineProfile::NotifyMissingCount, count);
+        }
+        profile_.Elapsed(incoming ? CombineProfile::ReadyInspectTicks : CombineProfile::NotifyInspectTicks, begin);
+        Sync<HardEvent::S_V>(); // scalar snapshot reads finish before the zero fill
+    }
+#endif
+#if DEEPEP_LL_COMBINE_NOTIFY > 0
+    __aicore__ inline void PublishReadySimt(bool perCore)
+    {
+        auto bases = notifyUb_.ReinterpretCast<uint64_t>();
+        const uint32_t groupBase = uint32_t(args_->rank) / Group * Group;
+        const uint32_t first = perCore ? 0U : core_ - notifyBegin_;
+        const uint32_t step = perCore ? 1U : DispatchDedup::kLlNotifyCoreNum;
+        uint32_t peers = 0U;
+        for (uint32_t local = first; local < Group; local += step) {
+            const uint32_t peer = groupBase + local;
+            if (LlTransport::RemoteWrite(args_, peer)) { Trap(); return; }
+            const uint64_t offset = control_ + (perCore ? COMBINE_DEDUP_EP_SERVER_DEDUP_COMBINE_CORE_READY_OFFSET :
+                                                         COMBINE_DEDUP_EP_SERVER_DEDUP_COMBINE_SERVER_READY_OFFSET);
+            bases.SetValue(peers++, reinterpret_cast<uint64_t>(args_->peerMems[peer] + offset));
+        }
+        if (!peers) return;
+        Sync<HardEvent::S_V>();
+        const uint32_t word = perCore ? ((uint32_t(args_->rank) % Group) * kCoreReadyPeerWords + core_) * 4U :
+                                       (uint32_t(args_->rank) % Group) * 32U;
+        asc_vf_call<PublishCombineReadyVf>(dim3(128), reinterpret_cast<__ubuf__ uint64_t*>(bases.GetPhyAddr()),
+                                         peers, recvCores_, perCore ? kCoreReadyRowBytes : 512U, word);
+        Sync<HardEvent::V_S>();
+        DataSyncBarrier<MemDsbT::DDR>();
+        profile_.Add(CombineProfile::NotifyStores, peers * recvCores_);
+    }
+#endif
     __aicore__ inline void NotifyServerCard()
     {
         profile_.Mark(CombineProfile::NotifyBegin);
@@ -621,14 +711,21 @@ private:
         profile_.Mark(CombineProfile::NotifyLocalReady);
         const uint64_t resetStart = profile_.DetailClock();
         Duplicate<float>(prepareZero_, 0.0f, coreNum_ * 8U);
+#if DEEPEP_LL_COMBINE_NOTIFY == 0
         Duplicate<float>(notifyUb_, 0.0f, recvCores_ * 8U);
         Sync<HardEvent::V_S>();
         for (uint32_t r = 0; r < recvCores_; ++r) notifyUb_.SetValue(r * 8U, 1.0f);
         Sync<HardEvent::V_MTE3>();
         Sync<HardEvent::S_MTE3>();
+#else
+        Sync<HardEvent::V_MTE3>();
+#endif
         DataCopyPad(done, prepareZero_, {1U, coreNum_ * 32U, 0U, 0U, 0U});
         profile_.Elapsed(CombineProfile::NotifyResetTicks, resetStart);
         const uint64_t publishStart = profile_.DetailClock();
+#if DEEPEP_LL_COMBINE_NOTIFY == 1
+        PublishReadySimt(false);
+#else
         // Eight notification cores cover all peers in the logical group.
         // Ready rows retain 512-byte capacity, independent of active group size.
         const uint32_t groupBase = uint32_t(args_->rank) / Group *
@@ -640,19 +737,28 @@ private:
                 notifyUb_.ReinterpretCast<uint8_t>(), recvCores_, 512U, false,
                 prepareInput_.ReinterpretCast<uint8_t>());
         }
+#endif
         profile_.Elapsed(CombineProfile::NotifyPublishTicks, publishStart);
         profile_.Mark(CombineProfile::NotifyEnd);
     }
     __aicore__ inline void WaitServerReady()
     {
         profile_.Mark(CombineProfile::ReadyBegin);
+#if DEEPEP_LL_COMBINE_NOTIFY == 2
+        auto ready = Control(args_->rank, COMBINE_DEDUP_EP_SERVER_DEDUP_COMBINE_CORE_READY_OFFSET +
+                                         uint64_t(core_ - sendCores_) * kCoreReadyRowBytes);
+        WaitFlags(ready, readyInput_, readyWork_, readySum_, Group * kCoreReadyPeerWords, true, true);
+        const uint32_t resetBytes = Group * kCoreReadyPeerWords * 4U;
+#else
         auto ready = Control(args_->rank, COMBINE_DEDUP_EP_SERVER_DEDUP_COMBINE_SERVER_READY_OFFSET +
                                               uint64_t(core_ - sendCores_) * 512U);
         WaitFlags(ready, readyInput_, readyWork_, readySum_, Group, true);
+        const uint32_t resetBytes = 512U;
+#endif
         const uint64_t resetStart = profile_.DetailClock();
-        Duplicate<float>(readyZero_, 0.0f, 128U);
+        Duplicate<float>(readyZero_, 0.0f, resetBytes / 4U);
         Sync<HardEvent::V_MTE3>();
-        DataCopyPad(ready, readyZero_, {1U, 512U, 0U, 0U, 0U});
+        DataCopyPad(ready, readyZero_, {1U, resetBytes, 0U, 0U, 0U});
         profile_.Elapsed(CombineProfile::ReadyResetTicks, resetStart);
         profile_.Mark(CombineProfile::ReadyEnd);
     }

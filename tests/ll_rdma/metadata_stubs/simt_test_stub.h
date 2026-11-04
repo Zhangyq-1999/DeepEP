@@ -5,6 +5,8 @@
 #define __launch_bounds__(n)
 struct dim3 { unsigned x; explicit dim3(unsigned n):x(n) {} };
 inline thread_local struct { unsigned x; } threadIdx;
+template<class T> inline void asc_stcg(T* address, T value) { *address = value; }
+inline void asc_threadfence() {}
 template<auto F, class... Args> void asc_vf_call(dim3 block, Args... args)
 {
     for (unsigned lane = 0; lane < block.x; ++lane) { threadIdx.x = lane; F(args...); }

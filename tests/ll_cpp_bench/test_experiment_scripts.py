@@ -8,8 +8,8 @@ import subprocess
 import pytest
 
 HERE = Path(__file__).resolve().parent
-PROFILES = ("ref-profile", "card-all-profile", "card-row-profile", "server-all-profile", "server-row-profile")
-CLEAN = ("base", "card-all", "card-row", "server-all", "server-row")
+PROFILES = ("ref-profile", "remote-profile", "notify-simt-profile", "notify-core-profile")
+CLEAN = ("base", "remote", "notify-simt", "notify-core")
 
 
 @pytest.fixture
@@ -73,7 +73,7 @@ def call_options(output):
 def test_build_all_isolated_matrix_and_failure_stop(harness):
     run, env = harness
     calls = call_options(run("build_all.sh").stdout)
-    assert len(calls) == 10
+    assert len(calls) == 8
     for name, call in zip((*CLEAN, *PROFILES), calls):
         assert call["--build-dir"].endswith("/build/ll-cpp-" + name)
         assert call["--variant"] == ("base" if name == "base" else "opt")
@@ -81,7 +81,7 @@ def test_build_all_isolated_matrix_and_failure_stop(harness):
         assert call["--small-batch"] == ("ON" if name == "opt-profile" else "OFF")
         assert call["--recv-cores"] == ("36" if name == "r36-profile" else "0")
         assert call["--early-reduce"] == ("ON" if name == "early-profile" else "OFF")
-        assert call["--remote-first"] == ("ON" if name in ("remote", "return", "remote-profile", "return-profile") else "OFF")
+        assert call["--remote-first"] == ("ON" if (name.startswith("notify-") or name in ("remote", "return", "remote-profile", "return-profile")) else "OFF")
         assert call["--defer-return"] == ("ON" if name in ("pipeline", "return", "pipeline-profile", "return-profile") else "OFF")
         assert call["--ranks-per-host"] == "4"
         assert call["--early-issue"] == ("ON" if name in ("issue", "issue-probe", "issue-profile", "issue-probe-profile") else "OFF")
@@ -89,6 +89,7 @@ def test_build_all_isolated_matrix_and_failure_stop(harness):
         assert call["--simt-meta"] == ("ON" if name.startswith("prepare") else "OFF")
         assert call["--prefetch-return"] == ("ON" if name.startswith("batch-pipeline") else "OFF")
         assert call["--simt-flag"] == "OFF"
+        assert call["--notify"] == ("1" if name.startswith("notify-simt") else "2" if name.startswith("notify-core") else "0")
         assert call["--local-first"] == ("ON" if name.startswith("batch") else "OFF")
         assert call["--batch-final"] == ("ON" if name.startswith("batch") else "OFF")
         assert call["--poll-nop"] == ("800" if name.startswith("poll800") else "0")
@@ -97,7 +98,7 @@ def test_build_all_isolated_matrix_and_failure_stop(harness):
         assert call["--shmem-root"].endswith("/third-party/shmem/install/shmem")
     env["FAIL_BUILD"] = "ref-profile"
     result = run("build_all.sh", ok=False)
-    assert result.returncode == 17 and len(call_options(result.stdout)) == 6
+    assert result.returncode == 17 and len(call_options(result.stdout)) == 5
     assert "CALL" not in run("build_all.sh", "--variants", "base,typo", ok=False).stdout
 
 

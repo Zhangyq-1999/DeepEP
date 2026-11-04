@@ -24,10 +24,20 @@ option(DEEPEP_LL_COMBINE_PROGRESS_PROBE "Remember confirmed result contributions
 option(DEEPEP_LL_COMBINE_SIMT_META "SIMT stable task compaction and batch metadata loads" OFF)
 option(DEEPEP_LL_COMBINE_SIMT_FLAG "SIMT checks of complete UB flag snapshots" OFF)
 option(DEEPEP_LL_COMBINE_PREFETCH_RETURN "Post the previous return after issuing next input reads" OFF)
+set(DEEPEP_LL_COMBINE_NOTIFY "0" CACHE STRING "0=MTE rank, 1=SIMT rank, 2=SIMT per core")
+if(NOT DEEPEP_LL_COMBINE_NOTIFY MATCHES "^[012]$")
+    message(FATAL_ERROR "notify must be 0, 1 or 2")
+endif()
+if(DEEPEP_LL_COMBINE_NOTIFY AND (DEEPEP_LL_COMBINE_ORIGINAL OR DEEPEP_LL_OPS_BASE))
+    message(FATAL_ERROR "Notification experiments require --variant opt")
+endif()
 set(DEEPEP_LL_COMBINE_COALESCE "0" CACHE STRING "0=off, 1=destination card, 2=server same-slot relay")
 set(DEEPEP_LL_COMBINE_COALESCE_ROWS "0" CACHE STRING "0=one whole bucket WQE, 1=one hidden per WQE")
 if(NOT DEEPEP_LL_COMBINE_COALESCE MATCHES "^[012]$" OR NOT DEEPEP_LL_COMBINE_COALESCE_ROWS MATCHES "^[01]$")
     message(FATAL_ERROR "Invalid coalesce mode or packet size")
+endif()
+if(DEEPEP_LL_COMBINE_NOTIFY AND DEEPEP_LL_COMBINE_COALESCE)
+    message(FATAL_ERROR "Test notification and coalescing experiments separately")
 endif()
 if(DEEPEP_LL_COMBINE_COALESCE AND (DEEPEP_LL_COMBINE_ORIGINAL OR DEEPEP_LL_OPS_BASE))
     message(FATAL_ERROR "Coalescing requires --variant opt")
@@ -135,6 +145,7 @@ target_link_directories(ll_bench_variant PRIVATE "${ASCEND_HOME_PATH}/lib64"
 target_link_libraries(ll_bench_variant PRIVATE MPI::MPI_CXX ascendcl shmem deepep_device
     tiling_api platform unified_dlog ${CMAKE_DL_LIBS} pthread)
 target_compile_definitions(ll_bench_variant PRIVATE DEEPEP_LL_RDMA=1 DEEPEP_LL_METADATA_CORES=4
+    DEEPEP_LL_COMBINE_NOTIFY=${DEEPEP_LL_COMBINE_NOTIFY}
     DEEPEP_LL_COMBINE_COALESCE=${DEEPEP_LL_COMBINE_COALESCE}
     DEEPEP_LL_COMBINE_COALESCE_ROWS=${DEEPEP_LL_COMBINE_COALESCE_ROWS}
     DEEPEP_LL_COMBINE_ORIGINAL=$<BOOL:${DEEPEP_LL_COMBINE_ORIGINAL}>
@@ -146,6 +157,7 @@ target_compile_definitions(ll_bench_variant PRIVATE DEEPEP_LL_RDMA=1 DEEPEP_LL_M
     $<$<BOOL:${DEEPEP_LL_COMBINE_BATCH_FINAL}>:DEEPEP_LL_COMBINE_BATCH_FINAL=1>
     $<$<BOOL:${DEEPEP_LL_COMBINE_EARLY_REDUCE}>:DEEPEP_LL_COMBINE_EARLY_REDUCE=1>)
 target_compile_definitions(ll_bench_variant PRIVATE
+    DEEPEP_BENCH_NOTIFY=${DEEPEP_LL_COMBINE_NOTIFY}
     DEEPEP_BENCH_COALESCE=${DEEPEP_LL_COMBINE_COALESCE}
     DEEPEP_BENCH_COALESCE_ROWS=${DEEPEP_LL_COMBINE_COALESCE_ROWS}
     DEEPEP_BENCH_REMOTE_FIRST=$<BOOL:${DEEPEP_LL_COMBINE_REMOTE_FIRST}>
@@ -214,4 +226,4 @@ if(DEEPEP_LL_OPS_BASE)
         "implementation=ops-shmem-base\nupstream=${LL_OPS_REV}\ntransport=SHMEM QP Put; quiet at upstream batch boundary\n")
 endif()
 file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/bench-build.txt" CONTENT
-    "source=${_source_id}\noriginal=${DEEPEP_LL_COMBINE_ORIGINAL}\nbaseline_revision=${LL_COMBINE_BASELINE_REV}\ncombine_source=${DEEPEP_LL_COMBINE_SOURCE}\nsmall_batch=${DEEPEP_LL_COMBINE_SMALL_BATCH}\nrecv_cores=${DEEPEP_LL_COMBINE_RECV_CORES}\nearly_reduce=${DEEPEP_LL_COMBINE_EARLY_REDUCE}\nremote_first=${DEEPEP_LL_COMBINE_REMOTE_FIRST}\ndefer_return=${DEEPEP_LL_COMBINE_DEFER_RETURN}\nearly_issue=${DEEPEP_LL_COMBINE_EARLY_ISSUE}\nprogress_probe=${DEEPEP_LL_COMBINE_PROGRESS_PROBE}\nsimt_meta=${DEEPEP_LL_COMBINE_SIMT_META}\nsimt_flag=${DEEPEP_LL_COMBINE_SIMT_FLAG}\nlocal_first=${DEEPEP_LL_COMBINE_LOCAL_FIRST}\nbatch_final=${DEEPEP_LL_COMBINE_BATCH_FINAL}\npoll_nop=${DEEPEP_LL_COMBINE_POLL_NOP}\nprefetch_return=${DEEPEP_LL_COMBINE_PREFETCH_RETURN}\ncoalesce=${DEEPEP_LL_COMBINE_COALESCE}\ncoalesce_rows=${DEEPEP_LL_COMBINE_COALESCE_ROWS}\nranks_per_host=${DEEPEP_LL_PHYSICAL_RANKS_PER_HOST}\nprofile=${DEEPEP_LL_COMBINE_PROFILE}\nmpi=${MPI_CXX_COMPILER}\nshmem=${SHMEM_ROOT}\n")
+    "source=${_source_id}\noriginal=${DEEPEP_LL_COMBINE_ORIGINAL}\nbaseline_revision=${LL_COMBINE_BASELINE_REV}\ncombine_source=${DEEPEP_LL_COMBINE_SOURCE}\nsmall_batch=${DEEPEP_LL_COMBINE_SMALL_BATCH}\nrecv_cores=${DEEPEP_LL_COMBINE_RECV_CORES}\nearly_reduce=${DEEPEP_LL_COMBINE_EARLY_REDUCE}\nremote_first=${DEEPEP_LL_COMBINE_REMOTE_FIRST}\ndefer_return=${DEEPEP_LL_COMBINE_DEFER_RETURN}\nearly_issue=${DEEPEP_LL_COMBINE_EARLY_ISSUE}\nprogress_probe=${DEEPEP_LL_COMBINE_PROGRESS_PROBE}\nsimt_meta=${DEEPEP_LL_COMBINE_SIMT_META}\nsimt_flag=${DEEPEP_LL_COMBINE_SIMT_FLAG}\nlocal_first=${DEEPEP_LL_COMBINE_LOCAL_FIRST}\nbatch_final=${DEEPEP_LL_COMBINE_BATCH_FINAL}\npoll_nop=${DEEPEP_LL_COMBINE_POLL_NOP}\nprefetch_return=${DEEPEP_LL_COMBINE_PREFETCH_RETURN}\nnotify=${DEEPEP_LL_COMBINE_NOTIFY}\ncoalesce=${DEEPEP_LL_COMBINE_COALESCE}\ncoalesce_rows=${DEEPEP_LL_COMBINE_COALESCE_ROWS}\nranks_per_host=${DEEPEP_LL_PHYSICAL_RANKS_PER_HOST}\nprofile=${DEEPEP_LL_COMBINE_PROFILE}\nmpi=${MPI_CXX_COMPILER}\nshmem=${SHMEM_ROOT}\n")

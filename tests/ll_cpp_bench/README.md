@@ -27,26 +27,34 @@ git pull --ff-only origin perf/ll-combine-small-batch
 bash tests/ll_cpp_bench/build_all.sh
 ```
 
-`build_all.sh` 默认更新以下 10 个构建目录，每个构建使用 4 个编译任务。Dispatch 用于准备 Combine 的输入和路由，同一配置只编译一次，各版本复用它的目标文件。每个版本再单独编译 Combine，并链接成独立的 kernel 库。
+`build_all.sh` 默认更新以下 8 个构建目录，每个构建使用 4 个编译任务。Dispatch 用于准备 Combine 的输入和路由，同一配置只编译一次，各版本复用它的目标文件。每个版本再单独编译 Combine，并链接成独立的 kernel 库。
 
 已有目录继续用于增量编译。只修改 Combine 时，Dispatch 无需重编；修改 Dispatch 或它依赖的头文件时，构建系统自动重编受影响的部分。共享目标文件保存在 `build/ll-cpp-dispatch`，不同编译器、SDK 和每机 rank 数使用独立目录。更新代码后，两台机器都执行一次 `build_all.sh`，更新所有选中的版本。
 
 | 构建名 | 启用的实验 | 打点 |
 | --- | --- | --- |
 | `base` | 冻结的上游原版 | 关闭 |
-| `card-all` | 同一目标卡的 hidden 聚合成一个 WQE | 关闭 |
-| `card-row` | 同一目标卡使用相同打包路径，每行 hidden 一个 WQE | 关闭 |
-| `server-all` | 同一目标 server 的 hidden 聚合，发到同号卡后解包转发 | 关闭 |
-| `server-row` | 同号卡接收并转发，每行 hidden 一个 WQE | 关闭 |
+| `remote` | 优先处理跨 server 的 DIRECT、FIRST_HOP 回传 | 关闭 |
+| `notify-simt` | remote + 保留最后 8 核汇总本卡 ready，改用 SIMT 发布机内通知 | 关闭 |
+| `notify-core` | remote + 每个生产核暂存完成后，直接用 SIMT 通知组内接收核 | 关闭 |
 | `ref-profile` | 实验开关全部关闭，用作打点对照 | 开启 |
-| `card-all-profile`、`card-row-profile` | 与对应的 card 版本相同 | 开启 |
-| `server-all-profile`、`server-row-profile` | 与对应的 server 版本相同 | 开启 |
+| `remote-profile` | 与 remote 相同 | 开启 |
+| `notify-simt-profile` | 与 notify-simt 相同 | 开启 |
+| `notify-core-profile` | 与 notify-core 相同 | 开启 |
 
-本轮比较按目标卡聚合和按目标 server 聚合。每种路径再比较整批发送与单行发送，详见 [RDMA hidden 聚合实验](COALESCE_AB.md)。聚合以单个发送 rank 为单位，覆盖本 rank 的全部生产核。server 路径将数据发到对端同号卡，由专用核解包，再通过机内 MTE 写入最终目标卡。
+本轮先比较 base 与 remote，判断跨机回传优先是否有效；再将两种通知版与 remote 比较。三种实验均保持原有数值计算顺序。remote 调整任务遍历顺序，也会改变部分任务所属的核和 QP。
 
-H3584/BF16 的 hidden 为 7168 B。原有块尾 flag 将一行扩展到 7680 B；加入聚合元数据和包头、包尾后，单行实验包为 7776 B。整批版把同一目标的全部行合成一个连续包，用一个 WQE 提交。它会增加等齐和打包开销，是否降低总时延需要实测。
+SIMT 集中通知版保留原有本卡完成汇总。逐核版让全部生产核在 MTE3 拷贝完成后直接发通知，没有搬运任务的核也参与。每个接收核拥有独立的 flag 行，用 Vector 一次检查组内所有生产核，确认后清零自己的行。两种版本都只向机内映射地址发布 ready，不走 RDMA。
 
-四个版本关闭此前的 `local-first`、`batch-final`、SIMT 和 Nop 实验，保持原有数值计算顺序。Host 模型已检查路由、空包、多轮缓冲复用和逐字节解包；CANN 编译、设备精度和性能仍需在目标机器验证。
+逐核版增加通知条数和检查量，是否缩短等待需要实测。两种 SIMT 版本都为 SIMT Data Cache 预留空间，接收 UB 和启动 UB 使用 216 KiB；布局计算会相应调整缓冲槽数。单独构建时，用 `build.sh --notify 1` 选择集中通知，`--notify 2` 选择逐核通知，`0` 保留 MTE 通知。通知实验与 hidden 聚合实验分别测试。
+
+回传暂存区未装满时，最后一批 CQ 等待在核尾执行。暂存区装满后，必须确认发送完成才能复用，保留这处等待。Group 与每机参与 rank 数一致时，先提交跨机任务，再处理本机任务；最终归约仍沿用原算法。
+
+回显新增 `G` 行，显示所选 Event rank 上最长的 group ready 等待、轮询次数、单次检查最大耗时，以及最后未到齐的 rank/core。`N` 行显示集中通知核的本卡等待和发布时间。`c=4294967295` 表示集中通知只能定位到 rank，`n=0` 表示没有捕获缺失。这些时间都相对各核自身入口，不能直接相减来计算跨核传输时延。
+
+打点版保留最后一次未就绪的 UB 快照，在确认就绪后只扫描一次，用于定位缺失来源。`ready_inspect_ticks`、`notify_inspect_ticks` 单独记录快照和检查开销。Perfetto 增加逐核 SIMT 发布、group ready 实际轮询、就绪后诊断与清零区间。性能收益看干净版 Event，打点版用于定位原因。
+
+此前的 `card-all`、`card-row`、`server-all`、`server-row` 及其打点版仍可通过 `--variants` 选择，详见 [RDMA hidden 聚合实验](COALESCE_AB.md)。
 
 EP8 实测中，轮询暂停没有带来稳定收益，默认构建和运行均关闭 Nop。筛选、flag 检查和归约继续使用 Vector。此前的 SIMT 筛选实验也保持关闭。
 
@@ -64,7 +72,7 @@ bash tests/ll_cpp_bench/run_all.sh
 bash tests/ll_cpp_bench/run_all.sh 第一台打印的RUN_ID
 ```
 
-默认先跑 base 和四个聚合干净版，再跑对应的五个打点版。每版测试 **BS32、48、64、72、256**，形状为 EP8、H3584、TopK 8、384 个专家、BF16、随机路由、seed 0、capacity 256。每个 BS 预热 10 轮；干净版采样 100 轮，打点版采样 10 轮。`--iters` 和 `--profile-iters` 分别控制两类采样次数。
+默认先跑四个干净版，再跑对应的四个打点版。每版测试 **BS32、48、64、72、256**，形状为 EP8、H3584、TopK 8、384 个专家、BF16、随机路由、seed 0、capacity 256。每个 BS 预热 10 轮；干净版采样 100 轮，打点版采样 10 轮。`--iters` 和 `--profile-iters` 分别控制两类采样次数。
 
 干净版在编译时关闭打点，使用独立 kernel。打点版在预热前启用所选打点级别，让预热和采样执行相同路径。一次运行可同时包含两类版本，`--profile 2` 只作用于支持打点的构建。
 
@@ -80,7 +88,7 @@ bash tests/ll_cpp_bench/run_all.sh 第一台打印的RUN_ID
 
 自定义间隔可在 `build.sh --variant opt` 后设置 `--poll-nop 400`，`0` 表示不暂停；`build_all.sh` 的 `poll800` 固定使用 800。base 拒绝该开关，保留独立的冻结 kernel。入口同步由用例单独处理，详见下文“采样与结果”。
 
-旧的 `meta`、`flag` 等 SIMT 实验继续保留供复查。启用它们时，启动参数和接收缓冲均限制为 216 KiB，为系统及 SIMT Data Cache 留出空间，详见 [CANN 的 UB 划分说明](https://asc.gitcode.com/api/SIMT-API/SIMD_SIMT_hybrid_programming_intro/programming_model.html)。默认版本均不启用 SIMT，保持纯 SIMD 的缓冲配置。
+旧的 `meta`、`flag` 等 SIMT 实验继续保留供复查。启用它们时，启动参数和接收缓冲均限制为 216 KiB，为系统及 SIMT Data Cache 留出空间，详见 [CANN 的 UB 划分说明](https://asc.gitcode.com/api/SIMT-API/SIMD_SIMT_hybrid_programming_intro/programming_model.html)。本轮的两种通知版同样预留 SIMT 空间；base 和 remote 保持纯 SIMD 的缓冲配置。
 
 参数仍可覆盖，例如：
 
@@ -120,7 +128,7 @@ bash tests/ll_cpp_bench/run_all.sh --hosts HOST0,HOST1 --node-rank 0 \
 
 跨机适配使用 `aclshmemx_roce_qp_put_nbi`，在原有批次边界调用 `aclshmemx_roce_qp_quiet`。这与原仓 Hcomm 的批量提交、CQE 策略有差异，结果用于比较 SHMEM 后端上的算法方案。单机也运行这套分层算法，只执行机内阶段。原来的 `base` 继续使用冻结的 DeepEP kernel。
 
-两边分别按需编译，默认 `build_all.sh` 构建前文的 10 个版本：
+两边分别按需编译，默认 `build_all.sh` 构建前文的 8 个版本：
 
 ```bash
 bash tests/ll_cpp_bench/build_all.sh --ranks-per-host 16 --variants base,ops-shmem-base
@@ -179,6 +187,7 @@ base 和 opt 使用各自的 Combine kernel 源码。base 从上游提交 `5b38b
 | 编译参数 | 默认值 | 作用 |
 | --- | --- | --- |
 | `--ranks-per-host 4` | 16 | 编译每机参与 rank 数；便捷脚本 `build_all.sh` 默认传 4 |
+| `--notify 1` | 0 | 0 保留 MTE 集中通知，1 使用 SIMT 集中通知，2 使用 SIMT 逐核通知 |
 | `--coalesce 1` | 0 | 0 关闭，1 按目标卡聚合，2 按目标 server 聚合并经同号卡转发；仅适用于跨机测试 |
 | `--coalesce-rows 1` | 0 | 聚合路径中，0 表示整个目标一包，1 表示每行一包 |
 | `--local-first ON` | OFF | 源卡先累加本机贡献，再累加跨机贡献；各组内部按 slot 顺序累加 |
@@ -195,11 +204,11 @@ base 和 opt 使用各自的 Combine kernel 源码。base 从上游提交 `5b38b
 | `--remote-first ON` | OFF | 跨机结果优先回传，本机结果随后处理 |
 | `--defer-return ON` | OFF | 多输出槽时，用下一包准备掩盖上一包 GM 暂存；组内末包立即提交 |
 
-回传顺序与暂存流水的分析和新增打点见 [回传优化对照](RETURN_PIPELINE_AB.md)。这两个开关默认关闭，先独立对比，再测试组合。
+回传顺序与暂存流水的分析和新增打点见 [回传优化对照](RETURN_PIPELINE_AB.md)。本轮 remote 和两种通知版开启 `remote-first`，`defer-return` 保持关闭。
 
 `--local-first` 适用于当前全部 BS，与 `--early-reduce`、`--progress-probe` 和 `--simt-flag` 互斥。前者改变最终归约的顺序，`--remote-first` 则改变发送侧的回传顺序，两者含义不同。
 
-显式接收核数支持 8～36，并须小于实际 AIV 总核数。其余核负责 DIRECT 回传，TERMINAL 暂存仍由全部核参与。各 rank 使用相同的核数配置；最后 8 核负责组内就绪通知。
+显式接收核数支持 8～36，并须小于实际 AIV 总核数。其余核负责 DIRECT 回传，TERMINAL 暂存仍由全部核参与。各 rank 使用相同的核数配置；集中通知模式下，最后 8 核负责组内就绪通知；逐核模式由各生产核直接发布。
 
 分核调整参考了上游 [ll-configurable-groups 的实现](https://github.com/TangYunfei147/DeepEP-LL/blob/705decf9bd24a0ead24368a2a19307c36dd09ea2/tests/ll_stage_timer/CORE_SPLIT.md)。接收核可以超过总核数的一半，例如 56 核时配置 20 个发送核和 36 个接收归约核。当前分支继续使用已有控制区容量、Get 汇集和跨机 RDMA 回传，base 使用原冻结源码。
 
@@ -466,7 +475,7 @@ bash tests/ll_cpp_bench/summarize.sh --perfetto \
 
 `notify_local_ready` 分开本卡准备等待与通知发布。`direct_first_submit`、`direct_last_submit` 和 `direct_pending_end` 标出首个提交调用、末个调用返回以及待提交任务处理完的位置。`final_first_ready`、`final_last_ready` 标出成功检查数据就绪的位置；`final_last_store` 标出末个输出写回的下发位置。最终输出完成仍以原有 drain 和 kernel 收尾为准。
 
-时间字段使用设备原始 tick。`entry_tick` 保留原始值，其余阶段时间戳均减去本核入口时间；缺失阶段留空。`profile_init_end` 标出诊断记录初始化完成的位置，可据此分开打点初始化与业务初始化。一级打点中的二级字段留空。schema 9 每核使用 1792 B 记录，在原有收尾完成后集中写出。新增的 `coalesce_*` 字段记录聚合等待、打包、接收与解包，终端以 `A` 行显示专用核的信息。
+时间字段使用设备原始 tick。`entry_tick` 保留原始值，其余阶段时间戳均减去本核入口时间；缺失阶段留空。`profile_init_end` 标出诊断记录初始化完成的位置，可据此分开打点初始化与业务初始化。一级打点中的二级字段留空。schema 10 每核使用 2048 B 记录，在原有收尾完成后集中写出。新增的 `coalesce_*` 字段记录聚合等待、打包、接收与解包，终端以 `A` 行显示专用核的信息。
 
 分析时先选择同一配置、同一轮的记录，比较发送核与接收核的任务量和阶段耗时。常见判断如下：
 

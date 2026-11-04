@@ -94,8 +94,8 @@ void compact_record(const Record& r)
               << " final=" << r[FinalTokens] << '/' << r[Contributions] << " local/get=" << r[PartialLocalContrib]
               << '/' << r[PartialGetContrib] << '\n';
     std::cout << "  end";
-    for (Word w : r.receive ? std::vector<Word>{InitEnd, ReadyEnd, PartialEnd, RdmaFirstPut, RdmaLastPut, FinalFirstReady, FinalLastReady, FinalLastStore, DrainEnd, PipeDone}
-                           : std::vector<Word>{InitEnd, StageEnd, NotifyEnd, DirectFirstSubmit, DirectLastSubmit, DirectEnd, PipeDone})
+    for (Word w : r.receive ? std::vector<Word>{InitEnd, StageDrained, CoreNotifyEnd, ReadyObserved, ReadyEnd, PartialEnd, RdmaFirstPut, RdmaLastPut, FinalFirstReady, FinalLastReady, FinalLastStore, DrainEnd, PipeDone}
+                           : std::vector<Word>{InitEnd, StageEnd, CoreNotifyEnd, NotifyEnd, DirectFirstSubmit, DirectLastSubmit, DirectEnd, PipeDone})
         if (r.present[w]) std::cout << ' ' << names[w] << '=' << r[w];
     std::cout << "\n  top";
     const auto costs = top_costs(r, kDetailBegin, kDetailEnd);
@@ -112,6 +112,16 @@ void compact_record(const Record& r)
               << " meta_batches=" << r[MetadataBatches] << " tail_inspect=" << r[TailInspectTicks]
               << " pause=calls/ticks:" << r[PollPauseCalls] << '/' << r[PollPauseTicks]
               << " packets/defer/gap=" << r[RdmaPackets] << '/' << r[RdmaDeferredPackets] << '/' << r[RdmaDeferGapTicks] << '\n';
+    if (r[ReadyPollCalls]) {
+        std::cout << "  ready miss/calls/max_probe=" << r[ReadyPollMisses] << '/' << r[ReadyPollCalls]
+                  << '/' << r[ReadyPollMaxTicks] << " inspect=" << r[ReadyInspectTicks];
+        if (r[ReadyMissingCount]) {
+            std::cout << " last_miss=r" << r[ReadyMissingRank] << "/c";
+            if(r[ReadyMissingCore]==0xffffffffU) std::cout << "all"; else std::cout << r[ReadyMissingCore];
+            std::cout << " n=" << r[ReadyMissingCount];
+        }
+        std::cout << '\n';
+    }
     if (r.receive && r[BatchGroupCalls] + r[BatchWholeTokens])
         std::cout << "  batch group_checks/whole_tokens/route_ticks=" << r[BatchGroupCalls] << '/'
                   << r[BatchWholeTokens] << '/' << r[BatchRouteTicks] << '\n';
@@ -256,6 +266,27 @@ void suite_report(const fs::path& root)
                     if (!tail) throw std::runtime_error("Missing Event rank diagnostic role");
                     compact_record(*tail);
                     if (receive) tail_producers(d, *tail);
+                }
+                const Record* notifier=nullptr;
+                const Record* groupWait=nullptr;
+                for(const auto& r:records) if(r[Rank]==event.rank && r.present[ReadyObserved] &&
+                    (!groupWait || r[ReadyObserved]-r[ReadyBegin]>(*groupWait)[ReadyObserved]-(*groupWait)[ReadyBegin])) groupWait=&r;
+                if(groupWait) {
+                    const auto& r=*groupWait;
+                    std::cout << " G r/c=" << r[Rank] << '/' << r[Core] << " wait=" << r[ReadyObserved]-r[ReadyBegin]
+                              << " miss/calls/max_probe=" << r[ReadyPollMisses] << '/' << r[ReadyPollCalls] << '/' << r[ReadyPollMaxTicks]
+                              << " last_r/c/n=" << r[ReadyMissingRank] << '/' << r[ReadyMissingCore] << '/' << r[ReadyMissingCount]
+                              << " inspect=" << r[ReadyInspectTicks] << '\n';
+                }
+                for(const auto& r:records) if(r[Rank]==event.rank && r.present[NotifyBegin] &&
+                    (!notifier || r[NotifyEnd]-r[NotifyBegin]>(*notifier)[NotifyEnd]-(*notifier)[NotifyBegin])) notifier=&r;
+                if(notifier) {
+                    const auto& r=*notifier;
+                    std::cout << " N r/c=" << r[Rank] << '/' << r[Core]
+                              << " local_wait/publish=" << r[NotifyLocalReady]-r[NotifyBegin] << '/' << r[NotifyEnd]-r[NotifyLocalReady]
+                              << " miss/calls/max_probe=" << r[NotifyPollMisses] << '/' << r[NotifyPollCalls] << '/' << r[NotifyPollMaxTicks]
+                              << " last_core/n=" << r[NotifyMissingCore] << '/' << r[NotifyMissingCount]
+                              << " stores=" << r[NotifyStores] << " inspect=" << r[NotifyInspectTicks] << '\n';
                 }
                 const Record* worker=nullptr;
                 for(const auto& r:records) if(r[Rank]==event.rank && r[CoalesceWorker] &&

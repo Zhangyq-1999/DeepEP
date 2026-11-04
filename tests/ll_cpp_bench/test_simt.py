@@ -7,7 +7,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
-@pytest.mark.parametrize("options", [[], ["SIMT_META"], ["SIMT_FLAG"], ["SIMT_META", "SIMT_FLAG"], ["LOCAL_FIRST"], ["LOCAL_FIRST", "BATCH_FINAL"]])
+@pytest.mark.parametrize("options", [["NOTIFY=1"], ["NOTIFY=2"], [], ["SIMT_META"], ["SIMT_FLAG"], ["SIMT_META", "SIMT_FLAG"], ["LOCAL_FIRST"], ["LOCAL_FIRST", "BATCH_FINAL"]])
 def test_simt_launch_and_workspace_fit_ub(tmp_path, options):
     """Exercise the real launch argument and layouts against the hardware budget.
 
@@ -40,7 +40,7 @@ int main() {
     deepep::EpServerDedupCombineKernelArgs args{};
     args.coreNum=56;
     combine_server_dedup_kernel_do(nullptr, &args);
-#if defined(DEEPEP_LL_COMBINE_SIMT_META) || defined(DEEPEP_LL_COMBINE_SIMT_FLAG)
+#if defined(DEEPEP_LL_COMBINE_SIMT_META) || defined(DEEPEP_LL_COMBINE_SIMT_FLAG) || DEEPEP_LL_COMBINE_NOTIFY > 0
     // 256 KiB physical UB minus 8 KiB system and at least 32 KiB SIMT DCache.
     const unsigned limit=216U*1024U;
     assert(launchedUb>=kEpServerDedupCombineRecvUbBytes && launchedUb<=limit);
@@ -80,7 +80,7 @@ int main() {
 ''', encoding="utf-8")
     exe = tmp_path / "ub.exe"
     subprocess.run([zig, "c++", "-std=c++17", "-O1", "-UNDEBUG",
-                    *["-DDEEPEP_LL_COMBINE_" + opt + "=1" for opt in options],
+                    *["-DDEEPEP_LL_COMBINE_" + opt + ("" if "=" in opt else "=1") for opt in options],
                     "-I" + str(ROOT / "csrc"), str(source), "-o", str(exe)], check=True, timeout=180)
     subprocess.run([str(exe)], check=True, timeout=30)
 

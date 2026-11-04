@@ -5,13 +5,14 @@ mpi=${MPI_HOME:-/usr/local/mpich-3.2.1}
 cann=${ASCEND_HOME_PATH:-}
 shmem=${SHMEM_ROOT:-}
 build="$root/build/ll-cpp-base"
-coalesce=0 coalesce_rows=0
+notify=0 coalesce=0 coalesce_rows=0
 batch_final=OFF local_first=OFF poll_nop=0 ranks_per_host=16 issue=OFF probe=OFF simt_meta=OFF simt_flag=OFF prefetch_return=OFF
 small=OFF early=OFF profile=OFF remote_first=OFF defer_return=OFF recv=0 jobs=4 variant=auto ops_source=${OPS_SOURCE_DIR:-}
 while (($#)); do
     case "$1" in
         --help|-h)
             echo 'build.sh --shmem-root SDK [--cann-home SDK] [--mpi-home DIR] [--build-dir DIR]'
+            echo '         [--notify 0|1|2] (MTE rank / SIMT rank / SIMT per-core)'
             echo '         [--coalesce 0|1|2] [--coalesce-rows 0|1] (off/card/server; whole bucket/one hidden)'
             echo '         [--variant base|opt|ops-shmem-base|auto] [--profile ON|OFF] [--small-batch ON|OFF] [--early-reduce ON|OFF] [--recv-cores 0|8..36] [--jobs N]'
             echo '         [--ops-source DIR] optional pinned ops-transformer checkout'
@@ -19,7 +20,7 @@ while (($#)); do
             echo '         [--local-first ON|OFF] [--poll-nop 0..65535] [--simt-meta ON|OFF] [--simt-flag ON|OFF] [--prefetch-return ON|OFF]'
             echo '         [--batch-final ON|OFF] requires --local-first ON; vector batch checks and pipelined reduction'
             exit 0;;
-        --shmem-root|--cann-home|--mpi-home|--build-dir|--variant|--profile|--small-batch|--early-reduce|--recv-cores|--jobs|--remote-first|--defer-return|--ops-source|--early-issue|--progress-probe|--ranks-per-host|--simt-meta|--simt-flag|--prefetch-return|--poll-nop|--local-first|--batch-final|--coalesce|--coalesce-rows)
+        --notify|--shmem-root|--cann-home|--mpi-home|--build-dir|--variant|--profile|--small-batch|--early-reduce|--recv-cores|--jobs|--remote-first|--defer-return|--ops-source|--early-issue|--progress-probe|--ranks-per-host|--simt-meta|--simt-flag|--prefetch-return|--poll-nop|--local-first|--batch-final|--coalesce|--coalesce-rows)
             (($# >= 2)) || { echo "Missing value: $1" >&2; exit 2; }
             key=$1 value=$2; shift 2
             case "$key" in
@@ -29,12 +30,17 @@ while (($#)); do
                 --remote-first) remote_first=$value;; --defer-return) defer_return=$value;;
                 --ops-source) ops_source=$value;; --early-issue) issue=$value;; --progress-probe) probe=$value;; --ranks-per-host) ranks_per_host=$value;;
                 --local-first) local_first=$value;; --poll-nop) poll_nop=$value;; --simt-meta) simt_meta=$value;; --simt-flag) simt_flag=$value;; --prefetch-return) prefetch_return=$value;;
+                --notify) notify=$value;;
                 --batch-final) batch_final=$value;;
                 --coalesce) coalesce=$value;; --coalesce-rows) coalesce_rows=$value;;
             esac;;
         *) echo "Unknown build option: $1" >&2; exit 2;;
     esac
 done
+[[ $notify =~ ^[012]$ ]] || { echo 'notify must be 0, 1 or 2' >&2; exit 2; }
+if [[ $notify != 0 && $coalesce != 0 ]]; then
+    echo 'Test notification and coalescing experiments separately' >&2; exit 2
+fi
 [[ $coalesce =~ ^[012]$ && $coalesce_rows =~ ^[01]$ ]] || { echo 'Invalid coalesce options' >&2; exit 2; }
 if [[ $coalesce != 0 ]]; then
     if [[ $variant == auto ]]; then variant=opt; fi
@@ -64,16 +70,16 @@ if [[ $prefetch_return == ON && $issue == ON ]]; then
 fi
 if [[ $variant == auto ]]; then
     variant=base
-    if [[ $profile == ON || $small == ON || $early == ON || $recv != 0 || $remote_first == ON || $defer_return == ON || $issue == ON || $probe == ON || $simt_meta == ON || $simt_flag == ON || $prefetch_return == ON || $local_first == ON || $poll_nop != 0 ]]; then variant=opt; fi
+    if [[ $profile == ON || $small == ON || $early == ON || $recv != 0 || $remote_first == ON || $defer_return == ON || $issue == ON || $probe == ON || $simt_meta == ON || $simt_flag == ON || $prefetch_return == ON || $local_first == ON || $poll_nop != 0 || $notify != 0 ]]; then variant=opt; fi
 fi
 original=OFF ops_base=OFF
 if [[ $variant == ops-shmem-base ]]; then
-    [[ $profile == OFF && $small == OFF && $early == OFF && $recv == 0 && $remote_first == OFF && $defer_return == OFF && $issue == OFF && $probe == OFF && $simt_meta == OFF && $simt_flag == OFF && $prefetch_return == OFF && $local_first == OFF && $poll_nop == 0 ]] || { echo 'ops-shmem-base is a clean independent kernel' >&2; exit 2; }
+    [[ $profile == OFF && $small == OFF && $early == OFF && $recv == 0 && $remote_first == OFF && $defer_return == OFF && $issue == OFF && $probe == OFF && $simt_meta == OFF && $simt_flag == OFF && $prefetch_return == OFF && $local_first == OFF && $poll_nop == 0 && $notify == 0 ]] || { echo 'ops-shmem-base is a clean independent kernel' >&2; exit 2; }
     ops_base=ON
     if [[ $build == "$root/build/ll-cpp-base" ]]; then build="$root/build/ll-cpp-ops-shmem-base"; fi
 fi
 if [[ $variant == base ]]; then
-    [[ $profile == OFF && $small == OFF && $early == OFF && $recv == 0 && $remote_first == OFF && $defer_return == OFF && $issue == OFF && $probe == OFF && $simt_meta == OFF && $simt_flag == OFF && $prefetch_return == OFF && $local_first == OFF && $poll_nop == 0 ]] || { echo 'Use --variant opt for experimental options' >&2; exit 2; }
+    [[ $profile == OFF && $small == OFF && $early == OFF && $recv == 0 && $remote_first == OFF && $defer_return == OFF && $issue == OFF && $probe == OFF && $simt_meta == OFF && $simt_flag == OFF && $prefetch_return == OFF && $local_first == OFF && $poll_nop == 0 && $notify == 0 ]] || { echo 'Use --variant opt for experimental options' >&2; exit 2; }
     original=ON
 fi
 [[ $jobs =~ ^[0-9]+$ ]] && ((jobs>=1 && jobs<=64)) || { echo 'jobs must be in [1,64]' >&2; exit 2; }
@@ -97,6 +103,7 @@ cmake -S "$root/tests/ll_cpp_bench" -B "$build" -G 'Unix Makefiles' \
     "-DDEEPEP_LL_COMBINE_PREFETCH_RETURN=$prefetch_return" \
     "-DDEEPEP_LL_COMBINE_LOCAL_FIRST=$local_first" \
     "-DDEEPEP_LL_COMBINE_BATCH_FINAL=$batch_final" \
+    "-DDEEPEP_LL_COMBINE_NOTIFY=$notify" \
     "-DDEEPEP_LL_COMBINE_COALESCE=$coalesce" "-DDEEPEP_LL_COMBINE_COALESCE_ROWS=$coalesce_rows" \
     "-DDEEPEP_LL_COMBINE_POLL_NOP=$poll_nop"
 cmake --build "$build" --parallel "$jobs"

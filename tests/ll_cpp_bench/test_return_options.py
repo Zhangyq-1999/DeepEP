@@ -21,8 +21,9 @@ def bash():
     return path
 
 
+@pytest.mark.parametrize("physical", [4, 16])
 @pytest.mark.parametrize("enabled", [False, True])
-def test_return_order_and_lane_admission(tmp_path, enabled):
+def test_return_order_and_lane_admission(tmp_path, enabled, physical):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
     if not zig:
         pytest.skip("Set DEEPEP_TEST_ZIG for CPU C++ checks")
@@ -37,7 +38,7 @@ template<unsigned Group>void Check(unsigned groups,unsigned own) {
  std::vector<unsigned> expected,actual;
  for(unsigned i=0;i<groups;++i) expected.push_back(EpServerOrder::ServerDedupHalfOrder(groups,own,i));
 #ifdef DEEPEP_LL_COMBINE_REMOTE_FIRST
- if(Group==16 && groups>1){
+ if(Group==DispatchDedup::kLlPhysicalRanksPerHost && groups>1){
   expected.erase(std::find(expected.begin(),expected.end(),own));expected.push_back(own);
  }
 #endif
@@ -74,7 +75,7 @@ int main(){
 ''', encoding="utf-8")
     exe = tmp_path / "schedule.exe"
     flags = ["-DDEEPEP_LL_COMBINE_REMOTE_FIRST=1", "-DDEEPEP_LL_COMBINE_DEFER_RETURN=1"] if enabled else []
-    subprocess.run([zig, "c++", "-std=c++17", "-O2", "-UNDEBUG", *flags,
+    subprocess.run([zig, "c++", "-std=c++17", "-O2", "-UNDEBUG", f"-DDEEPEP_LL_PHYSICAL_RANKS_PER_HOST={physical}", *flags,
                     "-I" + str(ROOT / "csrc"), str(source), "-o", str(exe)], check=True, timeout=120)
     subprocess.run([str(exe)], check=True, timeout=30)
 
