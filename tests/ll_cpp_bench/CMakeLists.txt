@@ -160,7 +160,8 @@ target_compile_definitions(ll_bench_variant PRIVATE
 # Hash the compiled source tree, including uncommitted edits, for cross-rank checks.
 file(GLOB_RECURSE _identity_files CONFIGURE_DEPENDS
     "${DEEPEP_SOURCE_DIR}/csrc/*.h" "${DEEPEP_SOURCE_DIR}/csrc/*.hpp" "${DEEPEP_SOURCE_DIR}/csrc/*.cpp"
-    "${CMAKE_CURRENT_LIST_DIR}/*.hpp" "${CMAKE_CURRENT_LIST_DIR}/*.cpp")
+    "${CMAKE_CURRENT_LIST_DIR}/*.hpp" "${CMAKE_CURRENT_LIST_DIR}/*.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/../ll_python_bench/*.hpp")
 list(SORT _identity_files)
 set(_source_hashes "${LL_OPS_REV}")
 foreach(_file IN LISTS _identity_files)
@@ -179,6 +180,27 @@ target_link_libraries(ll_combine_bench PRIVATE MPI::MPI_CXX ascendcl shmem
     tiling_api platform unified_dlog ${CMAKE_DL_LIBS} pthread)
 target_compile_definitions(ll_combine_bench PRIVATE DEEPEP_LL_RDMA=1 DEEPEP_LL_METADATA_CORES=4)
 add_dependencies(ll_combine_bench ll_bench_variant)
+option(DEEPEP_LL_PYTHON_BENCH "Build the PyTorch-controlled benchmark extension" OFF)
+if(DEEPEP_LL_PYTHON_BENCH)
+    if(DEEPEP_LL_OPS_BASE OR DEEPEP_LL_COMBINE_PROFILE)
+        message(FATAL_ERROR "Python timing currently uses clean DeepEP variants")
+    endif()
+    find_package(Python 3.11 REQUIRED COMPONENTS Interpreter Development.Module)
+    find_package(pybind11 CONFIG REQUIRED)
+    pybind11_add_module(_ll_py_combine main.cpp "${DEEPEP_SOURCE_DIR}/csrc/runtime/session.cpp")
+    # Same case generator, Host options and Device library as the C++ variant.
+    foreach(_prop INCLUDE_DIRECTORIES LINK_DIRECTORIES COMPILE_DEFINITIONS)
+        get_target_property(_value ll_bench_variant ${_prop})
+        set_property(TARGET _ll_py_combine PROPERTY ${_prop} "${_value}")
+    endforeach()
+    get_target_property(_libs ll_bench_variant LINK_LIBRARIES)
+    target_link_libraries(_ll_py_combine PRIVATE ${_libs})
+    target_compile_definitions(_ll_py_combine PRIVATE LL_BENCH_PYTHON=1)
+    if(DEEPEP_LL_COMBINE_ORIGINAL)
+        target_sources(_ll_py_combine PRIVATE baseline_queries.cpp)
+    endif()
+    target_link_options(_ll_py_combine PRIVATE -Wl,-Bsymbolic)
+endif()
 if(DEEPEP_LL_OPS_BASE)
     file(WRITE "${CMAKE_BINARY_DIR}/ops-baseline.txt"
         "implementation=ops-shmem-base\nupstream=${LL_OPS_REV}\ntransport=SHMEM QP Put; quiet at upstream batch boundary\n")

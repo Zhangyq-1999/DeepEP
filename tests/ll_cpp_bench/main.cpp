@@ -254,6 +254,9 @@ struct Case {
 };
 }  // namespace
 
+#ifdef LL_BENCH_PYTHON
+#include "../ll_python_bench/bindings.hpp"
+#else
 LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
 {
     static_assert(llbench::workspaceBytes == DispatchDedup::kEpServerDedupPeerBytes);
@@ -440,3 +443,4 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
         peers.barrier();
     }
 }
+#endif
