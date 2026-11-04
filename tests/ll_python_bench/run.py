@@ -123,9 +123,14 @@ class ConfigurationMismatch(RuntimeError):
     """The local leader already printed the shared mismatch report."""
 
 
-def configuration_diff(records):
+def configuration_diff(records, allow_python_patch=False):
     lines = []
     for key in sorted(set().union(*(record.keys() for record in records))):
+        # Each host uses its own installed extension. A CPython patch release
+        # difference alone does not make the distributed test incompatible.
+        if key=="python" and allow_python_patch and all(key in record for record in records):
+            if len({tuple(record[key].split(".")[:2]) for record in records})==1:
+                continue
         groups = {}
         for rank, record in enumerate(records):
             value = json.dumps(record[key],sort_keys=True) if key in record else "<missing>"
@@ -138,12 +143,15 @@ def configuration_diff(records):
 def require_agreement(dist, record, world, rank, local, output, stage):
     agreed = [None]*world
     dist.all_gather_object(agreed,record)
-    differences = configuration_diff(agreed)
+    differences = configuration_diff(agreed,allow_python_patch=stage=="configuration")
     if local==0:
         output.mkdir(parents=True,exist_ok=True)
         (output/f"rank-{rank}-{stage}.json").write_text(json.dumps(agreed,indent=2)+"\n")
         if differences:
             print("\n".join([f"LL_PY_MISMATCH_BEGIN stage={stage}",*differences,"LL_PY_MISMATCH_END"]),flush=True)
+        elif stage=="configuration":
+            patch_diff = configuration_diff([dict(python=v["python"]) for v in agreed])
+            if patch_diff: print("INFO allowed Python patch difference: "+patch_diff[0],flush=True)
     if differences:
         # Let every host save/print its diagnostics before torchrun stops peers.
         dist.barrier()

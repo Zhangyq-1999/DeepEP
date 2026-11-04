@@ -128,7 +128,9 @@ PyTorch 默认使用端口 30011，SHMEM 使用下一端口 30012。`--shmem-ip-
 
 ## 读取结果
 
-脚本先通过 Gloo 核对各 rank 的测试参数、源码标识和 Python／Torch 版本，通过后才初始化 NPU。若配置不同，每台机器会打印一段 `LL_PY_MISMATCH_BEGIN` 至 `LL_PY_MISMATCH_END` 的错误信息，列出不同的字段、rank 和实际值。复制这一段即可定位差异。脚本还会将全部 rank 的配置保存到 `rank-0-configuration.json` 等文件中。
+脚本先通过 Gloo 核对各 rank 的测试参数、源码标识和 Python／Torch 版本，通过后才初始化 NPU。Python 只要求主次版本一致，允许 `3.11.17` 和 `3.11.18` 这样的补丁版本差异，并打印提示。脚本仍保存各 rank 的完整版本号。
+
+若其他配置不同，每台机器会打印一段 `LL_PY_MISMATCH_BEGIN` 至 `LL_PY_MISMATCH_END` 的错误信息，列出不同的字段、rank 和实际值。复制这一段即可定位差异。全部 rank 的配置保存在 `rank-0-configuration.json` 等文件中。
 
 每个 BS 完成后立即输出表格，并保存到 `results/ll-python/<RUN_ID>/`。全部结束后，第一台集中打印 `LL_PY_REPORT_BEGIN` 至 `LL_PY_REPORT_END` 的汇总块。正常跑完后，复制这一块即可分析两台机器的全局数据。
 

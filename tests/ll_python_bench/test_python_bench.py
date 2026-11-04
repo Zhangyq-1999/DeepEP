@@ -141,7 +141,19 @@ def test_configuration_diff_groups_fields_and_ranks():
     assert run.configuration_diff([dict(iters=100),dict(iters=100)])==[]
 
 
-@pytest.mark.parametrize("failure",[None,"finalize","configuration","native"])
+def test_python_patch_difference_does_not_hide_other_mismatches():
+    run = module("run")
+    records = [dict(python="3.11.17",source_id="same",torch="2.11.0",tokens="32,48")]*4
+    records += [dict(records[0],python="3.11.18")]*4
+    assert run.configuration_diff(records,allow_python_patch=True)==[]
+    assert "3.11.17" in run.configuration_diff(records)[0]
+    for field,value in (("python","3.12.0"),("python","4.11.17"),
+                        ("source_id","other"),("torch","2.10.0"),("tokens","32")):
+        changed=records[:4]+[dict(records[4],**{field:value})]*4
+        assert run.configuration_diff(changed,allow_python_patch=True)[0].startswith(field+":")
+
+
+@pytest.mark.parametrize("failure",[None,"python_patch","finalize","configuration","native"])
 def test_worker_saves_each_case_and_closes_once(tmp_path,monkeypatch,capsys,failure):
     run = module("run")
     calls=[]
@@ -165,6 +177,8 @@ def test_worker_saves_each_case_and_closes_once(tmp_path,monkeypatch,capsys,fail
         stage = "configuration" if "tokens" in value else "native"
         if failure==stage:
             out[4:] = [dict(value,source_id="other")]*4
+        elif failure=="python_patch" and stage=="configuration":
+            out[4:] = [dict(value,python=".".join(value["python"].split(".")[:2])+".999")]*4
     def barrier(): calls.append("barrier")
     torch = SimpleNamespace(__version__="test",set_num_threads=lambda n:None,
         npu=SimpleNamespace(set_device=lambda d:calls.append("set_device"),init=lambda:calls.append("npu_init"),
@@ -224,6 +238,11 @@ def test_worker_saves_each_case_and_closes_once(tmp_path,monkeypatch,capsys,fail
     console=capsys.readouterr().out
     assert "samples 0/3" not in console  # sampling progress is only printed on the heartbeat
     assert ("LL_PY_REPORT_BEGIN" in console)==(not fail_close)
+    if failure=="python_patch":
+        assert "INFO allowed Python patch difference:" in console
+        snapshot=json.loads((tmp_path/"out/rank-0-configuration.json").read_text())
+        assert snapshot[0]["python"]==sys.version.split()[0]
+        assert snapshot[4]["python"].endswith(".999")
 
 
 def test_shell_syntax_and_printed_peer_command(tmp_path):
