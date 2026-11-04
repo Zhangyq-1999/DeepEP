@@ -80,14 +80,20 @@ def format_report(config, identity, results, run_id, status="RUNNING"):
 
 class DeviceGate:
     """Public HCCL all_reduce; mirrors Ziha0-Zeng/DeepEP b1ed463's gate."""
-    def __init__(self, torch, dist, timeout, delay_ms=0):
+    def __init__(self, torch, dist, timeout, delay_ms=0, progress=None):
         self.torch, self.dist = torch, dist
+        report = progress or (lambda stage: None)
+        report("HCCL group creation")
         self.group = dist.new_group(backend="hccl",timeout=timedelta(seconds=timeout))
+        report("HCCL token allocation")
         self.token = torch.ones(1,dtype=torch.float32,device="npu")
         self.delay_ms = 0
+        report("HCCL first all_reduce")
         self()
+        report("HCCL initial stream synchronization")
         torch.npu.synchronize()
         self.delay_ms = delay_ms
+        report("HCCL gate ready")
 
     def __call__(self):
         if self.delay_ms and self.dist.get_rank()==0: time.sleep(self.delay_ms/1000)
@@ -112,8 +118,8 @@ class Progress:
             print(f"[{time.strftime('%H:%M:%S')}] unchanged={time.monotonic()-self.changed:.0f}s {self.stage}",flush=True)
 
 
-def native_args(a, local_size):
-    args = ["--devices",",".join(map(str,range(local_size)))]
+def native_args(a):
+    args = ["--devices",a.devices]
     for name in ("tokens","hidden","topk","experts","capacity","dtype","route","seed","warmup","iters","timeout","kernel_timeout"):
         args += ["--"+name.replace("_","-"),str(getattr(a,name))]
     return args
@@ -188,8 +194,9 @@ def main():
     import _ll_py_combine as native
     if native.ranks_per_host!=a.ranks_per_host or local_size!=a.ranks_per_host:
         raise ValueError("Python launch and compiled ranks-per-host differ")
-    progress.set(f"rank={rank} initialize NPU")
-    torch.npu.set_device(local)
+    device = int(a.devices.split(",")[local])
+    progress.set(f"rank={rank} initialize NPU device={device}")
+    torch.npu.set_device(device)
     torch.npu.init()
     output.mkdir(parents=True,exist_ok=True)
     rank_file = output/f"rank-{rank}.jsonl"
@@ -197,14 +204,15 @@ def main():
     stream = torch.npu.Stream()
     with rank_file.open("x") as raw, torch.npu.stream(stream):
         progress.set(f"rank={rank} SHMEM initialization (once)")
-        bench = native.Bench(rank,world,local,native_args(a,local_size),stream.npu_stream,a.shmem_ip_port)
+        bench = native.Bench(rank,world,local,native_args(a),stream.npu_stream,a.shmem_ip_port)
         dist.barrier()
         identity = bench.identity()
         require_agreement(dist,identity,world,rank,local,output,"native")
         gate = None
         if a.sync in ("device","both"):
             progress.set(f"rank={rank} HCCL gate initialization")
-            gate = DeviceGate(torch,dist,a.timeout,a.gate_delay_ms)
+            gate = DeviceGate(torch,dist,a.timeout,a.gate_delay_ms,
+                              lambda stage: progress.set(f"rank={rank} {stage}"))
         modes = ["host","device"] if a.sync=="both" else [a.sync]
         for bs in map(int,a.tokens.split(",")):
             progress.set(f"rank={rank} BS={bs} allocation and route preparation")

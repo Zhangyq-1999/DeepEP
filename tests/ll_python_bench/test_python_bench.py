@@ -65,12 +65,13 @@ def test_rank_max_then_percentile_and_full_samples():
 
 def test_worker_environment_disables_blocking_wait(tmp_path,monkeypatch):
     launch=module("launch")
-    for key in ("TORCH_HCCL_BLOCKING_WAIT","HCCL_BLOCKING_WAIT","ASCEND_VISIBLE_DEVICES"):
+    masks=("ASCEND_RT_VISIBLE_DEVICES","ASCEND_VISIBLE_DEVICES","CUDA_VISIBLE_DEVICES")
+    for key in ("TORCH_HCCL_BLOCKING_WAIT","HCCL_BLOCKING_WAIT",*masks):
         monkeypatch.setenv(key,"1")
     env=launch.worker_environment(launch.parser().parse_args([]),tmp_path)
     assert env["TORCH_HCCL_BLOCKING_WAIT"]==env["HCCL_BLOCKING_WAIT"]=="0"
-    assert env["ASCEND_RT_VISIBLE_DEVICES"]=="12,13,14,15"
-    assert "ASCEND_VISIBLE_DEVICES" not in env
+    assert all(key not in env for key in masks)
+    assert env["PYTHONFAULTHANDLER"]=="1"
 
 
 def test_device_gate_drains_host_queue_after_work_wait():
@@ -86,8 +87,11 @@ def test_device_gate_drains_host_queue_after_work_wait():
         calls.append("reduce")
         return SimpleNamespace(wait=lambda:calls.append("wait"))
     dist = SimpleNamespace(new_group=lambda **k:1,all_reduce=all_reduce,ReduceOp=SimpleNamespace(MAX="max"))
-    gate = run.DeviceGate(torch,dist,180)
+    stages=[]
+    gate = run.DeviceGate(torch,dist,180,progress=stages.append)
     assert calls==["reduce","wait","drain","sync"]
+    assert stages==["HCCL group creation","HCCL token allocation","HCCL first all_reduce",
+                    "HCCL initial stream synchronization","HCCL gate ready"]
     calls.clear(); gate()
     assert calls==["reduce","wait","drain"]
 
@@ -162,7 +166,9 @@ def test_worker_saves_each_case_and_closes_once(tmp_path,monkeypatch,capsys,fail
         def __enter__(self): return self
         def __exit__(self,*args): pass
     class Bench:
-        def __init__(self,*args): calls.append("init")
+        def __init__(self,*args):
+            assert args[3][args[3].index("--devices")+1]=="12,13,14,15"
+            calls.append("init")
         def identity(self): return dict(source_id="same",active_aiv=56,recv_cores=28,rdma_qps=56,return_options=0)
         def prepare(self,bs): self.bs=bs; calls.append(("prepare",bs))
         def dispatch(self): calls.append("dispatch")
@@ -180,8 +186,11 @@ def test_worker_saves_each_case_and_closes_once(tmp_path,monkeypatch,capsys,fail
         elif failure=="python_patch" and stage=="configuration":
             out[4:] = [dict(value,python=".".join(value["python"].split(".")[:2])+".999")]*4
     def barrier(): calls.append("barrier")
+    def set_device(device):
+        assert device==12  # local rank 0 must use selected card 12, never card 0
+        calls.append("set_device")
     torch = SimpleNamespace(__version__="test",set_num_threads=lambda n:None,
-        npu=SimpleNamespace(set_device=lambda d:calls.append("set_device"),init=lambda:calls.append("npu_init"),
+        npu=SimpleNamespace(set_device=set_device,init=lambda:calls.append("npu_init"),
                             Stream=Context,stream=lambda s:s,synchronize=lambda:None))
     dist = SimpleNamespace(init_process_group=lambda *a,**k:None,all_gather_object=gather,barrier=barrier,
                            destroy_process_group=lambda *a:None)

@@ -83,14 +83,16 @@ def plan(a):
 
 
 def worker_environment(a, node_dir):
-    env = dict(os.environ, ASCEND_RT_VISIBLE_DEVICES=a.devices, DEEPEP_LL_BACKEND="rdma",
-               PYTHONUNBUFFERED="1", PYTHONNOUSERSITE="1", OMP_NUM_THREADS="1",
+    env = dict(os.environ, DEEPEP_LL_BACKEND="rdma",
+               PYTHONUNBUFFERED="1", PYTHONNOUSERSITE="1", PYTHONFAULTHANDLER="1", OMP_NUM_THREADS="1",
                HCCL_CONNECT_TIMEOUT=str(a.timeout), HCCL_EXEC_TIMEOUT=str(a.timeout),
                # Work.wait must enqueue a stream dependency, not block the Host
                # while the local Notify is still holding that stream.
                TORCH_HCCL_BLOCKING_WAIT="0", HCCL_BLOCKING_WAIT="0")
     if a.ifname: env.update(GLOO_SOCKET_IFNAME=a.ifname,HCCL_SOCKET_IFNAME=a.ifname)
-    for key in ("ASCEND_VISIBLE_DEVICES","CUDA_VISIBLE_DEVICES"):
+    # HCCL topology discovery can query devices outside the selected subset.
+    # Select each worker's device explicitly, without hiding/remapping devices.
+    for key in ("ASCEND_RT_VISIBLE_DEVICES","ASCEND_VISIBLE_DEVICES","CUDA_VISIBLE_DEVICES"):
         env.pop(key,None)
     env["ASCEND_PROCESS_LOG_PATH"] = str(node_dir/"ascend")
     return env
