@@ -85,6 +85,7 @@ cmake "-DPROJECT_ROOT=$root" "-DSDK=$shmem" -DMODE=check \
     -P "$root/tests/ll_cpp_bench/sdk_identity.cmake"
 cmake -S "$root/tests/ll_cpp_bench" -B "$build" -G 'Unix Makefiles' \
     -DCMAKE_BUILD_TYPE=Release "-DMPI_CXX_COMPILER=$mpi/bin/mpicxx" \
+    -DDEEPEP_LL_PYTHON_BENCH=OFF \
     "-DASCEND_HOME_PATH=$cann" "-DSHMEM_ROOT=$shmem" \
     "-DDEEPEP_LL_OPS_BASE=$ops_base" "-DLL_OPS_SOURCE_DIR=$ops_source" \
     "-DDEEPEP_LL_COMBINE_ORIGINAL=$original" "-DDEEPEP_LL_COMBINE_PROFILE=$profile" "-DDEEPEP_DEVICE_JOBS=$jobs" "-DDEEPEP_LL_COMBINE_SMALL_BATCH=$small" \

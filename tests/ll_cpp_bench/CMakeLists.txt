@@ -200,6 +200,13 @@ if(DEEPEP_LL_PYTHON_BENCH)
         target_sources(_ll_py_combine PRIVATE baseline_queries.cpp)
     endif()
     target_link_options(_ll_py_combine PRIVATE -Wl,-Bsymbolic)
+    set(DEEPEP_LL_PYTHON_VARIANT "base" CACHE STRING "Installed Python benchmark variant")
+    set(_python_destination "${Python_SITEARCH}/deepep_ll_bench/${DEEPEP_LL_PYTHON_VARIANT}")
+    # The installed extension uses its colocated kernel, not the build-tree copy.
+    set_target_properties(_ll_py_combine PROPERTIES INSTALL_RPATH "$ORIGIN")
+    install(TARGETS _ll_py_combine LIBRARY DESTINATION "${_python_destination}" COMPONENT ll_python)
+    install(FILES "${DEEPEP_DEVICE_LIBRARY}" "${CMAKE_BINARY_DIR}/bench-build.txt"
+        DESTINATION "${_python_destination}" COMPONENT ll_python)
 endif()
 if(DEEPEP_LL_OPS_BASE)
     file(WRITE "${CMAKE_BINARY_DIR}/ops-baseline.txt"

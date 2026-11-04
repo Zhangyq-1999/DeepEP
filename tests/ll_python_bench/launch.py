@@ -8,6 +8,7 @@ import shlex
 import socket
 import subprocess
 import sys
+import sysconfig
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -69,11 +70,11 @@ def plan(a):
         raise ValueError("Invalid RUN_ID")
     endpoint = a.shmem_ip_port or f"tcp://{hosts[0]}:{a.master_port+1}"
     out = ROOT / "results/ll-python" / run_id
-    build = ROOT / "build" / f"ll-cpp-{a.variant}"
+    build = Path(sysconfig.get_path("platlib")) / "deepep_ll_bench" / a.variant
     cmd = [sys.executable,"-u","-m","torch.distributed.run",f"--nnodes={len(hosts)}",
            f"--nproc_per_node={len(devices)}",f"--node_rank={node}",f"--master_addr={hosts[0]}",
            f"--master_port={a.master_port}","--max_restarts=0",str(Path(__file__).with_name("run.py")),
-           "--output",str(out),"--build",str(build),"--shmem-ip-port",endpoint,
+           "--output",str(out),"--module-dir",str(build),"--shmem-ip-port",endpoint,
            "--variant",a.variant,"--sync",a.sync,"--devices",a.devices,"--ranks-per-host",str(a.ranks_per_host)]
     for key in ("tokens","hidden","topk","experts","capacity","dtype","route","seed","warmup","iters",
                 "timeout","kernel_timeout","gate_delay_ms"):
@@ -116,7 +117,7 @@ def main():
     if a.dry_run:
         print(shlex.join(cmd)); return 0
     if not list(build.glob("_ll_py_combine*.so")):
-        raise RuntimeError(f"Build Python variant first: bash tests/ll_python_bench/build.sh --variant {a.variant}")
+        raise RuntimeError(f"Install into {sys.prefix} first: bash tests/ll_python_bench/build.sh --variant {a.variant}")
     if f"ranks_per_host={a.ranks_per_host}" not in (build/"bench-build.txt").read_text().splitlines():
         raise RuntimeError("Rebuild with matching --ranks-per-host")
     import resource

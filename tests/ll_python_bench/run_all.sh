@@ -16,4 +16,4 @@ done
 source "$root/tests/ll_python_bench/environment.sh"
 ll_python_environment "$env_name"
 export LL_PY_CONDA_ENV="$env_name"
-exec python "$root/tests/ll_python_bench/launch.py" "${args[@]}"
+exec "$ll_python" "$root/tests/ll_python_bench/launch.py" "${args[@]}"

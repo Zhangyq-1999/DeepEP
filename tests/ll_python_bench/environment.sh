@@ -18,5 +18,20 @@ ll_python_environment() {
     fi
     source "$root/tests/ll_cpp_bench/experiment_defaults.sh"
     ll_bench_environment "$cann" "$mpi" "$shmem"
+    [[ -n ${CONDA_PREFIX:-} ]] || { echo 'Conda activation did not set CONDA_PREFIX' >&2; return 2; }
+    ll_python="$CONDA_PREFIX/bin/python"
+    [[ -x $ll_python ]] || { echo "Missing Conda Python: $ll_python" >&2; return 2; }
+    unset PYTHONHOME PYTHONPATH
     export PYTHONNOUSERSITE=1 OMP_NUM_THREADS=1
+    export PATH="$CONDA_PREFIX/bin:$PATH"
+    "$ll_python" - "$env_name" <<'PY'
+import os, sys
+from pathlib import Path
+prefix = Path(os.environ['CONDA_PREFIX']).resolve()
+requested = sys.argv[1]
+expected = Path(requested).resolve() if '/' in requested else None
+if Path(sys.prefix).resolve() != prefix or (expected != prefix if expected else prefix.name != requested):
+    raise SystemExit(f'Wrong Python environment: requested={requested}, prefix={sys.prefix}')
+print(f'ENV={prefix.name} PYTHON={sys.executable}', flush=True)
+PY
 }

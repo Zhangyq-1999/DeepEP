@@ -31,8 +31,51 @@ def summarize(per_rank):
         raise ValueError("Missing rank/iteration samples")
     for v in per_rank: stats(v)
     maxima = [max(v[i] for v in per_rank) for i in range(n)]
+    worst = sorted(range(n),key=lambda i:maxima[i],reverse=True)[:3]
+    rank_p50 = [stats(values)["p50"] for values in per_rank]
     return dict(rank_max=stats(maxima),rank_max_tail50=stats(maxima[-50:]),
-                rank0=stats(per_rank[0]),rank_max_us=maxima,per_rank_us=per_rank)
+                rank0=stats(per_rank[0]),rank_max_us=maxima,per_rank_us=per_rank,
+                first_means={str(k):statistics.mean(maxima[:k]) for k in (3,10,20)},
+                rank_p50_range=[min(rank_p50),max(rank_p50)],
+                worst=[dict(iteration=i+1,rank=max(range(len(per_rank)),key=lambda r:per_rank[r][i]),us=maxima[i])
+                       for i in worst])
+
+
+TABLE_HEADER = " BS sync     N     mean      p50      min      p99       max   tail50  rank0p50 error"
+
+
+def result_row(r):
+    s = r["rank_max"]
+    return (f"{r['tokens']:3} {r['sync']:6} {s['n']:3} {s['mean']:8.2f} {s['p50']:8.2f} {s['min']:8.2f} "
+            f"{s['p99']:8.2f} {s['max']:9.2f} {r['rank_max_tail50']['p50']:8.2f} "
+            f"{r['rank0']['p50']:9.2f} {r['max_abs_error']:.6g}")
+
+
+def diagnostic_row(r):
+    first = "/".join(f"{r['first_means'][str(k)]:.2f}" for k in (3,10,20))
+    lo, hi = r["rank_p50_range"]
+    worst = ",".join(f"i{w['iteration']}/r{w['rank']}:{w['us']:.2f}" for w in r["worst"])
+    return (f"D BS={r['tokens']} sync={r['sync']} first3/10/20={first} "
+            f"rankP50={lo:.2f}..{hi:.2f} worst={worst}")
+
+
+def format_report(config, identity, results, run_id, status="RUNNING"):
+    c = config
+    lines = [f"LL_PY_REPORT_BEGIN RUN_ID={run_id} status={status}",
+             f"CFG EP={c['world']} per_host={c['ranks_per_host']} devices={c['devices']} variant={c['variant']} "
+             f"H={c['hidden']} K={c['topk']} E={c['experts']} dtype={c['dtype']} route={c['route']} seed={c['seed']} "
+             f"cap={c['capacity']} warmup={c['warmup']} iters={c['iters']} gate_delay_ms={c['gate_delay_ms']}",
+             f"SW source={c['source_id']} env={c['env']} python={c['python']} torch={c['torch']} npu={c['torch_npu']} "
+             f"aiv={identity['active_aiv']} recv={identity['recv_cores']} qps={identity['rdma_qps']} "
+             f"options={identity['return_options']}",
+             "Event_us=per-iteration rank-MAX; no samples removed; worst iteration is 1-based", TABLE_HEADER]
+    lines += [result_row(r) for r in results]
+    lines += [diagnostic_row(r) for r in results]
+    for bs in dict.fromkeys(r["tokens"] for r in results):
+        modes = {r["sync"]:r["rank_max"]["p50"] for r in results if r["tokens"]==bs}
+        if "host" in modes and "device" in modes:
+            lines.append(f"AB BS={bs} device_p50_reduction={(1-modes['device']/modes['host'])*100:.2f}%")
+    return "\n".join(lines+["LL_PY_REPORT_END"])+"\n"
 
 
 class DeviceGate:
@@ -60,9 +103,9 @@ class Progress:
         self.stopped = threading.Event()
         if enabled: threading.Thread(target=self.watch,daemon=True).start()
 
-    def set(self, text):
+    def set(self, text, emit=True):
         self.stage,self.changed = text,time.monotonic()
-        if self.enabled: print(f"[{time.strftime('%H:%M:%S')}] {text}",flush=True)
+        if self.enabled and emit: print(f"[{time.strftime('%H:%M:%S')}] {text}",flush=True)
 
     def watch(self):
         while not self.stopped.wait(15):
@@ -78,7 +121,7 @@ def native_args(a, local_size):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    for name in ("output","build","shmem-ip-port","variant","sync","devices","tokens","dtype","route"):
+    for name in ("output","module-dir","shmem-ip-port","variant","sync","devices","tokens","dtype","route"):
         p.add_argument("--"+name,required=True)
     for name in ("ranks-per-host","hidden","topk","experts","capacity","seed","warmup","iters","timeout","kernel-timeout"):
         p.add_argument("--"+name,type=int,required=True)
@@ -94,22 +137,24 @@ def main():
     torch.set_num_threads(1)
     torch.npu.set_device(local)
     torch.npu.init()
-    sys.path.insert(0,a.build)
+    sys.path.insert(0,a.module_dir)
     import _ll_py_combine as native
     if native.ranks_per_host!=a.ranks_per_host or local_size!=a.ranks_per_host:
         raise ValueError("Python launch and compiled ranks-per-host differ")
     progress.set(f"rank={rank} Gloo rendezvous")
     dist.init_process_group("gloo",timeout=timedelta(seconds=a.timeout))
     # Agree before collective SHMEM initialization, even for different local paths.
-    manifest = dict(line.split("=",1) for line in (Path(a.build)/"bench-build.txt").read_text().splitlines() if "=" in line)
-    config = {k:v for k,v in vars(a).items() if k not in ("output","build")}
-    config.update(source_id=manifest["source"],torch=torch.__version__,torch_npu=torch_npu.__version__,world=world)
+    manifest = dict(line.split("=",1) for line in (Path(a.module_dir)/"bench-build.txt").read_text().splitlines() if "=" in line)
+    config = {k:v for k,v in vars(a).items() if k not in ("output","module_dir")}
+    config.update(source_id=manifest["source"],env=Path(sys.prefix).name,python=sys.version.split()[0],
+                  torch=torch.__version__,torch_npu=torch_npu.__version__,world=world)
     agreed = [None]*world
     dist.all_gather_object(agreed,config)
     if any(v!=agreed[0] for v in agreed): raise RuntimeError("Build/configuration differs across ranks")
     output = Path(a.output)
     output.mkdir(parents=True,exist_ok=True)
     rank_file = output/f"rank-{rank}.jsonl"
+    results = []
     stream = torch.npu.Stream()
     with rank_file.open("x") as raw, torch.npu.stream(stream):
         progress.set(f"rank={rank} SHMEM initialization (once)")
@@ -126,24 +171,28 @@ def main():
         for bs in map(int,a.tokens.split(",")):
             progress.set(f"rank={rank} BS={bs} allocation and route preparation")
             dist.barrier(); bench.prepare(bs); dist.barrier()
-            progress.set(f"rank={rank} BS={bs} Dispatch preparation")
+            progress.set(f"rank={rank} BS={bs} Dispatch preparation",emit=False)
             bench.dispatch(); dist.barrier(); bench.clear_flags(); dist.barrier()
+            progress.set(f"rank={rank} BS={bs} correctness",emit=False)
             bench.sample(dist.barrier,False)
             error = bench.precision()
             dist.barrier()
             for mode in modes:
                 callback = gate if mode=="device" else dist.barrier
-                progress.set(f"rank={rank} BS={bs} sync={mode} warmup 0/{a.warmup}")
-                for _ in range(a.warmup): bench.sample(callback,mode=="device")
+                progress.set(f"rank={rank} BS={bs} sync={mode} warmup 0/{a.warmup}",emit=False)
+                for i in range(a.warmup):
+                    bench.sample(callback,mode=="device")
+                    progress.set(f"rank={rank} BS={bs} sync={mode} warmup {i+1}/{a.warmup}",emit=False)
                 samples = []
                 for i in range(a.iters):
-                    if i%10==0: progress.set(f"rank={rank} BS={bs} sync={mode} samples {i}/{a.iters}")
+                    progress.set(f"rank={rank} BS={bs} sync={mode} samples {i}/{a.iters}",emit=False)
                     samples.append(float(bench.sample(callback,mode=="device")))
+                progress.set(f"rank={rank} BS={bs} sync={mode} precision check",emit=False)
                 error = max(error,bench.precision())
                 record = dict(config=config,identity=identity,rank=rank,tokens=bs,sync=mode,
                               measurement="native_kernel_event_us",max_abs_error=error,samples_us=samples)
                 raw.write(json.dumps(record)+"\n"); raw.flush()
-                progress.set(f"rank={rank} BS={bs} sync={mode} gather results")
+                progress.set(f"rank={rank} BS={bs} sync={mode} gather results",emit=False)
                 gathered = [None]*world
                 dist.all_gather_object(gathered,dict(samples=samples,error=error))
                 if rank==0:
@@ -161,16 +210,19 @@ def main():
                         writer = csv.DictWriter(f,fieldnames=list(row))
                         if not exists: writer.writeheader()
                         writer.writerow(row)
-                    print("\nBS variant sync N mean_us p50_us min_us p95_us max_us tail50_p50 rank0_p50 error",flush=True)
-                    print(f"{bs} {a.variant} {mode} {s['n']} {s['mean']:.2f} {s['p50']:.2f} {s['min']:.2f} "
-                          f"{s['p95']:.2f} {s['max']:.2f} {result['rank_max_tail50']['p50']:.2f} "
-                          f"{result['rank0']['p50']:.2f} {result['max_abs_error']:.6g}\n",flush=True)
+                    results.append(result)
+                    (output/"report.txt").write_text(format_report(config,identity,results,output.name))
+                    print("\n"+TABLE_HEADER+"\n"+result_row(result)+"\n"+diagnostic_row(result),flush=True)
                 dist.barrier()
         progress.set(f"rank={rank} SHMEM finalize")
         torch.npu.synchronize(); dist.barrier(); bench.close(); dist.barrier()
         (output/f"rank-{rank}.PASS").write_text("precision, sampling and SHMEM finalize passed\n")
         if gate is not None: dist.destroy_process_group(gate.group)
     dist.destroy_process_group()
+    if rank==0:
+        report = format_report(config,identity,results,output.name,"PASS")
+        (output/"report.txt").write_text(report)
+        print("\n"+report,flush=True)
     progress.set(f"rank={rank} PASS"); progress.stopped.set()
 
 

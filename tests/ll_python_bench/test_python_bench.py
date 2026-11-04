@@ -25,7 +25,8 @@ def test_default_and_four_host_plan():
     launch = module("launch")
     args = launch.parser().parse_args(["--node-rank","0"])
     node, hosts, run_id, out, build, cmd = launch.plan(args)
-    assert node==0 and len(hosts)==2 and build.name=="ll-cpp-base"
+    assert node==0 and len(hosts)==2 and build.name=="base" and build.parent.name=="deepep_ll_bench"
+    assert str(build).startswith(sys.prefix)
     assert cmd[cmd.index("--tokens")+1]=="32,48,64,72,256"
     assert cmd[cmd.index("--devices")+1]=="12,13,14,15"
     assert "--nproc_per_node=4" in cmd
@@ -53,6 +54,9 @@ def test_rank_max_then_percentile_and_full_samples():
     assert result["rank_max_us"]==[20,100,80]
     assert result["rank_max"]["p50"]==80
     assert result["rank0"]["p50"]==12
+    assert result["worst"][0]==dict(iteration=2,rank=0,us=100)
+    assert result["first_means"]["3"]==pytest.approx(200/3)
+    assert result["rank_p50_range"]==[12,30]
     data = [[1.0]*50+[2.0]*50,[3.0]*100]
     assert run.summarize(data)["rank_max_tail50"]["n"]==50
     for bad in ([[1],[1,2]],[[1,float("nan")]],[[0]],[]):
@@ -128,7 +132,8 @@ int main() {
     subprocess.run([str(exe)],check=True,timeout=20)
 
 
-def test_worker_saves_each_case_and_closes_once(tmp_path,monkeypatch):
+@pytest.mark.parametrize("fail_close",[False,True])
+def test_worker_saves_each_case_and_closes_once(tmp_path,monkeypatch,capsys,fail_close):
     run = module("run")
     calls=[]
     class Context:
@@ -137,13 +142,15 @@ def test_worker_saves_each_case_and_closes_once(tmp_path,monkeypatch):
         def __exit__(self,*args): pass
     class Bench:
         def __init__(self,*args): calls.append("init")
-        def identity(self): return {"source":"same"}
+        def identity(self): return dict(source_id="same",active_aiv=56,recv_cores=28,rdma_qps=56,return_options=0)
         def prepare(self,bs): self.bs=bs; calls.append(("prepare",bs))
         def dispatch(self): calls.append("dispatch")
         def clear_flags(self): calls.append("clear")
         def sample(self,cb,device): cb(); calls.append(("sample",device)); return 12.0
         def precision(self): return 0.0
-        def close(self): calls.append("close")
+        def close(self):
+            calls.append("close")
+            if fail_close: raise RuntimeError("injected finalize failure")
     def gather(out,value): out[:]=[value]*len(out)
     def barrier(): calls.append("barrier")
     torch = SimpleNamespace(__version__="test",set_num_threads=lambda n:None,
@@ -163,13 +170,16 @@ def test_worker_saves_each_case_and_closes_once(tmp_path,monkeypatch):
     for key,value in dict(RANK="0",WORLD_SIZE="8",LOCAL_RANK="0",LOCAL_WORLD_SIZE="4").items():
         monkeypatch.setenv(key,value)
     (tmp_path/"bench-build.txt").write_text("source=same\n")
-    args=["run.py","--output",str(tmp_path/"out"),"--build",str(tmp_path),"--shmem-ip-port","tcp://a:1",
+    args=["run.py","--output",str(tmp_path/"out"),"--module-dir",str(tmp_path),"--shmem-ip-port","tcp://a:1",
           "--variant","base","--sync","both","--devices","12,13,14,15","--ranks-per-host","4",
           "--tokens","32,48","--hidden","3584","--topk","8","--experts","384","--capacity","256",
           "--dtype","bf16","--route","random","--seed","0","--warmup","2","--iters","3",
           "--timeout","180","--kernel-timeout","10"]
     monkeypatch.setattr(sys,"argv",args)
-    run.main()
+    if fail_close:
+        with pytest.raises(RuntimeError,match="finalize failure"): run.main()
+    else:
+        run.main()
     assert calls.count("init")==calls.count("close")==1
     assert calls.count(("sample",True))==10
     assert calls.count(("sample",False))==12  # correctness plus two host-mode batches
@@ -178,7 +188,15 @@ def test_worker_saves_each_case_and_closes_once(tmp_path,monkeypatch):
         for mode in ("host","device"):
             data=json.loads((tmp_path/f"out/bs{bs}-{mode}.json").read_text())
             assert data["rank_max"]["n"]==3 and len(data["per_rank_us"])==8
-    assert (tmp_path/"out/rank-0.PASS").is_file()
+    assert (tmp_path/"out/rank-0.PASS").is_file()==(not fail_close)
+    report=(tmp_path/"out/report.txt").read_text()
+    assert f"status={'RUNNING' if fail_close else 'PASS'}" in report
+    assert "Event_us=per-iteration rank-MAX" in report and "aiv=56 recv=28 qps=56" in report
+    assert "AB BS=32 device_p50_reduction=0.00%" in report
+    assert "D BS=48 sync=device" in report and "i1/r0:12.00" in report
+    console=capsys.readouterr().out
+    assert "samples 0/3" not in console  # sampling progress is only printed on the heartbeat
+    assert ("LL_PY_REPORT_BEGIN" in console)==(not fail_close)
 
 
 def test_shell_syntax_and_printed_peer_command(tmp_path):
@@ -194,3 +212,49 @@ def test_shell_syntax_and_printed_peer_command(tmp_path):
     launch=module("launch")
     args=launch.parser().parse_args(peer_args)
     assert args.node_rank==1 and args.tokens=="32,72" and args.sync=="both" and args.master_port==30123
+
+
+@pytest.mark.parametrize("wrong_python",[False,True])
+def test_conda_activation_selects_and_verifies_python(tmp_path,wrong_python):
+    bash = "C:/Program Files/Git/bin/bash.exe" if os.name=="nt" else shutil.which("bash")
+    if not bash: pytest.skip("Bash unavailable")
+    target=tmp_path/"envs/py311_zyq"
+    (target/"bin").mkdir(parents=True)
+    sdk=tmp_path/"tests/ll_cpp_bench"
+    sdk.mkdir(parents=True)
+    (sdk/"experiment_defaults.sh").write_text('ll_bench_environment() { :; }\n')
+    conda=tmp_path/"conda"
+    conda.write_text('''#!/usr/bin/env bash
+cat <<'HOOK'
+conda() {
+    [[ $1 == activate && $2 == py311_zyq ]] || return 3
+    export CONDA_PREFIX="$TEST_ENV" CONDA_DEFAULT_ENV=py311_zyq
+    echo activated >> "$TEST_TRACE"
+}
+HOOK
+''')
+    # Execute the real environment validation code with a simulated Conda prefix.
+    python=target/"bin/python"
+    python.write_text('''#!/usr/bin/env bash
+echo selected >> "$TEST_TRACE"
+exec "$TEST_PYTHON" -c 'import sys,os; sys.prefix=os.environ["TEST_PREFIX"]; sys.argv=["-",sys.argv[1]]; exec(sys.stdin.read())' "$2"
+''')
+    for script in (conda,python): script.chmod(0o755)
+    trace=tmp_path/"trace"
+    env=dict(os.environ,CONDA_DEFAULT_ENV="base",CONDA_PREFIX=str(tmp_path/"base"),CONDA_EXE=conda.as_posix(),
+             TEST_ENV=target.as_posix(),TEST_PREFIX=str(tmp_path/"wrong" if wrong_python else target),
+             TEST_PYTHON=Path(sys.executable).as_posix(),TEST_TRACE=trace.as_posix())
+    env.pop("PYTHONHOME",None)
+    cmd=f'''set -euo pipefail
+root={shlex.quote(tmp_path.as_posix())}
+cann=unused mpi=unused shmem=unused
+source {shlex.quote((HERE/'environment.sh').as_posix())}
+ll_python_environment py311_zyq
+'''
+    result=subprocess.run([bash,"-c",cmd],env=env,text=True,capture_output=True,timeout=20)
+    assert trace.read_text().splitlines()==["activated","selected"]
+    if wrong_python:
+        assert result.returncode!=0 and "Wrong Python environment" in result.stderr
+    else:
+        assert result.returncode==0,result.stdout+result.stderr
+        assert "ENV=py311_zyq" in result.stdout

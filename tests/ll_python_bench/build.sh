@@ -22,15 +22,26 @@ done
 case "$variant" in base|card-all|card-row|server-all|server-row) ;; *) echo 'Choose a clean variant' >&2; exit 2;; esac
 source "$root/tests/ll_python_bench/environment.sh"
 ll_python_environment "$env_name"
-python -c 'import sys, torch, torch_npu; print("Python:",sys.executable,"torch:",torch.__version__,"torch_npu:",torch_npu.__version__)'
+"$ll_python" -c 'import torch, torch_npu; print("torch:",torch.__version__,"torch_npu:",torch_npu.__version__)'
 # Install build tools only into the selected conda environment; keep its Torch/CANN pairing.
-if ! python -c 'import pybind11' >/dev/null 2>&1; then python -m pip install 'pybind11>=2.12,<3'; fi
-if ! command -v cmake >/dev/null; then python -m pip install 'cmake>=3.20,<4'; fi
+if ! "$ll_python" -c 'import pybind11' >/dev/null 2>&1; then "$ll_python" -m pip install 'pybind11>=2.12,<3'; fi
+if ! command -v cmake >/dev/null; then "$ll_python" -m pip install 'cmake>=3.20,<4'; fi
 bash "$root/tests/ll_cpp_bench/build_all.sh" --variants "$variant" --ranks-per-host "$ranks" \
     --jobs "$jobs" --cann-home "$cann" --mpi-home "$mpi" --shmem-root "$shmem"
 build="$root/build/ll-cpp-$variant"
 cmake -S "$root/tests/ll_cpp_bench" -B "$build" -DDEEPEP_LL_PYTHON_BENCH=ON \
-    "-DPython_EXECUTABLE=$(python -c 'import sys; print(sys.executable)')" \
-    "-Dpybind11_DIR=$(python -m pybind11 --cmakedir)"
+    "-DDEEPEP_LL_PYTHON_VARIANT=$variant" \
+    "-DPython_EXECUTABLE=$ll_python" \
+    "-Dpybind11_DIR=$("$ll_python" -m pybind11 --cmakedir)"
 cmake --build "$build" --target _ll_py_combine --parallel "$jobs"
-PYTHONPATH="$build" python -c 'import _ll_py_combine as m; print("Built:",m.__file__,"ranks_per_host:",m.ranks_per_host)'
+cmake --install "$build" --component ll_python
+"$ll_python" - "$variant" <<'PY'
+import sys, sysconfig
+from pathlib import Path
+location = Path(sysconfig.get_path('platlib')) / 'deepep_ll_bench' / sys.argv[1]
+sys.path.insert(0, str(location))
+import _ll_py_combine as m
+if Path(m.__file__).resolve().parent != location.resolve():
+    raise SystemExit('Loaded an unexpected benchmark extension')
+print(f'INSTALLED={m.__file__} ranks_per_host={m.ranks_per_host}', flush=True)
+PY

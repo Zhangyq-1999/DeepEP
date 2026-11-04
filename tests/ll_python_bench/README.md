@@ -17,7 +17,7 @@
 
 Python 流程复用 C++ 用例的输入、路由、精度检查和原始 Combine kernel，只新增测试扩展 `_ll_py_combine`。Dispatch 只负责准备 Combine 的输入，放在计时外。每次运行只初始化一次 SHMEM，依次完成所有 BS。
 
-## 两台机器分别编译
+## 两台机器分别编译安装
 
 在现有仓库目录执行：
 
@@ -26,11 +26,14 @@ git fetch origin
 git switch perf/ll-combine-small-batch
 git pull --ff-only origin perf/ll-combine-small-batch
 
-conda activate py311_zyq
 bash tests/ll_python_bench/build.sh
 ```
 
-脚本默认只编译 `base`，并复用已有 Dispatch 编译产物。测试扩展放在 `build/ll-cpp-base/`，运行时直接从这个目录加载。脚本保留环境中的 Torch 和 torch-npu 版本，只在缺少构建工具时安装 pybind11 或 CMake。这里无需安装 DeepEP Python 包。
+脚本自动激活 `py311_zyq`，用该环境的 Python 编译并安装测试扩展。扩展、对应 kernel 库和构建记录安装在 `py311_zyq/lib/python3.11/site-packages/deepep_ll_bench/base/`。运行脚本自动切换到同一环境，并加载这里的安装产物。
+
+默认只编译 `base`，并复用已有 Dispatch 编译产物。脚本保留环境中的 Torch 和 torch-npu 版本，只在缺少构建工具时安装 pybind11 或 CMake。测试扩展独立安装，环境中原有的 `deep_ep` 包保持不变。
+
+编译和运行都会打印 `ENV=py311_zyq PYTHON=...`，安装完成后打印 `INSTALLED=...`。即使当前终端激活了 `base` 或其他环境，脚本也会切换到 `py311_zyq`；激活失败则退出。若 Conda 不在常见路径，可先设置 `CONDA_EXE=/实际路径/bin/conda`。
 
 脚本沿用当前 C++ 构建配置，因此编译仍需要 `/usr/local/mpich-3.2.1`。Python 运行使用 `torchrun`，无需 `mpiexec`。CANN 和 SHMEM 默认路径与 C++ 脚本一致，也可以指定：
 
@@ -125,10 +128,13 @@ PyTorch 默认使用端口 30011，SHMEM 使用下一端口 30012。`--shmem-ip-
 
 ## 读取结果
 
-每个 BS 完成后立即输出表格，并保存到 `results/ll-python/<RUN_ID>/`。第一台保存全局汇总，第二台保存自己的逐 rank 原始记录。
+每个 BS 完成后立即输出表格，并保存到 `results/ll-python/<RUN_ID>/`。全部结束后，第一台集中打印 `LL_PY_REPORT_BEGIN` 至 `LL_PY_REPORT_END` 的汇总块。正常跑完后，复制这一块即可分析两台机器的全局数据。
+
+汇总先给配置和时延表，再列每个 case 的 `D` 行。表格包含均值、P50、最小值、P99、最大值、末 50 轮 P50、rank0 P50 和最大精度误差。`D` 行补充前 3／10／20 轮均值、各 rank 的 P50 范围，以及最慢 3 轮的轮次、rank 和耗时。轮次从 1 开始；并列最慢时显示编号最小的 rank。`--sync both` 还输出设备同步相对 Host 同步的 P50 降幅。
 
 | 输出 | 内容 |
 | --- | --- |
+| `report.txt` | 与首台汇总块相同的文本，每完成一个 case 就更新 |
 | `summary.csv` | 每个 BS、每种同步方式的时延统计 |
 | `bs32-device.json` 等 | 配置、所有 rank 的原始样本和汇总 |
 | `rank-N.jsonl` | 本 rank 每个 BS 的样本，完成后立即写盘 |
@@ -137,8 +143,10 @@ PyTorch 默认使用端口 30011，SHMEM 使用下一端口 30012。`--shmem-ip-
 
 主表先取同一轮所有 rank 的最大值，再计算均值和 P50，单位为微秒。`tail50_p50` 只统计末 50 轮；采样不足 50 轮时使用全部样本。`rank0_p50` 单独统计 rank 0，便于核对参考仓的输出口径。原始样本全部保留，不自动剔除异常值。
 
+前 3／10／20 轮均值在样本不足时使用已有样本。`report.txt` 在运行中标记为 `RUNNING`，完成精度检查、采样和释放后才标记为 `PASS`。若途中报错，已完成的 case 仍保存在文件中；此时还需提供报错机器的首错回显。
+
 这里保留 C++ 用例的随机路由和均匀权重。参考仓的 Python 用例另有均衡路由及权重设置，因此比较两仓时还需核对输入和统计字段。先用 `--sync both` 判断相同 kernel、相同输入下的同步影响。
 
-进度每 10 个样本更新一次。长时间等待时，每 15 秒显示当前阶段。`--kernel-timeout` 默认 10 秒，约束一次 stream 完成等待；超时会退出 worker，由 torchrun 终止同组进程。该等待也包含尚未完成的同步任务，不能仅凭超时报错判断 Combine 卡死。
+正常运行只打印初始化阶段、每个 BS 的开始和结果，采样循环不逐轮刷屏。每 15 秒的心跳仍显示当前阶段和已完成轮数，便于区分初始化、预热、采样和释放。`--kernel-timeout` 默认 10 秒，约束一次 stream 完成等待；超时会退出 worker，由 torchrun 终止同组进程。该等待也包含尚未完成的同步任务，不能仅凭超时报错判断 Combine 卡死。
 
 Host 检查覆盖了启动参数、采样汇总、单次初始化和入队顺序。CANN 编译及双机 NPU 测量需要在目标环境执行。
