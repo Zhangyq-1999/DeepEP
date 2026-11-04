@@ -68,6 +68,7 @@ def format_report(config, identity, results, run_id, status="RUNNING"):
              f"SW source={c['source_id']} env={c['env']} python={c['python']} torch={c['torch']} npu={c['torch_npu']} "
              f"aiv={identity['active_aiv']} recv={identity['recv_cores']} qps={identity['rdma_qps']} "
              f"options={identity['return_options']}",
+             "SYNC host=Gloo device=SHMEM-mixed-71a2154 hccl=HCCL-all_reduce; device gates use local ACL Notify",
              "Event_us=per-iteration rank-MAX; no samples removed; worst iteration is 1-based", TABLE_HEADER]
     lines += [result_row(r) for r in results]
     lines += [diagnostic_row(r) for r in results]
@@ -101,6 +102,21 @@ class DeviceGate:
         work.wait()
         # Submit torch_npu's queued completion dependency before direct ACL Events.
         _ = self.torch.npu.current_stream().npu_stream
+
+
+class ShmemGate:
+    """Same mixed MTE/RoCE barrier kernel as the C++ benchmark; no HCCL group."""
+    def __init__(self, bench, dist, delay_ms=0):
+        self.bench, self.dist, self.delay_ms = bench, dist, delay_ms
+        bench.check_entry_sync()
+
+    def __call__(self):
+        if self.delay_ms and self.dist.get_rank()==0: time.sleep(self.delay_ms/1000)
+        self.bench.entry_sync()
+
+
+def sync_implementation(mode):
+    return {"host":"gloo", "device":"shmem-mixed-71a2154", "hccl":"hccl-all_reduce"}[mode]
 
 
 class Progress:
@@ -186,7 +202,8 @@ def main():
     manifest = dict(line.split("=",1) for line in (Path(a.module_dir)/"bench-build.txt").read_text().splitlines() if "=" in line)
     config = {k:v for k,v in vars(a).items() if k not in ("output","module_dir")}
     config.update(source_id=manifest["source"],env=Path(sys.prefix).name,python=sys.version.split()[0],
-                  torch=torch.__version__,torch_npu=torch_npu.__version__,world=world)
+                  torch=torch.__version__,torch_npu=torch_npu.__version__,world=world,
+                  device_sync_impl="shmem-mixed-71a2154")
     output = Path(a.output)
     progress.set(f"rank={rank} configuration check")
     require_agreement(dist,config,world,rank,local,output,"configuration")
@@ -210,6 +227,9 @@ def main():
         require_agreement(dist,identity,world,rank,local,output,"native")
         gate = None
         if a.sync in ("device","both"):
+            progress.set(f"rank={rank} SHMEM device entry sync preparation")
+            gate = ShmemGate(bench,dist,a.gate_delay_ms)
+        elif a.sync=="hccl":
             progress.set(f"rank={rank} HCCL gate initialization")
             gate = DeviceGate(torch,dist,a.timeout,a.gate_delay_ms,
                               lambda stage: progress.set(f"rank={rank} {stage}"))
@@ -224,18 +244,19 @@ def main():
             error = bench.precision()
             dist.barrier()
             for mode in modes:
-                callback = gate if mode=="device" else dist.barrier
+                callback = dist.barrier if mode=="host" else gate
                 progress.set(f"rank={rank} BS={bs} sync={mode} warmup 0/{a.warmup}",emit=False)
                 for i in range(a.warmup):
-                    bench.sample(callback,mode=="device")
+                    bench.sample(callback,mode!="host")
                     progress.set(f"rank={rank} BS={bs} sync={mode} warmup {i+1}/{a.warmup}",emit=False)
                 samples = []
                 for i in range(a.iters):
                     progress.set(f"rank={rank} BS={bs} sync={mode} samples {i}/{a.iters}",emit=False)
-                    samples.append(float(bench.sample(callback,mode=="device")))
+                    samples.append(float(bench.sample(callback,mode!="host")))
                 progress.set(f"rank={rank} BS={bs} sync={mode} precision check",emit=False)
                 error = max(error,bench.precision())
                 record = dict(config=config,identity=identity,rank=rank,tokens=bs,sync=mode,
+                              sync_impl=sync_implementation(mode),
                               measurement="native_kernel_event_us",max_abs_error=error,samples_us=samples)
                 raw.write(json.dumps(record)+"\n"); raw.flush()
                 progress.set(f"rank={rank} BS={bs} sync={mode} gather results",emit=False)
@@ -244,13 +265,14 @@ def main():
                 if rank==0:
                     result = summarize([v["samples"] for v in gathered])
                     result.update(config=config,identity=identity,tokens=bs,sync=mode,
+                                  sync_impl=sync_implementation(mode),
                                   max_abs_error=max(v["error"] for v in gathered))
                     (output/f"bs{bs}-{mode}.json").write_text(json.dumps(result,indent=2)+"\n")
                     s = result["rank_max"]
                     path = output/"summary.csv"
                     exists = path.exists()
                     with path.open("a",newline="") as f:
-                        row = dict(bs=bs,variant=a.variant,sync=mode,**s,
+                        row = dict(bs=bs,variant=a.variant,sync=mode,sync_impl=sync_implementation(mode),**s,
                                    tail50_p50=result["rank_max_tail50"]["p50"],rank0_p50=result["rank0"]["p50"],
                                    max_abs_error=result["max_abs_error"])
                         writer = csv.DictWriter(f,fieldnames=list(row))
@@ -263,7 +285,7 @@ def main():
         progress.set(f"rank={rank} SHMEM finalize")
         torch.npu.synchronize(); dist.barrier(); bench.close(); dist.barrier()
         (output/f"rank-{rank}.PASS").write_text("precision, sampling and SHMEM finalize passed\n")
-        if gate is not None: dist.destroy_process_group(gate.group)
+        if a.sync=="hccl": dist.destroy_process_group(gate.group)
     dist.destroy_process_group()
     if rank==0:
         report = format_report(config,identity,results,output.name,"PASS")

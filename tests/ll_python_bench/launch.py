@@ -23,7 +23,8 @@ def parser():
     p.add_argument("--devices", default="12,13,14,15")
     p.add_argument("--ranks-per-host", type=int, choices=(4, 16), default=4)
     p.add_argument("--variant", choices=("base", "card-all", "card-row", "server-all", "server-row"), default="base")
-    p.add_argument("--sync", choices=("device", "host", "both"), default="device")
+    p.add_argument("--sync", choices=("device", "host", "both", "hccl"), default="device",
+                   help="device=SHMEM barrier; both=Gloo vs SHMEM; hccl=explicit legacy HCCL comparison")
     p.add_argument("--tokens", default="32,48,64,72,256")
     for name, default in (("hidden",3584),("topk",8),("experts",384),("capacity",256),
                           ("seed",0),("warmup",10),("iters",100),("timeout",180),("kernel-timeout",10)):

@@ -173,6 +173,8 @@ def test_worker_saves_each_case_and_closes_once(tmp_path,monkeypatch,capsys,fail
         def prepare(self,bs): self.bs=bs; calls.append(("prepare",bs))
         def dispatch(self): calls.append("dispatch")
         def clear_flags(self): calls.append("clear")
+        def check_entry_sync(self): calls.append("entry-preflight")
+        def entry_sync(self): calls.append("device-barrier")
         def sample(self,cb,device): cb(); calls.append(("sample",device)); return 12.0
         def precision(self): return 0.0
         def close(self):
@@ -201,7 +203,7 @@ def test_worker_saves_each_case_and_closes_once(tmp_path,monkeypatch,capsys,fail
     monkeypatch.setitem(sys.modules,"_ll_py_combine",SimpleNamespace(Bench=Bench,ranks_per_host=4))
     class Gate:
         group=1
-        def __init__(self,*args): pass
+        def __init__(self,*args): raise AssertionError("Default run must not initialize HCCL")
         def __call__(self): calls.append("gate")
     monkeypatch.setattr(run,"DeviceGate",Gate)
     for key,value in dict(RANK="0",WORLD_SIZE="8",LOCAL_RANK="0",LOCAL_WORLD_SIZE="4").items():
@@ -233,15 +235,18 @@ def test_worker_saves_each_case_and_closes_once(tmp_path,monkeypatch,capsys,fail
     assert calls.count("init")==calls.count("close")==1
     assert calls.count(("sample",True))==10
     assert calls.count(("sample",False))==12  # correctness plus two host-mode batches
+    assert calls.count("entry-preflight")==1 and calls.count("device-barrier")==10
     assert len((tmp_path/"out/rank-0.jsonl").read_text().splitlines())==4
     for bs in (32,48):
         for mode in ("host","device"):
             data=json.loads((tmp_path/f"out/bs{bs}-{mode}.json").read_text())
             assert data["rank_max"]["n"]==3 and len(data["per_rank_us"])==8
+            assert data["sync_impl"]==("gloo" if mode=="host" else "shmem-mixed-71a2154")
     assert (tmp_path/"out/rank-0.PASS").is_file()==(not fail_close)
     report=(tmp_path/"out/report.txt").read_text()
     assert f"status={'RUNNING' if fail_close else 'PASS'}" in report
     assert "Event_us=per-iteration rank-MAX" in report and "aiv=56 recv=28 qps=56" in report
+    assert "device=SHMEM-mixed-71a2154" in report
     assert "AB BS=32 device_p50_reduction=0.00%" in report
     assert "D BS=48 sync=device" in report and "i1/r0:12.00" in report
     console=capsys.readouterr().out

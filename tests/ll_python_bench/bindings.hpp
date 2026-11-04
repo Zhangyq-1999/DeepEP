@@ -6,6 +6,7 @@
 #include "launch_gate.hpp"
 
 namespace py = pybind11;
+extern "C" void ll_bench_entry_sync_do(void* stream, uint64_t ffts);
 namespace llpython {
 struct Timer {
     Event first, last;
@@ -101,11 +102,21 @@ public:
         combine_clear_result_flags_kernel_do(runtime_.stream, local_base(runtime_), blocks, runtime_.cores);
         sync();
     }
+    // Enqueue only: the surrounding local Notify is still closed here.
+    void entrySync() {
+        live(); py::gil_scoped_release release;
+        ll_bench_entry_sync_do(runtime_.stream, runtime_.ffts);
+    }
+    void checkEntrySync() {
+        live(); py::gil_scoped_release release;
+        ll_bench_entry_sync_do(runtime_.stream, runtime_.ffts);
+        sync();
+    }
     float sample(py::function callback, bool deviceGate) {
         hasCase();
         Timer timer;
         std::unique_ptr<LaunchGate> gate;
-        if (deviceGate) gate = std::make_unique<LaunchGate>(o_.timeout*1000U);
+        if (deviceGate) gate = std::make_unique<LaunchGate>(o_.kernelTimeout*1000U);
         // All tensor allocation, routing and Host validation precede the gate.
         enqueue(gate.get(), runtime_.stream, [&] { callback(); }, timer, [&] {
             py::gil_scoped_release release;
@@ -128,6 +139,7 @@ PYBIND11_MODULE(_ll_py_combine, m) {
         .def(py::init<int,int,int,const std::vector<std::string>&,uintptr_t,const std::string&>())
         .def("identity", &llpython::Bench::identity).def("prepare", &llpython::Bench::prepare)
         .def("dispatch", &llpython::Bench::dispatch).def("clear_flags", &llpython::Bench::clearFlags)
+        .def("entry_sync", &llpython::Bench::entrySync).def("check_entry_sync", &llpython::Bench::checkEntrySync)
         .def("sample", &llpython::Bench::sample).def("precision", &llpython::Bench::precision)
         .def("close", &llpython::Bench::close);
 }

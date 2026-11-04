@@ -13,7 +13,7 @@
 | 数据和路由 | BF16、random、seed 0 |
 | Capacity | 256 |
 | 预热 / 正式采样 | 10 / 100 次 |
-| 算子前同步 | HCCL `all_reduce`，计时不包含同步 |
+| 算子前同步 | SHMEM 混合 MTE/RoCE 设备同步，计时不包含同步 |
 
 Python 流程复用 C++ 用例的输入、路由、精度检查和原始 Combine kernel，只新增测试扩展 `_ll_py_combine`。Dispatch 只负责准备 Combine 的输入，放在计时外。每次运行只初始化一次 SHMEM，依次完成所有 BS。
 
@@ -71,27 +71,29 @@ bash tests/ll_python_bench/run_all.sh <第一台打印的RUN_ID>
 bash tests/ll_python_bench/run_all.sh --sync both
 ```
 
-每个 BS 先测 `host`，再测 `device`，两种模式分别预热。`host` 使用 Gloo 的 Host barrier；`device` 使用下面的 HCCL 同步。这个对照保留相同输入和 kernel，但 `host` 模式与原 C++ 用例的 MPI 实现并不相同。
+每个 BS 先测 `host`，再测 `device`，两种模式分别预热。`host` 使用 Gloo 的 Host barrier；`device` 使用与 C++ 用例相同的 SHMEM 设备同步。这个对照保留相同输入和 kernel，但 `host` 模式与 C++ 用例的 MPI 实现并不相同。
 
 ## 同步和计时顺序
 
-同步方案参考 [Ziha0-Zeng/DeepEP 的提交 b1ed463](https://github.com/Ziha0-Zeng/DeepEP/commit/b1ed463)：Python 使用 `HcclBenchmarkGate` 的调用顺序，native 使用本地 Notify 控制任务开始执行的时机。
+本地 Notify 控制任务开始执行的时机，提交顺序参考 [Ziha0-Zeng/DeepEP 的提交 b1ed463](https://github.com/Ziha0-Zeng/DeepEP/commit/b1ed463)。跨 rank 同步默认改用 SHMEM 的混合通路方案，参考 [fix_1825_sync 的提交 71a2154](https://gitcode.com/vallenChen/shmem/tree/fix_1825_sync)，实现与 [C++ 用例](../ll_cpp_bench/README.md#采样与结果) 共用。
 
 ```text
 准备输入、路由和输出（计时外）
     ↓
 本地 Notify 暂停目标流
     ↓
-提交 HCCL all_reduce → Work.wait → 排空 torch_npu Host 提交队列
+提交 SHMEM MTE/RoCE 同步 kernel
     ↓
 提交 start Event → Combine kernel → end Event
     ↓
 独立控制流释放 Notify
     ↓
-HCCL 完成 → start Event → Combine → end Event
+SHMEM 同步完成 → start Event → Combine → end Event
 ```
 
-Notify 保证本机先提交完整的计时任务，HCCL 负责跨 rank 同步。这里使用 ACL Notify 和 HCCL，没有调用先前的 RDMA 同步 kernel。HCCL 完成时间仍可能存在偏差，需要实测判断改善幅度。
+Notify 保证本机先提交完整的计时任务。SHMEM 同步优先使用目标卡的 MTE 通路，其余目标使用 RoCE，避免向同一 1825 上没有 RDMA 通路的相邻卡发同步消息。正式测试前先单独执行一次同步，回显为 `SHMEM device entry sync preparation`。同步完成时间仍可能存在偏差，需要实测判断改善幅度。
+
+当前环境在首次 `HCCL all_reduce` 时出现 SIGSEGV，尚未运行 Dispatch 或 Combine。默认的 `device` 和 `both` 流程不再创建 HCCL 通信组，从而绕开该崩溃点。底层 HCCL 的段错误原因尚未确认。需要复查原参考方案时，可显式传入 `--sync hccl`；该路径仍使用 `all_reduce → Work.wait → 排空 Host 提交队列`，在当前环境中可能再次触发同一问题。
 
 启动脚本将 `TORCH_HCCL_BLOCKING_WAIT` 和兼容名称 `HCCL_BLOCKING_WAIT` 设为 `0`。这样 `Work.wait()` 只提交设备流依赖，Host 可以继续提交 Event、kernel 和 Notify 释放操作。[阻塞等待说明](https://github.com/Ascend/pytorch/blob/master/docs/zh/api/environment_variable/collective_communication/TORCH_HCCL_BLOCKING_WAIT.md)解释了两种模式的区别。
 
@@ -102,7 +104,7 @@ bash tests/ll_python_bench/run_all.sh \
     --tokens 32 --warmup 2 --iters 5 --gate-delay-ms 10
 ```
 
-该参数只在 rank 0 提交 HCCL 前增加 10 ms 的 Host 等待。正常情况下，这段等待应留在 Event 计时区间外。此项用于验证计时顺序，不作为正式性能数据。
+该参数只在 rank 0 提交设备同步前增加 10 ms 的 Host 等待。正常情况下，这段等待应留在 Event 计时区间外。此项用于验证计时顺序，不作为正式性能数据。
 
 ## 参数和其他实验
 
@@ -141,7 +143,7 @@ PyTorch 默认使用端口 30011，SHMEM 使用下一端口 30012。`--shmem-ip-
 | 输出 | 内容 |
 | --- | --- |
 | `report.txt` | 与首台汇总块相同的文本，每完成一个 case 就更新 |
-| `summary.csv` | 每个 BS、每种同步方式的时延统计 |
+| `summary.csv` | 每个 BS、每种同步方式的时延统计；`sync_impl` 记录实际同步实现 |
 | `bs32-device.json` 等 | 配置、所有 rank 的原始样本和汇总 |
 | `rank-N.jsonl` | 本 rank 每个 BS 的样本，完成后立即写盘 |
 | `node-N/console.log` | 本机回显 |
@@ -155,6 +157,8 @@ PyTorch 默认使用端口 30011，SHMEM 使用下一端口 30012。`--shmem-ip-
 
 正常运行只打印初始化阶段、每个 BS 的开始和结果，采样循环不逐轮刷屏。每 15 秒的心跳仍显示当前阶段和已完成轮数，便于区分初始化、预热、采样和释放。`--kernel-timeout` 默认 10 秒，约束一次 stream 完成等待；超时会退出 worker，由 torchrun 终止同组进程。该等待也包含尚未完成的同步任务，不能仅凭超时报错判断 Combine 卡死。
 
-HCCL 初始化会分别打印建组、张量分配、首次 `all_reduce` 和 stream 同步阶段。脚本还启用 `PYTHONFAULTHANDLER`，进程收到段错误信号时尽量将 Python 调用栈写入 `node-N/console.log`。
+汇总中的 `SYNC` 行说明 `host`、`device` 和 `hccl` 对应的实现。JSON 和 CSV 同时保存 `sync_impl`，用于区分这次 SHMEM 同步与此前的 HCCL 同步数据。
+
+显式使用 `--sync hccl` 时，初始化会分别打印建组、张量分配、首次 `all_reduce` 和 stream 同步阶段。脚本还启用 `PYTHONFAULTHANDLER`，进程收到段错误信号时尽量将 Python 调用栈写入 `node-N/console.log`。
 
 Host 检查覆盖了启动参数、采样汇总、单次初始化和入队顺序。CANN 编译及双机 NPU 测量需要在目标环境执行。

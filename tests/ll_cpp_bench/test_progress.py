@@ -35,7 +35,7 @@ sleep 2
 def test_progress_stays_outside_event_and_before_barrier():
     source = (HERE / "main.cpp").read_text(encoding="utf-8")
     sample = source.split("for (uint32_t i = 0; i < o.iterations; ++i)", 1)[1]
-    assert sample.index('session.report("sampling"') < sample.index("peers.barrier();")
+    assert sample.index('session.report("sampling"') < sample.index("entry.enqueue(") < sample.index("start.record(stream);")
     timed = sample.split("start.record(stream);", 1)[1].split("end.record(stream);", 1)[0]
     assert "report(" not in timed and "launch();" in timed
-    assert 'session.synchronize("sampling", bs, i)' in sample
+    assert 'entry.complete("sampling", bs, i)' in sample

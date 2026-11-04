@@ -19,8 +19,8 @@ inline void wait(aclrtStream stream, unsigned timeoutMs) {
     }
 }
 // Adapted from Ziha0-Zeng/DeepEP b1ed463: a local Notify holds the stream
-// until the HCCL dependency, Events and native launch have ALL been submitted.
-// This is an ACL runtime operation, not a new AICore/RDMA barrier kernel.
+// until the SHMEM barrier (or optional HCCL dependency), Events and native
+// launch have ALL been submitted. The local gate itself uses ACL Notify.
 class LaunchGate {
     aclrtNotify notify_ = nullptr;
     aclrtStream control_ = nullptr, target_ = nullptr;
@@ -58,7 +58,7 @@ public:
 template<class Gate, class Callback, class Timer, class Launch>
 void enqueue(Gate* gate, aclrtStream stream, Callback&& callback, Timer& timer, Launch&& launch) {
     if (gate) gate->arm(stream);
-    callback();                    // HCCL Work.wait + Host submission queue drain
+    callback();                    // SHMEM launch, or HCCL Work.wait + queue drain
     timer.begin(stream);
     launch();
     timer.end(stream);

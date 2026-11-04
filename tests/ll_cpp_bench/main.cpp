@@ -257,6 +257,7 @@ struct Case {
 #ifdef LL_BENCH_PYTHON
 #include "../ll_python_bench/bindings.hpp"
 #else
+#include "entry_sync.hpp"
 LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
 {
     static_assert(llbench::workspaceBytes == DispatchDedup::kEpServerDedupPeerBytes);
@@ -291,6 +292,12 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
     peers.verify(llbench::hash(identity.str()));
     session.synchronize("initial completion");
     peers.barrier();
+    llbench::EntrySync entry(session);
+    if (o.entrySync == "device") {
+        session.report("device entry sync preparation");
+        entry.enqueue([] {});
+        entry.complete("device entry sync preparation");
+    }
     auto hostComm = comm_args(session);
     Buffer comm(sizeof(hostComm));
     comm.upload(&hostComm, sizeof(hostComm));
@@ -353,19 +360,17 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
         session.report("input allocation and routing", bs);
         Case c(o, bs, cores, comm.p);
         session.report("Dispatch preparation", bs);
-        peers.barrier();
-        dispatch_server_dedup_kernel_do_v2(stream, &c.dispatch, c.variant);
-        session.synchronize("Dispatch preparation", bs);
+        entry.enqueue([&] { dispatch_server_dedup_kernel_do_v2(stream, &c.dispatch, c.variant); });
+        entry.complete("Dispatch preparation", bs);
         peers.barrier();
         session.report("clear result flags", bs);
         const uint64_t blocks = uint64_t(bs) * o.topk * ((uint64_t(o.hidden) * 2 + 479) / 480);
         combine_clear_result_flags_kernel_do(stream, local_base(session), blocks, cores);
         session.synchronize("clear result flags", bs);
         session.report("Combine correctness", bs);
-        peers.barrier();
         auto launch = [&]() { combine_server_dedup_kernel_do(stream, &c.combine); };
-        launch();
-        session.synchronize("Combine correctness", bs);
+        entry.enqueue(launch);
+        entry.complete("Combine correctness", bs);
         auto error = c.precision(o.dtype == "bf16");
         peers.barrier();
         std::unique_ptr<Buffer> profileBuffer;
@@ -379,27 +384,27 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
         }
         for (uint32_t i = 0; i < o.warmup; ++i) {
             if (i % 10U == 0) session.report("warmup", bs, i, o.warmup);
-            peers.barrier();
-            launch();
-            session.synchronize("warmup", bs, i);
+            entry.enqueue(launch);
+            entry.complete("warmup", bs, i);
         }
         std::vector<float> times;
         times.reserve(o.iterations);
         Event start, end;
         for (uint32_t i = 0; i < o.iterations; ++i) {
             if (i % 10U == 0) session.report("sampling", bs, i, o.iterations);
-            // Every peer completed its previous kernel before this barrier
-            // releases either rotating bank. Host coordination is untimed.
+            // The entry barrier waits for peers' previous invocations before
+            // releasing either rotating bank. Synchronization is untimed.
             if (o.profile) {
                 // Clear outside the Event so missing core exports cannot reuse an older sample.
                 std::fill(profileData.begin(), profileData.end(), 0U);
                 profileBuffer->upload(profileData.data(), profileBuffer->bytes);
             }
-            peers.barrier();
-            start.record(stream);
-            launch();
-            end.record(stream);
-            session.synchronize("sampling", bs, i);
+            entry.enqueue([&] {
+                start.record(stream);
+                launch();
+                end.record(stream);
+            });
+            entry.complete("sampling", bs, i);
             float ms = 0;
             check(aclrtEventElapsedTime(&ms, start.value, end.value), "event elapsed");
             if (!std::isfinite(ms) || ms <= 0) throw std::runtime_error("Invalid Event duration");

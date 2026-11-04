@@ -9,7 +9,7 @@ cann=$ll_bench_cann mpi=$ll_bench_mpi shmem=$ll_bench_shmem
 job_timeout=3600 join_timeout=300
 bench_keys=(tokens hidden topk experts capacity dtype route seed entry-sync warmup iters profile-iters profile timeout kernel-timeout)
 declare -A bench=([tokens]=32,48,64,72,256 [hidden]=3584 [topk]=8 [experts]=384
-                  [capacity]=256 [dtype]=bf16 [route]=random [seed]=0 [entry-sync]=host
+                  [capacity]=256 [dtype]=bf16 [route]=random [seed]=0 [entry-sync]=device
                   [warmup]=10 [iters]=100 [profile-iters]=10 [profile]=2 [timeout]=300 [kernel-timeout]=10)
 fail() { echo "ERROR: $*" >&2; exit 2; }
 while (($#)); do
@@ -24,7 +24,7 @@ Options: --ep 2|4|8|16|32|64 --ranks-per-host 4|16 --node-rank N --hosts HOST0,H
          --join-timeout SECONDS --job-timeout SECONDS
 Benchmark options (with or without a preceding --):
          --tokens LIST --devices LIST --hidden N --topk N --experts N --capacity N
-         --dtype bf16|fp16 --route random|hotspot --seed N --entry-sync host|auto
+         --dtype bf16|fp16 --route random|hotspot --seed N --entry-sync device|host|auto
          --warmup N --iters N --profile-iters N --profile 0|1|2 --timeout SECONDS
          --kernel-timeout SECONDS (default 10; bounded stream wait)
 Defaults: EP8, four ranks/host, devices 12,13,14,15 on each host; hosts 90.90.93.84,90.90.93.184, port 29671.
@@ -32,7 +32,7 @@ Defaults: EP8, four ranks/host, devices 12,13,14,15 on each host; hosts 90.90.93
           Warmup 10; clean samples 100; diagnostic samples 10, level 2.
 Rebuild with the same --ranks-per-host value. Use 16 for EP16/32/64 on one/two/four hosts.
 All selected variants share one MPI/ACL/SHMEM initialization.
-Host MPI Barrier before each warmup/sample; no benchmark device synchronization kernel.
+Device MTE/RoCE barrier before each warmup/sample, outside Event timing. Use --entry-sync host for MPI comparison.
 Node is detected from local addresses; --node-rank overrides detection.
 Node 0 generates a new run-id on every invocation unless --run-id is supplied.
 For custom hosts, ports or variants, use the command printed for each peer node.
@@ -109,7 +109,7 @@ fi
 [[ ${bench[profile]} =~ ^[012]$ ]] || fail 'profile must be 0, 1 or 2'
 printf 'RUN_ID=%s\nnode=%s EP=%s variants=%s\n' "$run_id" "$node_rank" "$ep" "$variants"
 if [[ $node_rank == 0 ]]; then
-    printf 'BS=%s warmup=%s clean_iters=%s profile_iters=%s profile=%s\n' "${bench[tokens]}" "${bench[warmup]}" "${bench[iters]}" "${bench[profile-iters]}" "${bench[profile]}"
+    printf 'BS=%s warmup=%s clean_iters=%s profile_iters=%s profile=%s entry_sync=%s\n' "${bench[tokens]}" "${bench[warmup]}" "${bench[iters]}" "${bench[profile-iters]}" "${bench[profile]}" "${bench[entry-sync]}"
 else
     echo 'Benchmark shapes and sampling options come from node 0.'
 fi

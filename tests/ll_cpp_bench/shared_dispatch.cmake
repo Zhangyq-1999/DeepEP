@@ -16,6 +16,7 @@ function(ll_bench_shared_dispatch)
         "-DDEEPEP_LL_PHYSICAL_RANKS_PER_HOST=${DEEPEP_LL_PHYSICAL_RANKS_PER_HOST}"
         "-DDEEPEP_LL_METADATA_CORES=${DEEPEP_LL_METADATA_CORES}"
         -DDEEPEP_DEVICE_COMPONENT=dispatch
+        -DDEEPEP_LL_BENCH_ENTRY_SYNC=ON
         -DDEEPEP_LL_REFERENCE_PROFILE=OFF -DDEEPEP_LL_COUNT_HISTOGRAM=OFF)
     string(SHA256 _key "${_args};${_compiler_hash};${_sdk_hash}")
     set(_build "${DEEPEP_SOURCE_DIR}/build/ll-cpp-dispatch/${_key}")

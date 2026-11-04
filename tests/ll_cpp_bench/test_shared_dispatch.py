@@ -83,7 +83,8 @@ file(WRITE "${{CMAKE_BINARY_DIR}}/object-list.txt" "${{DEEPEP_DISPATCH_OBJECTS_F
     assert build("new-sdk") != obj
 
 
-def test_device_components_select_real_sources(tmp_path, cmake):
+@pytest.mark.parametrize("entry_sync", [False, True])
+def test_device_components_select_real_sources(tmp_path, cmake, entry_sync):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
     if not zig:
         pytest.skip("Set DEEPEP_TEST_ZIG")
@@ -106,13 +107,16 @@ def test_device_components_select_real_sources(tmp_path, cmake):
             "-DCMAKE_SYSTEM_NAME=Linux", "-DCMAKE_CXX_COMPILER_FORCED=ON",
             "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON", f"-DDEEPEP_SOURCE_DIR={ROOT}",
             f"-DASCEND_HOME_PATH={cann}", f"-DSHMEM_ROOT={shmem}",
-            f"-DDEEPEP_DEVICE_COMPONENT={component}", f"-DDEEPEP_DISPATCH_OBJECTS_FILE={objlist}")
+            f"-DDEEPEP_DEVICE_COMPONENT={component}", f"-DDEEPEP_DISPATCH_OBJECTS_FILE={objlist}",
+            f"-DDEEPEP_LL_BENCH_ENTRY_SYNC={'ON' if entry_sync else 'OFF'}")
         commands = json.loads((build / "compile_commands.json").read_text())
         plain = [c for c in commands if "deepep_kernel_ll_plain.dir" in c["command"]]
-        assert len(plain) == expected
+        added = int(entry_sync and component != "combine")
+        assert len(plain) == expected + added
+        assert sum(Path(c["file"]).name == "entry_sync.cpp" for c in plain) == added
         if component == "combine":
             assert all("/combine/" in c["file"].replace("\\", "/") for c in plain)
             assert "shared-dispatch.o" in (build / "build.ninja").read_text()
         elif component == "dispatch":
-            assert all("/dispatch/" in c["file"].replace("\\", "/") for c in plain)
-            assert len((build / "dispatch-objects.txt").read_text().splitlines()) == 17
+            assert all("/dispatch/" in c["file"].replace("\\", "/") or Path(c["file"]).name == "entry_sync.cpp" for c in plain)
+            assert len((build / "dispatch-objects.txt").read_text().splitlines()) == 17 + added

@@ -133,6 +133,7 @@ def test_repeat_default_run_and_second_host_join(harness):
         assert call["--tokens"] == "32,48,64,72,256"
         assert call["--iters"] == "100" and call["--profile"] == "2"
         assert call["--profile-iters"] == "10"
+        assert call["--entry-sync"] == "device"
         assert f"run_all.sh {ids[-1]} \n" in result.stdout
     assert len(set(ids)) == 2
     env["TEST_LOCAL_IP"] = "90.90.93.184"
@@ -171,7 +172,9 @@ def test_host_detection_and_benchmark_overrides(harness):
     assert peer_args[peer_args.index("--master-port") + 1] == "30071"
     local, = call_options(run("run_all.sh", "--ep", "4", "--devices", "6,7,14,15").stdout)
     assert local["--hosts"] == "localhost" and local["--node-rank"] == "0"
-    assert local["--devices"] == "6,7,14,15" and local["--entry-sync"] == "host"
+    assert local["--devices"] == "6,7,14,15" and local["--entry-sync"] == "device"
+    host, = call_options(run("run_all.sh", "--node-rank", "0", "--entry-sync", "host").stdout)
+    assert host["--entry-sync"] == "host"
     assert call_options(run("run_all.sh", "--ep", "16", "--ranks-per-host", "16", "--variants", "base").stdout)[0]["--profile"] == "2"
     clean, = call_options(run("run_all.sh", "--ep", "16", "--ranks-per-host", "16", "--variants", "base", "--profile", "0").stdout)
     assert clean["--profile"] == "0"

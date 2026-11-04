@@ -51,7 +51,7 @@ bash tests/ll_cpp_bench/run_all.sh
 bash tests/ll_cpp_bench/run_all.sh 第一台打印的RUN_ID
 ```
 
-默认 BS 为 32、48、64、72、256。每个 BS 预热 10 轮，干净版采样 100 轮，打点版采样 10 轮。全部版本共用一次 MPI、ACL 和 SHMEM 初始化。每轮入口继续使用 Host MPI Barrier。
+默认 BS 为 32、48、64、72、256。每个 BS 预热 10 轮，干净版采样 100 轮，打点版采样 10 轮。全部版本共用一次 MPI、ACL 和 SHMEM 初始化。每轮入口默认使用计时外的 MTE/RoCE 设备同步，`--entry-sync host` 可切回 MPI 对照，详见 [采样流程](README.md#采样与结果)。
 
 只测一组时，两边编译相同选择，并让第一台用相同版本列表启动：
 
