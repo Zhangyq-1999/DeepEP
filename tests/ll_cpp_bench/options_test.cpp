@@ -1,5 +1,6 @@
 #include "options.hpp"
 #include <cassert>
+#include <iostream>
 #include <set>
 
 llbench::Options parse(std::vector<std::string> args)
@@ -8,8 +9,27 @@ llbench::Options parse(std::vector<std::string> args)
     for (auto& s : args) argv.push_back(s.data());
     return llbench::Options::parse(int(argv.size()), argv.data(), 17, 32, 1);
 }
-int main()
+int main(int argc, char** argv)
 {
+    if (argc == 6) {
+        llbench::Options o;
+        o.world = uint32_t(std::stoul(argv[1]));
+        const auto bs = uint32_t(std::stoul(argv[2]));
+        o.topk = uint32_t(std::stoul(argv[3]));
+        o.experts = uint32_t(std::stoul(argv[4]));
+        o.seed = uint32_t(std::stoul(argv[5]));
+        o.route = "normal";
+        const auto all = llbench::normal_routes(o.world, bs, o.topk, o.experts, o.seed);
+        for (auto id : all) std::cout << id << ' ';
+        // Also exercise the public per-rank fixture path, including its offset.
+        for (auto rank : {0U, o.world / 2, o.world - 1}) {
+            o.rank = rank;
+            const auto local = llbench::routes(o, bs);
+            assert(local.size() == size_t(bs) * o.topk);
+            assert(std::equal(local.begin(), local.end(), all.begin() + size_t(rank) * bs * o.topk));
+        }
+        return 0;
+    }
     for (uint32_t world : {2U, 4U, 8U, 16U}) {
         char name[] = "bench";
         char* argv[] = {name};
@@ -20,6 +40,18 @@ int main()
     auto o = parse({"bench", "--tokens", "1,72", "--dtype", "fp16"});
     assert(o.profile == 0);
     assert(o.entrySync == "device");
+    assert(o.route == "random");
+    assert(parse({"bench", "--route", "normal"}).route == "normal");
+    assert(parse({"bench", "--route", "normal"}).signature() != parse({"bench"}).signature());
+    {
+        std::vector<std::string> args{"bench", "--route", "normal"};
+        std::vector<char*> argv;
+        for (auto& s : args) argv.push_back(s.data());
+        bool rejected = false;
+        try { llbench::Options::parse(int(argv.size()), argv.data(), 0, 4, 0); }
+        catch (const std::invalid_argument&) { rejected = true; }
+        assert(rejected); // TopK8 cannot target eight distinct ranks in EP4.
+    }
     assert(parse({"bench", "--entry-sync", "host"}).entrySync == "host");
     assert(parse({"bench", "--entry-sync", "auto"}).entrySync == "device");
     assert(parse({"bench", "--entry-sync", "device"}).entrySync == "device");
@@ -43,6 +75,7 @@ int main()
                                                            {"bench", "--iters", "-1"},
                                                            {"bench", "--profile", "3"},
                                                            {"bench", "--entry-sync", "unknown"},
+                                                           {"bench", "--route", "unknown"},
                                                            {"bench", "--hidden", "17"},
                                                            {"bench", "--capacity", "4"},
                                                            {"bench", "--iters", "3", "--iters", "4"},

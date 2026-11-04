@@ -161,10 +161,12 @@ def test_host_detection_and_benchmark_overrides(harness):
     assert "--node-rank" in run("run_all.sh", ok=False).stderr
     result = run("run_all.sh", "--node-rank", "0", "--hosts", "a,b", "--master-port", "30071",
                  "--variants", "return-profile,ref-profile", "--tokens", "72,256", "--iters", "20",
-                 "--", "--warmup", "5", "--seed", "4")
+                 "--", "--warmup", "5", "--seed", "4", "--route", "normal")
     call, = call_options(result.stdout)
     assert call["--tokens"] == "72,256" and call["--iters"] == "20" and call["--warmup"] == "5"
     assert call["--master-addr"] == "a" and call["--master-port"] == "30071"
+    assert call["--route"] == "normal" and call["--seed"] == "4"
+    assert "route=normal seed=4" in result.stdout
     peer_line = next(line for line in result.stdout.splitlines() if line.startswith("Run on node 1:"))
     peer_args = shlex.split(peer_line.removeprefix("Run on node 1: "))
     assert peer_args[peer_args.index("--hosts") + 1] == "a,b"

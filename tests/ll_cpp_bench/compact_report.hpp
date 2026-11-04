@@ -200,7 +200,7 @@ void suite_report(const fs::path& root)
     for (const auto& [bs, results] : cases) {
         const auto& config = results.front().config;
         std::cout << "\nBS=" << bs;
-        for (const char* key : {"ep", "hidden", "topk", "experts", "dtype", "entry_sync", "warmup"})
+        for (const char* key : {"ep", "hidden", "topk", "experts", "dtype", "entry_sync", "warmup", "route", "seed"})
             std::cout << ' ' << key << '=' << config.at(key);
         std::cout << "\nvariant                 mode      N      mean       p50       min       p95       max     CV%\n";
         for (const auto& d : results) {

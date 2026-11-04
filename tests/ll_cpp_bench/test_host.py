@@ -1,5 +1,7 @@
 """Host-only checks; actual MPI/SHMEM/NPU execution is a separate validation."""
 import os
+import ast
+import random
 import hashlib
 import json
 import io
@@ -56,6 +58,29 @@ def test_options_routes_and_statistics(tmp_path):
     subprocess.run([zig, "c++", "-std=c++17", "-O1", "-UNDEBUG", str(HERE / "options_test.cpp"),
                     "-o", str(executable)], check=True, timeout=180)
     subprocess.run([str(executable)], check=True, timeout=30)
+    # Use the actual Python reference without importing Torch or initializing NPU.
+    source = (HERE.parents[1] / "tests/elastic/test_ep_low_latency.py").read_text(encoding="utf-8")
+    generator = next(n for n in ast.parse(source).body
+                     if isinstance(n, ast.FunctionDef) and n.name == "make_random_expert_indices")
+    namespace = {"random": random, "BALANCED_ROUTE_SEED": 20261014}
+    exec(compile(ast.Module(body=[generator], type_ignores=[]), "reference_routes", "exec"), namespace)
+    cases = [(ep, bs, min(8, ep), 0) for ep in (2, 4, 8, 16, 32, 64)
+             for bs in (1, 32, 48, 64, 72, 256)]
+    cases += [(32, 72, 8, 1), (32, 72, 8, 0xffffffff), (32, 2, 32, 0), (8, 32, 1, 0)]
+    for ep, bs, topk, seed in cases:
+        expected = namespace["make_random_expert_indices"](
+            bs, ep=ep, experts=384, physical_stride=384 // ep, topk=topk, seed_offset=seed)
+        actual = subprocess.check_output([str(executable), str(ep), str(bs), str(topk), "384", str(seed)],
+                                         text=True, timeout=30)
+        assert list(map(int, actual.split())) == [e for row in expected for e in row], (ep, bs, topk, seed)
+        counts = [0] * ep
+        for row in expected:
+            assert len(set(e // (384 // ep) for e in row)) == topk
+            for expert in row:
+                rank, local = divmod(expert, 384 // ep)
+                assert local == counts[rank] % (384 // ep)
+                counts[rank] += 1
+        assert counts == [bs * topk] * ep
 
 
 @pytest.fixture

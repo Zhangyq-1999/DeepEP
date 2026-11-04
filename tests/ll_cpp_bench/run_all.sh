@@ -24,7 +24,7 @@ Options: --ep 2|4|8|16|32|64 --ranks-per-host 4|16 --node-rank N --hosts HOST0,H
          --join-timeout SECONDS --job-timeout SECONDS
 Benchmark options (with or without a preceding --):
          --tokens LIST --devices LIST --hidden N --topk N --experts N --capacity N
-         --dtype bf16|fp16 --route random|hotspot --seed N --entry-sync device|host|auto
+         --dtype bf16|fp16 --route random|normal|hotspot --seed N --entry-sync device|host|auto
          --warmup N --iters N --profile-iters N --profile 0|1|2 --timeout SECONDS
          --kernel-timeout SECONDS (default 10; bounded stream wait)
          --profile-frequency-hz HZ (default 1000000000; 0 disables Perfetto export)
@@ -110,7 +110,7 @@ fi
 [[ ${bench[profile]} =~ ^[012]$ ]] || fail 'profile must be 0, 1 or 2'
 printf 'RUN_ID=%s\nnode=%s EP=%s variants=%s\n' "$run_id" "$node_rank" "$ep" "$variants"
 if [[ $node_rank == 0 ]]; then
-    printf 'BS=%s warmup=%s clean_iters=%s profile_iters=%s profile=%s entry_sync=%s\n' "${bench[tokens]}" "${bench[warmup]}" "${bench[iters]}" "${bench[profile-iters]}" "${bench[profile]}" "${bench[entry-sync]}"
+    printf 'BS=%s warmup=%s clean_iters=%s profile_iters=%s profile=%s entry_sync=%s route=%s seed=%s\n' "${bench[tokens]}" "${bench[warmup]}" "${bench[iters]}" "${bench[profile-iters]}" "${bench[profile]}" "${bench[entry-sync]}" "${bench[route]}" "${bench[seed]}"
 else
     echo 'Benchmark shapes and sampling options come from node 0.'
 fi

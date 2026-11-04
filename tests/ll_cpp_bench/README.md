@@ -494,8 +494,8 @@ bash tests/ll_cpp_bench/summarize.sh --perfetto \
 | `--topk` / `--experts` | 8 / 384 | 每 token 专家数与全局专家数 |
 | `--capacity` | 256 | 原算子的每卡最大 token 参数，影响自动去重策略；至少覆盖所有 BS，上限为 256 |
 | `--dtype` | bf16 | 支持 bf16、fp16 |
-| `--route` | random | random 为无重复随机专家，hotspot 集中命中前 TopK 个专家 |
-| `--seed` | 0 | 路由随机种子 |
+| `--route` | random | random 为无重复随机专家；normal 为各卡负载相等、每 token 命中不同 rank；hotspot 集中命中前 TopK 个专家 |
+| `--seed` | 0 | 路由随机种子；normal 中为固定基种子 20261014 的偏移量 |
 | `--warmup` / `--iters` | 10 / 100 | 预热轮数与无打点运行的采样轮数 |
 | `--profile-iters` | 10 | 启用打点时的采样轮数 |
 | `--entry-sync` | device | 计时前执行 MTE/RoCE 设备同步；host 用于 MPI 对照，auto 等同 device |
@@ -505,5 +505,9 @@ bash tests/ll_cpp_bench/summarize.sh --perfetto \
 | `--kernel-timeout` | 10 | 单次设备 stream 等待上限，单位为秒；包含准备 Dispatch 和采样 Combine |
 
 上表是可执行文件和 `launch.sh` 的默认值。便捷入口 `run_all.sh` 默认使用 `--profile 2`，干净版采样 100 轮，打点版采样 10 轮；其余形状参数相同。
+
+对照 Python 用例的 `normal` 路由时，在第一台的 `run_all.sh` 命令中追加 `--route normal`。该模式沿用 `tests/elastic/test_ep_low_latency.py` 的造数规则：每卡恰好接收 `BS × TopK` 条专家输入，每个 token 命中不同 rank，卡内专家轮转分配。它要求 `TopK ≤ EP`，不优先选择本卡。相同 EP、BS、TopK、专家数和 seed 下，C++ 与 Python 生成的专家编号及顺序一致；运行 C++ 用例不需要 Python。
+
+路由生成发生在计时前，不改变 Combine kernel 或入口同步。两台更新代码后，沿用原构建命令增量编译即可。回显和 CSV 都记录 route、seed；比较时分别运行 random 和 normal。
 
 MPICH 手动启动行为可查阅 [Hydra 3.2.1 实现](https://github.com/pmodels/mpich/blob/v3.2.1/src/pm/hydra/tools/bootstrap/external/external_common_launch.c)；端口范围和作业超时见 [mpiexec 参数说明](https://www.mpich.org/static/docs/v3.2/www1/mpiexec.html)。
