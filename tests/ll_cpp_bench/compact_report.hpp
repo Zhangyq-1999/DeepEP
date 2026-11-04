@@ -122,6 +122,13 @@ void compact_record(const Record& r)
         }
         std::cout << '\n';
     }
+    if (r.receive && (r[ReadyTaskRounds] || r[ReadySnapshotTicks]))
+        std::cout << "  ready_tasks first/all/done=" << r[ReadyFirstTask] << '/' << r[ReadyObserved] << '/' << r[ReadyTasksDone]
+                  << " rounds/stalls=" << r[ReadyTaskRounds] << '/' << r[ReadyTaskStalls]
+                  << " before_all_observed/tasks/remote=" << r[ReadyTasksBeforeAll] << '/' << r[ReadyRemoteBeforeAll]
+                  << " setup/plan/filter/snapshot=" << r[ReadySetupTicks] << '/' << r[ReadyPlanTicks] << '/' << r[ReadyFilterTicks] << '/' << r[ReadySnapshotTicks]
+                  << " retire=" << (r[ReadyRetireEnd]-r[ReadyRetireBegin])
+                  << " ack_wait/consumed_wait=" << r[ReadyAckWaitTicks] << '/' << r[ReadyConsumedWaitTicks] << '\n';
     if (r.receive && r[BatchGroupCalls] + r[BatchWholeTokens])
         std::cout << "  batch group_checks/whole_tokens/route_ticks=" << r[BatchGroupCalls] << '/'
                   << r[BatchWholeTokens] << '/' << r[BatchRouteTicks] << '\n';
@@ -273,7 +280,7 @@ void suite_report(const fs::path& root)
                     (!groupWait || r[ReadyObserved]-r[ReadyBegin]>(*groupWait)[ReadyObserved]-(*groupWait)[ReadyBegin])) groupWait=&r;
                 if(groupWait) {
                     const auto& r=*groupWait;
-                    std::cout << " G r/c=" << r[Rank] << '/' << r[Core] << " wait=" << r[ReadyObserved]-r[ReadyBegin]
+                    std::cout << " G r/c=" << r[Rank] << '/' << r[Core] << (r[ReadyTaskRounds]?" observe_window=":" wait=") << r[ReadyObserved]-r[ReadyBegin]
                               << " miss/calls/max_probe=" << r[ReadyPollMisses] << '/' << r[ReadyPollCalls] << '/' << r[ReadyPollMaxTicks]
                               << " last_r/c/n=" << r[ReadyMissingRank] << '/' << r[ReadyMissingCore] << '/' << r[ReadyMissingCount]
                               << " inspect=" << r[ReadyInspectTicks] << '\n';

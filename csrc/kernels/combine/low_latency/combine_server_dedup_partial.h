@@ -5,6 +5,10 @@
 #define COMBINE_DEDUP_EP_SERVER_DEDUP_PARTIAL_H
 
 #include "kernel_operator.h"
+#include "combine_ready.h"
+#if DEEPEP_LL_COMBINE_READY == 1
+#include "combine_ready_select.h"
+#endif
 #include "combine_profile_device.h"
 #include "../../dispatch/low_latency/device/ll_transport.h"
 #include "combine_rdma_return.h"
@@ -68,6 +72,13 @@ public:
             return;
         }
         rows_ = Allocate<int32_t>(EpCombineM4TaskBytes(tokens, recvCores_));
+#if DEEPEP_LL_COMBINE_READY == 1
+        const uint32_t bytes=EpCombineReadyTaskBytes(tokens,recvCores_);
+        readyDeps_=Allocate<int32_t>(bytes);
+        readyWork_=Allocate<int32_t>(bytes);
+        readyTasks_=Allocate<int32_t>(bytes);
+        readyMask_=Allocate<uint8_t>(EpCombineAlign((bytes/4U+7U)/8U,32U));
+#endif
         scan_ = scratch_[used_];
         scanRows_ = EpCombineM4ScanRows(h, k);
         table2Ub_ = Allocate<int32_t>(EpCombineAlign(kEpServerDedupCombineM4TableRows * 12U, 32U));
@@ -101,6 +112,9 @@ public:
     }
 #endif
 
+#if DEEPEP_LL_COMBINE_READY == 1
+    __aicore__ inline void SetReady(CombineGroupReady<Group>* ready) { ready_=ready; }
+#endif
     __aicore__ inline uint32_t Process()
     {
         if (LlTransport::Rdma(args_)) rdmaBatch_->Init(args_, packetBytes_);
@@ -114,6 +128,9 @@ public:
         const uint32_t servers = uint32_t(args_->rankSize) / Group;
         const uint32_t ownServer = uint32_t(args_->rank) / Group;
         uint32_t owner = 0U, completed = 0U;
+#if DEEPEP_LL_COMBINE_READY == 1
+        completed=ProcessReadyTasks(servers,ownServer);
+#else
         for (uint32_t step = 1U; step <= servers; ++step) {
 #ifdef DEEPEP_LL_COMBINE_SIMT_META
             cacheEnd_ = 0U;  // server scan aliases both metadata caches
@@ -168,6 +185,7 @@ public:
             }
             // Reuse phase scratch with its Vector dependency, not an MTE3 drain.
         }
+#endif
         const uint64_t drainStart = profile_.DetailClock();
         for (uint32_t lane = 0; lane < inputLanes_; ++lane) WaitFlag<HardEvent::V_MTE2>(lane);
         profile_.Elapsed(CombineProfile::PartialInputDrainTicks, drainStart);
@@ -181,6 +199,74 @@ public:
     }
 
 private:
+#if DEEPEP_LL_COMBINE_READY == 1
+    __aicore__ inline uint32_t ProcessReadyTasks(uint32_t servers,uint32_t ownServer)
+    {
+        profile_.Mark(CombineProfile::PlanBegin);
+        const uint64_t start=profile_.DetailClock();
+        uint32_t owner=0U,count=0U;
+        // Keep the baseline per-core ownership and server order. Build once;
+        // blocked tasks retain their identity rather than rescanning the table.
+        for(uint32_t step=0;step<servers;++step)
+            count=SelectServer(CombineReturnServer<Group>(servers,ownServer,step),owner,step==0U,count);
+        const uint32_t rounded=EpCombineAlign(count,64U);
+        Duplicate(readyDeps_,int32_t(0x10000U),rounded);
+        Sync<HardEvent::V_S>();
+        for(uint32_t task=0;task<count;++task) {
+            LoadTask(uint32_t(rows_.GetValue(task)));
+            const uint32_t n=table3Ub_.GetValue(0U);
+            if(n==0U || n>=k_) {Trap();return 0U;}
+            uint32_t mask=0U;
+            for(uint32_t member=1;member<=n;++member) {
+                const uint32_t rank=(table3Ub_.GetValue(member*2U)&0xffffU)/localExperts_;
+                if(rank/Group!=uint32_t(args_->rank)/Group) {Trap();return 0U;}
+                mask|=1U<<(rank%Group);
+            }
+            const uint32_t source=uint32_t(table2Ub_.GetValue(0U));
+            readyDeps_.SetValue(task,int32_t(mask|(LlTransport::RemoteWrite(args_,source)?0U:kReadyTaskLocal)));
+        }
+        profile_.Elapsed(CombineProfile::ReadyPlanTicks,start);
+        profile_.Mark(CombineProfile::PlanEnd);
+        uint32_t completed=0U;
+        while(completed<count) {
+            const uint32_t observed=ready_->Poll();
+            const uint64_t filterStart=profile_.DetailClock();
+            const uint32_t missing=((1U<<Group)-1U)^observed;
+            uint32_t runnable=SelectReadyCombineTasks(readyDeps_,readyWork_,readyTasks_,readyMask_,count,missing,true);
+            if(!runnable) runnable=SelectReadyCombineTasks(readyDeps_,readyWork_,readyTasks_,readyMask_,count,missing,false);
+            profile_.Elapsed(CombineProfile::ReadyFilterTicks,filterStart);
+            profile_.Add(CombineProfile::ReadyTaskRounds);
+            if(!runnable) {
+                profile_.Add(CombineProfile::ReadyTaskStalls);
+                PauseAfterFlagMiss(profile_);
+                continue;
+            }
+            profile_.MarkOnce(CombineProfile::ReadyFirstTask);
+            // An independent token can run before a blocked token; member order
+            // inside Aggregate remains unchanged. Never read an unready stage.
+            for(uint32_t index=0;index<uint32_t(runnable);++index) {
+                const uint32_t task=uint32_t(readyTasks_.GetValue(index));
+                const uint32_t row=uint32_t(rows_.GetValue(task));
+                LoadTask(row);
+                const uint32_t source=uint32_t(table2Ub_.GetValue(0U));
+                const uint32_t token=uint32_t(table2Ub_.GetValue(1U));
+                const uint32_t topk=uint32_t(table2Ub_.GetValue(2U));
+                const uint32_t n=table3Ub_.GetValue(0U);
+                if(dtype_==DispatchDedup::DISPATCH_DEDUP_DATA_TYPE_FP16) Aggregate<half>(row,source,n+1U);
+                else Aggregate<bfloat16_t>(row,source,n+1U);
+                Send(completed%outputLanes_,source,token,topk,false);
+                readyDeps_.SetValue(task,int32_t(0x10000U));
+                ++completed;
+                if(!ready_->All()) {
+                    profile_.Add(CombineProfile::ReadyTasksBeforeAll);
+                    profile_.Add(CombineProfile::ReadyRemoteBeforeAll,LlTransport::RemoteWrite(args_,source)?1U:0U);
+                }
+            }
+        }
+        profile_.Mark(CombineProfile::ReadyTasksDone);
+        return completed;
+    }
+#endif
     template <class T>
     __aicore__ inline LocalTensor<T> Allocate(uint32_t bytes)
     {
@@ -195,9 +281,9 @@ private:
         SetFlag<E>(id);
         WaitFlag<E>(id);
     }
-    __aicore__ inline uint32_t SelectServer(uint32_t server, uint32_t& owner, bool validateRanks)
+    __aicore__ inline uint32_t SelectServer(uint32_t server, uint32_t& owner, bool validateRanks, uint32_t append = 0U)
     {
-        uint32_t count = 0U;
+        uint32_t count = append;
         const uint32_t localCore = GetBlockIdx() - (GetBlockNum() - recvCores_);
         const uint32_t vectorBytes = EpCombineAlign(scanRows_ * 4U, 256U);
         const uint32_t maskBytes = EpCombineAlign((scanRows_ + 7U) / 8U, 32U);
@@ -414,6 +500,11 @@ private:
         SetFlag<HardEvent::MTE3_V>(lane);
     }
 
+#if DEEPEP_LL_COMBINE_READY == 1
+    CombineGroupReady<Group>* ready_=nullptr;
+    LocalTensor<int32_t> readyDeps_,readyWork_,readyTasks_;
+    LocalTensor<uint8_t> readyMask_;
+#endif
     CombineProfile::View profile_;
     uint32_t recvCores_ = 0;
     ReturnBatch* rdmaBatch_ = nullptr;

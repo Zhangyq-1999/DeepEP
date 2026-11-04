@@ -100,6 +100,30 @@ def test_no_trace_for_missing_core_or_bad_clock(reporter, tmp_path):
     assert not list(tmp_path.glob('**/*.tmp'))
 
 
+def test_dependency_work_is_not_rendered_as_blocking_wait(reporter, tmp_path):
+    fixture_data(tmp_path, ranks=(1,))
+    path = tmp_path / 'rank-1-profile.csv'
+    with path.open() as f:
+        reader = csv.DictReader(f)
+        fields, rows = reader.fieldnames, list(reader)
+    for row in rows:
+        if row['role'] == 'receive':
+            row.update(ready_begin=5, ready_observed=90, ready_end=95,
+                       ready_first_task=8, ready_tasks_done=40, ready_task_rounds=3,
+                       ready_tasks_before_all=2, ready_remote_before_all=1,
+                       ready_retire_begin=85, ready_retire_end=95,
+                       partial_begin=5, partial_end=40, final_begin=40)
+    write_csv(path, fields, rows)
+    subprocess.run([str(reporter), '--perfetto', str(tmp_path)], check=True, capture_output=True)
+    trace = read_trace(next((tmp_path/'perfetto-local').glob('*p50-*.json')))
+    spans = {e['name']: e for e in trace['traceEvents'] if e['ph'] == 'X'}
+    assert 'group ready wait' not in spans and 'group ready polling' not in spans
+    assert spans['group readiness observation window (includes work)']['dur'] == pytest.approx(.085)
+    assert spans['dependency-driven partial work']['dur'] == pytest.approx(.032)
+    assert spans['ready retirement']['dur'] == pytest.approx(.010)
+    assert spans['profiled body']['args']['ready_remote_before_all'] == 1
+
+
 def test_automatic_global_trace_gather(tmp_path):
     zig = os.environ.get('DEEPEP_TEST_ZIG')
     if not zig:

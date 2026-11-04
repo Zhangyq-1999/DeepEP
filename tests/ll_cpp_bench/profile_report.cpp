@@ -107,7 +107,8 @@ constexpr Phase phases[] = {{"body", Entry, FlushDone},
                             {"stage", StageBegin, StageEnd, StageSelectLoadTicks, StagePublishTicks},
                             {"notify_wait", NotifyBegin, NotifyLocalReady, NotifyPollLoadTicks, NotifyPollCheckTicks},
                             {"notify_publish", NotifyLocalReady, NotifyEnd, NotifyResetTicks, NotifyPublishTicks},
-                            {"group_ready", ReadyBegin, ReadyEnd, ReadyPollLoadTicks, ReadyResetTicks},
+                            {"group_ready_window", ReadyBegin, ReadyObserved, ReadyPollLoadTicks, ReadyResetTicks},
+                            {"ready_retire", ReadyRetireBegin, ReadyRetireEnd, ReadySnapshotTicks, ReadyConsumedWaitTicks},
                             {"partial", PartialBegin, PartialEnd, PlanLoadTicks, PartialInputDrainTicks},
                             {"plan", PlanBegin, PlanEnd, PlanLoadTicks, PlanSelectTicks},
                             {"direct_prepare", DirectBegin, DirectSetupEnd, DirectRouteLoadTicks, DirectSetupTicks},
@@ -193,6 +194,12 @@ void detail(std::ostream& out, const Record& r)
     if (r.receive && r[BatchGroupCalls] + r[BatchWholeTokens])
         out << "    batch: group_checks=" << r[BatchGroupCalls] << " whole_tokens=" << r[BatchWholeTokens]
             << " route_ticks=" << r[BatchRouteTicks] << '\n';
+    if (r.receive && r[ReadySnapshotTicks])
+        out << "    ready: first/all/done=" << r[ReadyFirstTask] << '/' << r[ReadyObserved] << '/' << r[ReadyTasksDone]
+            << " before_all_observed/tasks/remote=" << r[ReadyTasksBeforeAll] << '/' << r[ReadyRemoteBeforeAll]
+            << " setup/plan/filter/snapshot=" << r[ReadySetupTicks] << '/' << r[ReadyPlanTicks] << '/' << r[ReadyFilterTicks] << '/' << r[ReadySnapshotTicks]
+            << " ack_wait/consumed_wait=" << r[ReadyAckWaitTicks] << '/' << r[ReadyConsumedWaitTicks]
+            << (r[ReadyTaskRounds] ? " (group_ready_window includes useful work)\n" : "\n");
     if (r.receive && r[LocalContributions] + r[RemoteContributions]) {
         out << "    final_local: contributions=" << r[LocalContributions]
             << " probes/misses=" << r[LocalProbeCalls] << '/' << r[LocalProbeMisses]

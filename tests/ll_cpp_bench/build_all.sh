@@ -12,7 +12,8 @@ while (($#)); do
             cat <<'USAGE'
 build_all.sh [--variants NAME[,NAME...]] [--ranks-per-host 4|16] [--jobs N] [--dry-run]
              [--cann-home DIR] [--mpi-home DIR] [--shmem-root DIR]
-Defaults: base/remote/notify-simt/notify-core, plus matching diagnostic builds.
+Defaults: base/ready-task/ready-shared, plus matching diagnostic builds.
+ready-task: Vector task dependency checks; ready-shared: one ready record per destination rank.
 remote: cross-server returns first. notify-simt: remote plus SIMT rank notification.
 notify-core: remote plus direct producer-core notification; Vector readiness checks.
 card: coalesce returns to the same destination rank; server: relay via the same local slot.
@@ -52,16 +53,18 @@ IFS=, read -r -a names <<< "$variants"
 # Validate the complete selection before starting any build.
 for name in "${names[@]}"; do
     case "$name" in
-        notify-simt|notify-core|notify-simt-profile|notify-core-profile|card-all|card-row|server-all|server-row|card-all-profile|card-row-profile|server-all-profile|server-row-profile|batch|batch-profile|batch-pipeline|batch-pipeline-profile|local-first|local-first-profile|poll800|poll800-profile|meta|meta-profile|prefetch|prefetch-profile|prepare|flag|prepare-flag|prepare-profile|flag-profile|prepare-flag-profile|issue|probe|issue-probe|issue-profile|probe-profile|issue-probe-profile|base|remote|pipeline|return|ops-shmem-base|ref-profile|opt-profile|r36-profile|early-profile|remote-profile|pipeline-profile|return-profile) ;;
+        ready-task|ready-shared|ready-task-profile|ready-shared-profile|notify-simt|notify-core|notify-simt-profile|notify-core-profile|card-all|card-row|server-all|server-row|card-all-profile|card-row-profile|server-all-profile|server-row-profile|batch|batch-profile|batch-pipeline|batch-pipeline-profile|local-first|local-first-profile|poll800|poll800-profile|meta|meta-profile|prefetch|prefetch-profile|prepare|flag|prepare-flag|prepare-profile|flag-profile|prepare-flag-profile|issue|probe|issue-probe|issue-profile|probe-profile|issue-probe-profile|base|remote|pipeline|return|ops-shmem-base|ref-profile|opt-profile|r36-profile|early-profile|remote-profile|pipeline-profile|return-profile) ;;
         *) fail "Unknown experiment: $name (see --help)";;
     esac
 done
 if ((!dry)); then ll_bench_environment "$cann" "$mpi" "$shmem"; fi
 for name in "${names[@]}"; do
-    notify=0 coalesce=0 coalesce_rows=0
+    ready=0 notify=0 coalesce=0 coalesce_rows=0
     variant=opt profile=OFF small=OFF early=OFF remote=OFF defer=OFF issue=OFF probe=OFF recv=0 simt_meta=OFF simt_flag=OFF prefetch_return=OFF poll_nop=0 local_first=OFF batch_final=OFF
     if [[ $name == *-profile ]]; then profile=ON; fi
     case "$name" in
+        ready-task|ready-task-profile) ready=1;;
+        ready-shared|ready-shared-profile) ready=2;;
         notify-simt|notify-simt-profile) notify=1; remote=ON;;
         notify-core|notify-core-profile) notify=2; remote=ON;;
         card-all|card-all-profile) coalesce=1;;
@@ -93,7 +96,7 @@ for name in "${names[@]}"; do
          --cann-home "$cann" --mpi-home "$mpi" --shmem-root "$shmem"
          --build-dir "$root/build/ll-cpp-$name" --jobs "$jobs"
          --variant "$variant" --profile "$profile" --small-batch "$small"
-         --notify "$notify" --coalesce "$coalesce" --coalesce-rows "$coalesce_rows"
+         --ready "$ready" --notify "$notify" --coalesce "$coalesce" --coalesce-rows "$coalesce_rows"
          --recv-cores "$recv" --early-reduce "$early" --remote-first "$remote" --defer-return "$defer"
          --early-issue "$issue" --progress-probe "$probe" --simt-meta "$simt_meta" --simt-flag "$simt_flag"
          --prefetch-return "$prefetch_return" --local-first "$local_first" --batch-final "$batch_final" --poll-nop "$poll_nop" --ranks-per-host "$ranks_per_host")

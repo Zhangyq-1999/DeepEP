@@ -99,6 +99,15 @@ template<uint32_t Group>void Check(uint32_t world,uint32_t rank,uint32_t c,uint3
    expected.insert(expected.end(),selected.begin(),selected.begin()+count);
    assert(plan.End(step)==expected.size());
   }
+  // Dependency scheduling concatenates the same owned rows before reordering
+  // runnable tasks. Appending must retain ownership across server boundaries.
+  owner=0;uint32_t appended=0;
+  std::fill(selected.begin(),selected.end(),-99);
+  for(uint32_t step=0;step<world/Group;++step)
+   appended=old.SelectServer(CombineReturnServer<Group>(world/Group,rank/Group,step),owner,step==0,appended);
+  assert(appended==expected.size());
+  assert(std::equal(expected.begin(),expected.end(),selected.begin()));
+  for(uint32_t i=appended;i<selected.size();++i)assert(selected[i]==-99);
   for(uint32_t i=0;i<expected.size();++i){assert(owned.GetValue(i)==expected[i]);++hits[expected[i]];}
   assert(expected.size()<=(n+recv-1)/recv);
   for(uint32_t i=bytes+expected.size()*4;i<bytes+ownedBytes+64;++i)assert(raw[i]==0x5b);

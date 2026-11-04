@@ -7,7 +7,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
-@pytest.mark.parametrize("options", [["NOTIFY=1"], ["NOTIFY=2"], [], ["SIMT_META"], ["SIMT_FLAG"], ["SIMT_META", "SIMT_FLAG"], ["LOCAL_FIRST"], ["LOCAL_FIRST", "BATCH_FINAL"]])
+@pytest.mark.parametrize("options", [["READY=1"], ["READY=2"], ["NOTIFY=1"], ["NOTIFY=2"], [], ["SIMT_META"], ["SIMT_FLAG"], ["SIMT_META", "SIMT_FLAG"], ["LOCAL_FIRST"], ["LOCAL_FIRST", "BATCH_FINAL"]])
 def test_simt_launch_and_workspace_fit_ub(tmp_path, options):
     """Exercise the real launch argument and layouts against the hardware budget.
 

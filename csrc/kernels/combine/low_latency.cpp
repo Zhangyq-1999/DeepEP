@@ -88,6 +88,7 @@ extern "C" DEEPEP_EXPORT uint32_t deepep_ll_combine_return_options()
     options |= uint32_t(DEEPEP_LL_COMBINE_COALESCE) << 9U;
     options |= uint32_t(DEEPEP_LL_COMBINE_COALESCE_ROWS) << 11U;
 #endif
+    options |= uint32_t(DEEPEP_LL_COMBINE_READY) << 14U;
     return options;
 }
 

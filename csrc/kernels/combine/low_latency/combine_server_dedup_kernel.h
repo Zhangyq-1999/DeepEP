@@ -147,6 +147,12 @@ public:
 #endif
         if (core_ >= sendCores_) {
             if (enableDedup_) {
+#if DEEPEP_LL_COMBINE_READY > 0
+                // Prepare notification state only after this core's stage DMA
+                // has retired, so generation setup cannot delay data producers.
+                groupReady_.Init(args_,control_,core_,sendCores_,recvCores_,
+                    readyInput_,readyWork_,readyZero_,readySum_,notifyUb_,profile_);
+#endif
 #if DEEPEP_LL_COMBINE_NOTIFY != 2
                 if (core_ >= notifyBegin_) {
 
@@ -156,7 +162,7 @@ public:
                 }
 #endif
 
-#ifndef DEEPEP_LL_COMBINE_SMALL_BATCH
+#if !defined(DEEPEP_LL_COMBINE_SMALL_BATCH) && DEEPEP_LL_COMBINE_READY != 1
                 WaitServerReady();
 #endif
 
@@ -171,6 +177,11 @@ public:
 
                 DrainSharedOutputs(retiredOutputs);
                 profile_.Mark(CombineProfile::DrainEnd);
+#if DEEPEP_LL_COMBINE_READY == 1
+                groupReady_.Retire();
+#elif DEEPEP_LL_COMBINE_READY == 2
+                groupReady_.Release();
+#endif
 
             } else {
 #if defined(DEEPEP_LL_COMBINE_COALESCE) && DEEPEP_LL_COMBINE_COALESCE > 0
@@ -591,6 +602,9 @@ private:
         WaitServerReady();
 #endif
         profile_.Mark(CombineProfile::PartialRunBegin);
+#if DEEPEP_LL_COMBINE_READY == 1
+        partial.SetReady(&groupReady_);
+#endif
         partialTasks_ = partial.Process();
         profile_.Mark(CombineProfile::PartialRunEnd);
         profile_.Set(CombineProfile::PartialRows, partialTasks_);
@@ -711,7 +725,7 @@ private:
         profile_.Mark(CombineProfile::NotifyLocalReady);
         const uint64_t resetStart = profile_.DetailClock();
         Duplicate<float>(prepareZero_, 0.0f, coreNum_ * 8U);
-#if DEEPEP_LL_COMBINE_NOTIFY == 0
+#if DEEPEP_LL_COMBINE_NOTIFY == 0 && DEEPEP_LL_COMBINE_READY != 2
         Duplicate<float>(notifyUb_, 0.0f, recvCores_ * 8U);
         Sync<HardEvent::V_S>();
         for (uint32_t r = 0; r < recvCores_; ++r) notifyUb_.SetValue(r * 8U, 1.0f);
@@ -723,7 +737,10 @@ private:
         DataCopyPad(done, prepareZero_, {1U, coreNum_ * 32U, 0U, 0U, 0U});
         profile_.Elapsed(CombineProfile::NotifyResetTicks, resetStart);
         const uint64_t publishStart = profile_.DetailClock();
-#if DEEPEP_LL_COMBINE_NOTIFY == 1
+#if DEEPEP_LL_COMBINE_READY == 2
+        const uint32_t base=uint32_t(args_->rank)/Group*Group;
+        for(uint32_t local=core_-notifyBegin_;local<Group;local+=8U) groupReady_.Publish(base+local);
+#elif DEEPEP_LL_COMBINE_NOTIFY == 1
         PublishReadySimt(false);
 #else
         // Eight notification cores cover all peers in the logical group.
@@ -743,6 +760,9 @@ private:
     }
     __aicore__ inline void WaitServerReady()
     {
+#if DEEPEP_LL_COMBINE_READY == 2
+        groupReady_.Retire();
+#else
         profile_.Mark(CombineProfile::ReadyBegin);
 #if DEEPEP_LL_COMBINE_NOTIFY == 2
         auto ready = Control(args_->rank, COMBINE_DEDUP_EP_SERVER_DEDUP_COMBINE_CORE_READY_OFFSET +
@@ -761,8 +781,12 @@ private:
         DataCopyPad(ready, readyZero_, {1U, resetBytes, 0U, 0U, 0U});
         profile_.Elapsed(CombineProfile::ReadyResetTicks, resetStart);
         profile_.Mark(CombineProfile::ReadyEnd);
+#endif
     }
 
+#if DEEPEP_LL_COMBINE_READY > 0
+    CombineGroupReady<Group> groupReady_;
+#endif
     CombineProfile::View profile_;
 #ifdef DEEPEP_LL_COMBINE_PROFILE
     CombineProfile::DeviceProfile* profileOwner_ = nullptr;

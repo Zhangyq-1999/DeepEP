@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Shared defaults for the two convenience entry points. Source from Bash.
-ll_bench_profiles=ref-profile,remote-profile,notify-simt-profile,notify-core-profile
-ll_bench_variants=base,remote,notify-simt,notify-core,$ll_bench_profiles
+ll_bench_profiles=ref-profile,ready-task-profile,ready-shared-profile
+ll_bench_variants=base,ready-task,ready-shared,$ll_bench_profiles
 ll_bench_cann=${ASCEND_HOME_PATH:-/usr/local/Ascend/cann-9.2.T101}
 ll_bench_mpi=${MPI_HOME:-/usr/local/mpich-3.2.1}
 ll_bench_shmem=${SHMEM_ROOT:-$root/third-party/shmem/install/shmem}

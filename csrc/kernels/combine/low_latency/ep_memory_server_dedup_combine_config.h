@@ -8,6 +8,10 @@
 #include "../../dispatch/low_latency/common/ep_memory_server_dedup_protocol.h"
 #include "../../dispatch/low_latency/common/ll_core_config.h"
 #include "combine_notify_layout.h"
+#include "combine_ready_layout.h"
+#if DEEPEP_LL_COMBINE_READY > 0 && (DEEPEP_LL_COMBINE_NOTIFY > 0 || defined(DEEPEP_LL_COMBINE_SMALL_BATCH) || defined(DEEPEP_LL_COMBINE_SIMT_META))
+#error "Test ready modes separately from notify, small-batch and SIMT metadata"
+#endif
 
 #if defined(DEEPEP_LL_COMBINE_BATCH_FINAL) && !defined(DEEPEP_LL_COMBINE_LOCAL_FIRST)
 #error "batch-final requires local-first"
@@ -21,7 +25,8 @@ namespace CombineDedup {
 // Resident capacity is shared across ranks, independently of active core count.
 constexpr uint32_t kCombineNotifyRows = DispatchDedup::kLlMaxRecvCoreNum;
 constexpr uint32_t kCombineReadyInputBytes =
-    (DEEPEP_LL_COMBINE_NOTIFY == 2 ? kCoreReadyRowBytes : DispatchDedup::kLlRanksPerGroup * 32U) + 256U;
+    (DEEPEP_LL_COMBINE_NOTIFY == 2 ? kCoreReadyRowBytes :
+     (DEEPEP_LL_COMBINE_READY == 2 ? DispatchDedup::kLlMaxRecvCoreNum : DispatchDedup::kLlRanksPerGroup) * 32U) + 256U;
 constexpr uint32_t kCombineReadyZeroBytes = DEEPEP_LL_COMBINE_NOTIFY == 2 ? kCoreReadyRowBytes : 512U;
 constexpr uint32_t kCombinePrepareRowBytes = DispatchDedup::kLlMaxCoreNum * 32U;
 static_assert(kCombinePrepareRowBytes * DispatchDedup::kLlNotifyCoreNum == 18432U, "prepare/ready boundary");
@@ -139,6 +144,10 @@ COMBINE_DEDUP_EP_COMBINE_CONSTEXPR uint32_t EpCombineM4TaskBytes(uint32_t tokens
     return EpCombineAlign(((tokens + recvCores - 1U) / recvCores) * 4U,
                           32U);
 }
+COMBINE_DEDUP_EP_COMBINE_CONSTEXPR uint32_t EpCombineReadyTaskBytes(uint32_t tokens,uint32_t recvCores)
+{
+    return EpCombineAlign(((tokens+recvCores-1U)/recvCores)*4U,256U);
+}
 // M5 input events use IDs 0..6; MTE2_V(7) is reserved for probe.
 COMBINE_DEDUP_EP_COMBINE_CONSTEXPR uint32_t EpCombineM5TokenCount(uint32_t bs, uint32_t recvCores = DispatchDedup::kLlDefaultPlanCoreNum / 2U)
 {
@@ -186,7 +195,12 @@ COMBINE_DEDUP_EP_COMBINE_CONSTEXPR EpCombineM45WorkspaceLayout EpCombineM45Layou
         h > kEpServerDedupCombineRecvUbBytes / 12U || k == 0U || k > 32U)
         return result;
     const uint64_t owned = EpCombineM5TokenCount(bs, recvCores);
-    const uint64_t partial = EpCombineM4TaskBytes(tokens, recvCores) + 384U +
+    const uint64_t partial = EpCombineM4TaskBytes(tokens, recvCores) +
+#if DEEPEP_LL_COMBINE_READY == 1
+                             3U * EpCombineReadyTaskBytes(tokens,recvCores) +
+                             EpCombineAlign((EpCombineReadyTaskBytes(tokens,recvCores)/4U+7U)/8U,32U) +
+#endif
+                             384U +
                              EpCombineAlign(kEpServerDedupCombineM4TableRows * k * 8U, 32U) +
                              ((h * 2U + 479U) / 480U) * 480U;
     const uint64_t final =

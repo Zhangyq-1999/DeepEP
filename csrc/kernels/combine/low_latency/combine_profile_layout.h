@@ -2,8 +2,8 @@
 #include <cstdint>
 
 namespace CombineProfile {
-// One 2048-byte record per AIV. Schema 10 adds readiness publication and
-// last-missed producer diagnostics. Detailed counters require level 2.
+// One 2048-byte record per AIV. Schema 11 adds dependency scheduling and
+// shared-ready retirement diagnostics. Detailed counters require level 2.
 enum Word : uint32_t {
     Entry,
     ProfileInitEnd,
@@ -60,6 +60,10 @@ enum Word : uint32_t {
     CoreNotifyBegin,
     CoreNotifyEnd,
     ReadyObserved,
+    ReadyFirstTask,
+    ReadyTasksDone,
+    ReadyRetireBegin,
+    ReadyRetireEnd,
     StageRows,
     DirectRows,
     PartialRows,
@@ -212,6 +216,16 @@ enum Word : uint32_t {
     NotifyMissingCore,
     NotifyMissingCount,
     NotifyStores,
+    ReadySetupTicks,
+    ReadySnapshotTicks,
+    ReadyPlanTicks,
+    ReadyFilterTicks,
+    ReadyTaskRounds,
+    ReadyTaskStalls,
+    ReadyTasksBeforeAll,
+    ReadyRemoteBeforeAll,
+    ReadyAckWaitTicks,
+    ReadyConsumedWaitTicks,
     CoalesceWorker,
     Rank,
     Core,
@@ -224,8 +238,8 @@ enum Word : uint32_t {
     Count
 };
 constexpr uint32_t kWords = 256U;
-constexpr uint64_t kSchema = 10U;
+constexpr uint64_t kSchema = 11U;
 constexpr Word kDetailBegin = InitPrefixTicks;
-constexpr Word kDetailEnd = NotifyStores;
+constexpr Word kDetailEnd = ReadyConsumedWaitTicks;
 static_assert(Count <= kWords && StageRows <= 64U, "profile record bounds");
 }  // namespace CombineProfile

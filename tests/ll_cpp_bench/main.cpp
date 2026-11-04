@@ -280,7 +280,7 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
                           (DEEPEP_BENCH_EARLY_ISSUE << 2) | (DEEPEP_BENCH_PROGRESS_PROBE << 3) | (DEEPEP_BENCH_SIMT_META << 4) |
                           (DEEPEP_BENCH_SIMT_FLAG << 5) | (DEEPEP_BENCH_PREFETCH_RETURN << 6) | (DEEPEP_BENCH_LOCAL_FIRST << 7) |
                           (DEEPEP_BENCH_BATCH_FINAL << 8) | (DEEPEP_BENCH_COALESCE << 9) |
-                          (DEEPEP_BENCH_COALESCE_ROWS << 11) | (DEEPEP_BENCH_NOTIFY << 12) | (uint32_t(DEEPEP_BENCH_POLL_NOP) << 16U)))
+                          (DEEPEP_BENCH_COALESCE_ROWS << 11) | (DEEPEP_BENCH_NOTIFY << 12) | (DEEPEP_BENCH_READY << 14) | (uint32_t(DEEPEP_BENCH_POLL_NOP) << 16U)))
         throw std::runtime_error("Mismatched Host/device return options");
     if (!profileBuild) o.profile = 0;
     if (profileBuild && o.profile) o.iterations = o.profileIterations;
@@ -322,7 +322,7 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
                    "aiv,recv_cores,small_batch,early_"
                    "reduce,remote_first,defer_return,early_issue,progress_probe,simt_meta,simt_flag,prefetch_return,local_first,batch_final,poll_nop,ranks_per_host,original,entry_sync,profile_build,profile_level,rank_max_mean_us,"
                    "rank_max_min_us,"
-                   "rank_max_max_us,p50_us,p99_us,coalesce,coalesce_rows,transport_cores,notify_mode\n";
+                   "rank_max_max_us,p50_us,p99_us,coalesce,coalesce_rows,transport_cores,notify_mode,ready_mode\n";
     }
     std::cout << "rank=" << o.rank << " EP=" << o.world << " AIV=" << cores << " receive=" << recv
               << " small_batch=" << deepep_ll_combine_small_batch_enabled()
@@ -441,7 +441,7 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
                     << ((returnOptions >> 8) & 1U) << ',' << (returnOptions >> 16U) << ',' << o.ranksPerHost << ',' << DEEPEP_LL_COMBINE_ORIGINAL
                     << ',' << o.entrySync << ',' << profileBuild << ',' << o.profile << ',' << s.mean << ',' << s.min
                     << ',' << s.max << ',' << s.p50 << ',' << s.p99 << ',' << DEEPEP_BENCH_COALESCE << ','
-                    << DEEPEP_BENCH_COALESCE_ROWS << ',' << (DEEPEP_BENCH_COALESCE?CombineCoalesce::kWorkers:0U) << ',' << DEEPEP_BENCH_NOTIFY << '\n';
+                    << DEEPEP_BENCH_COALESCE_ROWS << ',' << (DEEPEP_BENCH_COALESCE?CombineCoalesce::kWorkers:0U) << ',' << DEEPEP_BENCH_NOTIFY << ',' << DEEPEP_BENCH_READY << '\n';
             summary.flush();
             std::cout << "BS=" << bs << " rank-MAX Event us: mean=" << s.mean << " range=[" << s.min << ',' << s.max
                       << "] p99=" << s.p99 << " rank0_max_abs_error=" << error << std::endl;

@@ -82,6 +82,8 @@ inline void write_perfetto(const std::filesystem::path& path, const std::vector<
         {"stage select", StageBegin, StageSelected}, {"stage copies", StageSelected, StageCopiesEnd},
         {"stage drain", StageCopiesEnd, StageDrained}, {"stage publish", StageDrained, StageEnd},
         {"local ready wait", NotifyBegin, NotifyLocalReady}, {"ready publish", NotifyLocalReady, NotifyEnd},
+        {"ready retirement", ReadyRetireBegin, ReadyRetireEnd},
+        {"dependency-driven partial work", ReadyFirstTask, ReadyTasksDone},
         {"per-core SIMT publish", CoreNotifyBegin, CoreNotifyEnd},
         {"group ready polling", ReadyBegin, ReadyObserved},
         {"ready inspect and reset", ReadyObserved, ReadyEnd},
@@ -151,7 +153,15 @@ inline void write_perfetto(const std::filesystem::path& path, const std::vector<
                 if (v[b] < start) throw std::runtime_error("Non-monotonic Perfetto stage: " + name);
                 if (v[b] > start) slices.push_back({name, start, v[b]});
             };
-            for (auto s : spans) add(s.name, s.begin, s.end);
+            for (auto s : spans) {
+                // Task readiness is interleaved with useful partial work. Do
+                // not render that entire observation interval as blocking wait.
+                if(v[ReadyTaskRounds] && s.begin==ReadyBegin) {
+                    if(s.end==ReadyObserved) add("group readiness observation window (includes work)",s.begin,s.end);
+                } else if(v[ReadyTaskRounds] && s.begin==ReadyObserved && s.end==ReadyEnd) {
+                    continue; // retirement has its own explicit interval
+                } else add(s.name,s.begin,s.end);
+            }
             if (worker) {
                 // WaitProducers has an end stamp only. Label the surrounding
                 // window honestly: it also includes the preceding PIPE_ALL.
