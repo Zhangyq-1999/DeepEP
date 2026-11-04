@@ -62,8 +62,8 @@ template<uint32_t Group> struct Scheduler {
     LocalTensor<int32_t> rows_{rows.data()},readyDeps_{deps.data()},readyWork_{work.data()},readyTasks_{selected.data()},table2Ub_{table2.data()};
     LocalTensor<uint32_t> table3Ub_{table3.data()};
     LocalTensor<uint8_t> readyMask_{mask.data()};
-    explicit Scheduler(std::vector<Task> tasks):input(std::move(tasks)) {
-        args.rank=0;args.rankSize=2*Group;args.reserved0=Group;args.reservedConfig[0]=LlRdma::kBackend;
+    explicit Scheduler(std::vector<Task> tasks,uint32_t world=2*Group,uint32_t rank=0):input(std::move(tasks)) {
+        args.rank=rank;args.rankSize=world;args.reserved0=Group;args.reservedConfig[0]=LlRdma::kBackend;
         dtype_=DispatchDedup::DISPATCH_DEDUP_DATA_TYPE_FP16;
     }
     template<HardEvent E>void Sync(){SetFlag<E>(7);WaitFlag<E>(7);}
@@ -74,7 +74,7 @@ template<uint32_t Group> struct Scheduler {
     void LoadTask(uint32_t row) {
         current=row;table2[0]=input[row].source;table2[1]=row;table2[2]=0;
         uint32_t n=0;
-        for(uint32_t rank=0;rank<Group;++rank) if(input[row].mask&(1U<<rank)) table3[2U*(++n)]=rank;
+        for(uint32_t rank=0;rank<Group;++rank) if(input[row].mask&(1U<<rank)) table3[2U*(++n)]=args.rank/Group*Group+rank;
         table3[0]=n;
     }
     template<class T>void Aggregate(uint32_t row,uint32_t source,uint32_t members) {
@@ -103,7 +103,28 @@ template<uint32_t Group>void Check() {
     assert(trapped);
     NoLiveEvents();
 }
-int main(){Check<2>();Check<4>();Check<16>();}
+void FourHosts() {
+    for(uint32_t rank:{0U,15U,16U,31U,32U,47U,48U,63U}) {
+        const uint32_t own=rank/16U;
+        // The local task can run before a dependency on local rank 15.
+        // Once that dependency arrives, return to all THREE remote servers
+        // before the remaining local task; no fixed peer/server pair.
+        std::vector<Scheduler<16>::Task> tasks{{1U,rank},{0x8001U,rank}};
+        for(uint32_t server=0;server<4;++server) if(server!=own)
+            tasks.push_back({0x8001U,server*16U+15U});
+        Scheduler<16> t(tasks,64,rank);
+        assert(t.ProcessReadyTasks(4,own)==5U);
+        assert(t.sent.front()==0U && t.sent.back()==1U && t.aggregated==5U);
+        uint32_t visited=0;
+        for(uint32_t i=1;i<4;++i) {
+            const uint32_t server=tasks[t.sent[i]].source/16U;
+            assert(server!=own && !(visited&(1U<<server)));visited|=1U<<server;
+        }
+        assert(visited==(15U^(1U<<own)));
+        NoLiveEvents();
+    }
+}
+int main(){Check<2>();Check<4>();Check<16>();FourHosts();}
 ''', encoding="utf-8")
     subprocess.run([zig, "c++", "-std=c++17", "-O1", "-UNDEBUG", "-DDEEPEP_LL_COMBINE_READY=1",
                     "-I" + str(ROOT / "tests/ll_cpp_bench"), "-I" + str(ROOT / "tests/ll_rdma/metadata_stubs"),

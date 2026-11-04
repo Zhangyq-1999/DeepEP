@@ -145,12 +145,15 @@ def test_repeat_default_run_and_second_host_join(harness):
     assert "Copy RUN_ID" in run("run_all.sh", ok=False).stderr
 
 
-def test_default_suite_reaches_real_launcher_on_both_hosts(harness):
+@pytest.mark.parametrize("nodes", [2, 4])
+def test_default_suite_reaches_real_launcher_on_all_hosts(harness, nodes):
     run, env = harness
-    run_id = "ep8-default-launch-regression"
-    for node, host in enumerate(("90.90.93.84", "90.90.93.184")):
+    run_id = "ready-suite-launch-regression"
+    hosts = ("90.90.93.84", "90.90.93.184", "90.90.93.85", "90.90.93.185")[:nodes]
+    options = [] if nodes == 2 else ["--ep", "64", "--ranks-per-host", "16", "--hosts", ",".join(hosts)]
+    for node, host in enumerate(hosts):
         env["TEST_LOCAL_IP"] = host
-        result = run("run_all.sh", run_id, "--dry-run", real_launch=True)
+        result = run("run_all.sh", run_id, *options, "--dry-run", real_launch=True)
         for phase, name in enumerate((*CLEAN, *PROFILES)):
             assert f"phase={phase} variant={name} output=" in result.stdout
         assert f"--proxy-id {node}" in result.stdout
@@ -189,6 +192,9 @@ def test_host_detection_and_benchmark_overrides(harness):
 
 def test_four_host_commands_and_detection(harness):
     run, env = harness
+    builds = call_options(run("build_all.sh", "--ranks-per-host", "16").stdout)
+    assert len(builds) == 6 and all(call["--ranks-per-host"] == "16" for call in builds)
+    assert [call["--ready"] for call in builds] == ["0", "1", "2", "0", "1", "2"]
     hosts = "90.90.93.84,90.90.93.184,90.90.93.85,90.90.93.185"
     result = run("run_all.sh", "--ep", "64", "--ranks-per-host", "16", "--hosts", hosts,
                  "--tokens", "32,72,128,256", "--master-port", "30071")

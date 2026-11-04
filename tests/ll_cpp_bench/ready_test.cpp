@@ -46,21 +46,21 @@ struct Reader {
                    {indices.data()}, {result.data()}, {publication.data()}, {});
     }
 };
-template <uint32_t Group>
+template <uint32_t Group, uint32_t World = Group>
 struct Cluster {
-    std::array<std::vector<uint64_t>, Group> memory;
-    std::array<DispatchDedup::CommArgs, Group> args{};
-    std::array<std::vector<std::unique_ptr<Reader<Group>>>, Group> readers;
+    std::array<std::vector<uint64_t>, World> memory;
+    std::array<DispatchDedup::CommArgs, World> args{};
+    std::array<std::vector<std::unique_ptr<Reader<Group>>>, World> readers;
     uint32_t recv;
     explicit Cluster(uint32_t count) : recv(count)
     {
         for (auto& mem : memory) mem.resize(bankBytes * 2U / 8U);
-        for (uint32_t rank = 0; rank < Group; ++rank) {
+        for (uint32_t rank = 0; rank < World; ++rank) {
             auto& a = args[rank];
             a.rank = rank;
-            a.rankSize = Group;
+            a.rankSize = World;
             a.reserved0 = Group;
-            for (uint32_t peer = 0; peer < Group; ++peer)
+            for (uint32_t peer = rank / Group * Group; peer < (rank / Group + 1U) * Group; ++peer)
                 a.peerMems[peer] = reinterpret_cast<uint8_t*>(memory[peer].data());
             for (uint32_t c = 0; c < recv; ++c) readers[rank].push_back(std::make_unique<Reader<Group>>());
         }
@@ -71,12 +71,13 @@ struct Cluster {
     }
     void Init(uint32_t bank)
     {
-        for (uint32_t rank = 0; rank < Group; ++rank)
+        for (uint32_t rank = 0; rank < World; ++rank)
             for (uint32_t c = 0; c < recv; ++c) readers[rank][c]->Init(&args[rank], bank, c, recv);
     }
     void Publish(uint32_t source)
     {
-        for (uint32_t peer = 0; peer < Group; ++peer) readers[source][recv - 1]->ready.Publish(peer);
+        for (uint32_t local = 0; local < Group; ++local)
+            readers[source][recv - 8U + local % 8U]->ready.Publish(source / Group * Group + local);
     }
 };
 void NoLiveEvents()
@@ -223,9 +224,56 @@ void CheckSelector()
             NoLiveEvents();
         }
 }
+void CheckFourHostReady()
+{
+    // Physical groups are 0..15,16..31,32..47,48..63. Remote peer pointers
+    // stay null: readiness must never use UBMEM to notify a different server.
+    auto storage = std::make_unique<Cluster<16, 64>>(28);
+    auto& cluster = *storage;
+    for (uint32_t bank = 0; bank < 2; ++bank) {
+        cluster.Init(bank);
+#if DEEPEP_LL_COMBINE_READY == 2
+        for (uint32_t source = 0; source < 15; ++source) cluster.Publish(source);
+        for (uint32_t rank = 0; rank < 64; ++rank)
+            for (auto& reader : cluster.readers[rank]) assert(reader->ready.Poll() == (rank < 16 ? 0x7fffU : 0U));
+        // The other three servers complete two generations while server 0
+        // still waits for rank 15. Their ACKs cannot depend on a global group.
+        for (uint32_t generation = 1; generation <= 2; ++generation) {
+            if (generation == 2)
+                for (uint32_t rank = 16; rank < 64; ++rank)
+                    for (uint32_t c = 0; c < 28; ++c) cluster.readers[rank][c]->Init(&cluster.args[rank], bank, c, 28);
+            for (uint32_t source = 16; source < 64; ++source) cluster.Publish(source);
+            for (uint32_t rank = 16; rank < 64; ++rank) {
+                for (auto& reader : cluster.readers[rank]) reader->ready.Retire();
+                cluster.readers[rank][0]->ready.Release();
+            }
+        }
+        cluster.Publish(15);
+        for (uint32_t rank = 0; rank < 16; ++rank) {
+            for (auto& reader : cluster.readers[rank]) reader->ready.Retire();
+            cluster.readers[rank][0]->ready.Release();
+        }
+        for (uint32_t rank = 0; rank < 64; ++rank)
+            for (uint32_t local = 0; local < 16; ++local)
+                assert(cluster.At(rank, bank, kSharedAck + local * 32U).GetValue(0) == (rank < 16 ? 1U : 2U));
+#else
+        const uint64_t offset = COMBINE_DEDUP_EP_SERVER_DEDUP_COMBINE_SERVER_READY_OFFSET;
+        for (uint32_t rank = 0; rank < 64; ++rank) {
+            cluster.At(rank, bank, offset + (rank % 16) * 32U).SetValue(0, 0x3f800000U);
+            assert(cluster.readers[rank][0]->ready.Poll() == (1U << (rank % 16)));
+            for (uint32_t local = 0; local < 16; ++local)
+                cluster.At(rank, bank, offset + local * 32U).SetValue(0, 0x3f800000U);
+            cluster.readers[rank][0]->ready.Retire();
+            for (uint32_t word = 0; word < 128; ++word) assert(cluster.At(rank, bank, offset).GetValue(word) == 0U);
+        }
+#endif
+        NoLiveEvents();
+    }
+}
 int main()
 {
     CheckSelector();
+    CheckFourHostReady();
 #if DEEPEP_LL_COMBINE_READY == 2
     for (uint32_t recv : {8U, 28U, 36U}) {
         CheckShared<2>(recv);
