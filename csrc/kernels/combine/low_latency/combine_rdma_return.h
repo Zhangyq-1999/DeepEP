@@ -1,10 +1,18 @@
 #pragma once
 #include "../../dispatch/low_latency/device/ll_dispatch_rdma_batch.h"
 #include "combine_return_schedule.h"
+#if defined(DEEPEP_LL_COMBINE_COALESCE) && DEEPEP_LL_COMBINE_COALESCE > 0
+#include "combine_coalesce.h"
+#endif
 namespace CombineDedup {
+#if defined(DEEPEP_LL_COMBINE_COALESCE) && DEEPEP_LL_COMBINE_COALESCE > 0
+using ReturnBatch = CoalescedReturn;
+#else
+using ReturnBatch = LlTransport::DispatchRdmaBatch;
+#endif
 // Caller has packed this output and acquired V->MTE3. A pending older frame
 // uses a different output lane; single-lane callers must select defer=false.
-__aicore__ inline void SendReturnPacket(LlTransport::DispatchRdmaBatch& batch,
+__aicore__ inline void SendReturnPacket(ReturnBatch& batch,
                                         const __gm__ DispatchDedup::CommArgs* args,
                                         uint32_t peer, uint64_t offset,
                                         AscendC::LocalTensor<uint8_t> output,

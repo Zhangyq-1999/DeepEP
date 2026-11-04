@@ -8,7 +8,8 @@ import pytest
 
 
 @pytest.mark.parametrize("world", [4, 64])
-def test_global_sample_export(tmp_path, world):
+@pytest.mark.parametrize("coalesce", [False, True])
+def test_global_sample_export(tmp_path, world, coalesce):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
     if not zig:
         pytest.skip("Set DEEPEP_TEST_ZIG for CPU C++ checks")
@@ -32,13 +33,13 @@ inline int MPI_Bcast(void*,int,int,int,int) {return 0;}
 inline int MPI_Barrier(int) {return 0;}
 inline int MPI_Allgather(const void* p,int n,int type,void* out,int,int,int) {
     using namespace CombineProfile;
-    assert(type==MPI_BYTE && n==(1+3*kWords)*sizeof(uint64_t));
+    assert(type==MPI_BYTE && n==(1+4*kWords)*sizeof(uint64_t));
     for (uint32_t rank=0;rank<TEST_WORLD;++rank) {
         auto dest=static_cast<uint8_t*>(out)+rank*n;
         std::memcpy(dest,p,n);
         const uint64_t device=TEST_WORLD==4 ? rank+8 : rank%16;
         std::memcpy(dest,&device,sizeof(device));
-        for (uint32_t j=0;j<3;++j) {
+        for (uint32_t j=0;j<4;++j) {
             const uint64_t r=rank;
             std::memcpy(dest+(1+j*kWords+Rank)*8,&r,sizeof(r));
         }
@@ -83,6 +84,11 @@ int main(int argc,char** argv) {
         auto late=raw.data()+kWords;
         late[RdmaLastPut]=late[Entry]+90;
         late[Valid]|=uint64_t(1)<<RdmaLastPut;
+        if (TEST_COALESCE) {
+            raw[CoalesceWorker]=1;
+            raw[FlushDone]=raw[Entry]+250;
+            late[CoalesceWorker]=1;
+        }
         profiles.capture(raw,6,3);
     }
     llbench::Coordinator peers;
@@ -92,6 +98,7 @@ int main(int argc,char** argv) {
     exe = tmp_path / "export.exe"
     subprocess.run([zig, "c++", "-std=c++17", "-O2", "-UNDEBUG",
                     "-DTEST_WORLD=" + str(world),
+                    "-DTEST_COALESCE=" + str(int(coalesce)),
                     "-I" + str(tmp_path), "-I" + str(here), str(tmp_path / "test.cpp"), "-o", str(exe)],
                    check=True, timeout=180)
     subprocess.run([str(exe), str(tmp_path)], check=True, timeout=30)
@@ -101,11 +108,11 @@ int main(int argc,char** argv) {
         (0, 1, 11), (1, 0, 30), (2, 63, 40) if world == 64 else (2, 0, 13)]
     with (tmp_path / "diagnostic.csv").open() as stream:
         records = list(csv.DictReader(stream))
-    assert len(records) == 3 * world * 3
+    assert len(records) == 3 * world * (4 if coalesce else 3)
     assert {int(r["rank"]) for r in records} == set(range(world))
     assert {int(r["iteration"]) for r in records} == {0, 1, 2}
     for row in records:
-        assert int(row["core"]) in (1, 2, 5)
+        assert int(row["core"]) in ((0, 1, 2, 5) if coalesce else (1, 2, 5))
         rank = int(row["rank"])
         assert int(row["device"]) == (rank + 8 if world == 4 else rank % 16)
         assert int(row["stage_rows"]) == int(row["iteration"]) * 10 + int(row["core"])

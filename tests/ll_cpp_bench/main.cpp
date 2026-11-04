@@ -24,6 +24,7 @@
 #include "kernels/dispatch/low_latency/common/comm_args.h"
 #include "kernels/dispatch/low_latency/launch.hpp"
 #include "kernels/combine/low_latency/combine_layout.h"
+#include "kernels/combine/low_latency/combine_coalesce_layout.h"
 #include "kernels/combine/low_latency/ep_memory_server_dedup_combine_tiling.h"
 #include "kernels/combine/low_latency/launch.hpp"
 
@@ -224,7 +225,8 @@ struct Case {
                               table.size() * 4U, ACL_MEMCPY_DEVICE_TO_HOST), "read producer routes");
         }
         const auto local = llbench::return_producers(types, table, o.rank, o.world, bs, o.topk,
-            DispatchDedup::LlGroupForWorld(o.world), o.ranksPerHost, cores, recv, options & 1U);
+            DispatchDedup::LlGroupForWorld(o.world), o.ranksPerHost, cores, recv, options & 1U,
+            ((options >> 9U) & 3U) ? CombineCoalesce::kWorkers : 0U);
         const auto gathered = peers.gather(local.data(), local.size() * sizeof(uint64_t));
         if (o.rank) return;
         const auto path = std::filesystem::path(o.output) / "producers.csv";
@@ -243,7 +245,8 @@ struct Case {
             const uint32_t source = uint32_t(i / (bs * o.topk)), peer = uint32_t(producer & 0xffffU) - 1U;
             out << bs << ',' << source << ',' << (i / o.topk) % bs << ',' << i % o.topk << ',' << peer << ','
                 << ((producer >> 16U) & 0xffU) << ',' << ((producer >> 24U) & 0xffU) << ',' << (producer >> 32U)
-                << ',' << (source == peer ? "local" : source / o.ranksPerHost == peer / o.ranksPerHost ? "UBMEM" : "RDMA") << '\n';
+                << ',' << (source == peer ? "local" : source / o.ranksPerHost == peer / o.ranksPerHost ? "UBMEM" :
+                    ((options>>9U)&3U)==2U ? "RDMA-relay" : ((options>>9U)&3U)==1U ? "RDMA-packed" : "RDMA") << '\n';
         }
         out.close();
         if (!out) throw std::runtime_error("Cannot write return producer map");
@@ -272,7 +275,8 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
     if (returnOptions != (DEEPEP_BENCH_REMOTE_FIRST | (DEEPEP_BENCH_DEFER_RETURN << 1) |
                           (DEEPEP_BENCH_EARLY_ISSUE << 2) | (DEEPEP_BENCH_PROGRESS_PROBE << 3) | (DEEPEP_BENCH_SIMT_META << 4) |
                           (DEEPEP_BENCH_SIMT_FLAG << 5) | (DEEPEP_BENCH_PREFETCH_RETURN << 6) | (DEEPEP_BENCH_LOCAL_FIRST << 7) |
-                          (DEEPEP_BENCH_BATCH_FINAL << 8) | (uint32_t(DEEPEP_BENCH_POLL_NOP) << 16U)))
+                          (DEEPEP_BENCH_BATCH_FINAL << 8) | (DEEPEP_BENCH_COALESCE << 9) |
+                          (DEEPEP_BENCH_COALESCE_ROWS << 11) | (uint32_t(DEEPEP_BENCH_POLL_NOP) << 16U)))
         throw std::runtime_error("Mismatched Host/device return options");
     if (!profileBuild) o.profile = 0;
     if (profileBuild && o.profile) o.iterations = o.profileIterations;
@@ -308,7 +312,7 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
                    "aiv,recv_cores,small_batch,early_"
                    "reduce,remote_first,defer_return,early_issue,progress_probe,simt_meta,simt_flag,prefetch_return,local_first,batch_final,poll_nop,ranks_per_host,original,entry_sync,profile_build,profile_level,rank_max_mean_us,"
                    "rank_max_min_us,"
-                   "rank_max_max_us,p50_us,p99_us\n";
+                   "rank_max_max_us,p50_us,p99_us,coalesce,coalesce_rows,transport_cores\n";
     }
     std::cout << "rank=" << o.rank << " EP=" << o.world << " AIV=" << cores << " receive=" << recv
               << " small_batch=" << deepep_ll_combine_small_batch_enabled()
@@ -324,6 +328,25 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
     if (o.rank == 0 && profileBuild)
         std::cout << "Diagnostic build: use --profile OFF when rebuilding for clean Event performance." << std::endl;
     for (auto bs : o.tokens) {
+#if DEEPEP_LL_COMBINE_COALESCE > 0
+        CombineCoalesce::Layout packed{};
+        DispatchDedup::EpMemoryServerDedupLayout dl{};
+        CombineDedup::Layout cl{};
+        if(!CombineCoalesce::Make(o.world,o.ranksPerHost,bs,o.hidden,o.topk,o.experts,cores,recv,
+                                DEEPEP_LL_COMBINE_COALESCE==2,packed) ||
+           DispatchDedup::BuildDispatchServerDedupLayout(o.world,bs,o.hidden,o.topk,o.experts,&dl,
+                DispatchDedup::EpServerDedupInputMode::Plain16,cores)!=0 ||
+           !CombineDedup::BuildLayout(o.world,bs,o.hidden,o.topk,o.experts,cl,cores) ||
+           dl.data.requiredBytes>CombineCoalesce::kBase || cl.requiredWindowBytes>CombineCoalesce::kBase)
+            throw std::runtime_error("Coalescing case exceeds reserved bank storage or requires cross-host EP");
+        session.report("reset coalescing buffers",bs);
+        session.synchronize("before coalescing reset",bs);
+        peers.barrier();
+        for(uint32_t bank=0;bank<2U;++bank)
+            check(aclrtMemset(local_base(session)+uint64_t(bank)*DispatchDedup::kEpServerDedupWindowBytes+
+                CombineCoalesce::kBase,packed.bytes,0,packed.bytes),"reset coalescing buffers");
+        peers.barrier();
+#endif
         session.report("input allocation and routing", bs);
         Case c(o, bs, cores, comm.p);
         session.report("Dispatch preparation", bs);
@@ -408,7 +431,8 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
                     << ((returnOptions >> 5) & 1U) << ',' << ((returnOptions >> 6) & 1U) << ',' << ((returnOptions >> 7) & 1U) << ','
                     << ((returnOptions >> 8) & 1U) << ',' << (returnOptions >> 16U) << ',' << o.ranksPerHost << ',' << DEEPEP_LL_COMBINE_ORIGINAL
                     << ',' << o.entrySync << ',' << profileBuild << ',' << o.profile << ',' << s.mean << ',' << s.min
-                    << ',' << s.max << ',' << s.p50 << ',' << s.p99 << '\n';
+                    << ',' << s.max << ',' << s.p50 << ',' << s.p99 << ',' << DEEPEP_BENCH_COALESCE << ','
+                    << DEEPEP_BENCH_COALESCE_ROWS << ',' << (DEEPEP_BENCH_COALESCE?CombineCoalesce::kWorkers:0U) << '\n';
             summary.flush();
             std::cout << "BS=" << bs << " rank-MAX Event us: mean=" << s.mean << " range=[" << s.min << ',' << s.max
                       << "] p99=" << s.p99 << " rank0_max_abs_error=" << error << std::endl;

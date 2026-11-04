@@ -41,7 +41,7 @@ public:
     __aicore__ inline void Init(const __gm__ DispatchDedup::CommArgs* args, TPipe* pipe, LocalTensor<uint8_t> scratch,
                                 GM_ADDR expert, GM_ADDR table2, GM_ADDR table3, GM_ADDR types, uint32_t tokens,
                                 uint32_t bs, uint32_t h, uint32_t k, uint32_t experts, uint8_t dtype, uint64_t window,
-                                const EpCombineM45WorkspaceLayout& layout, LlTransport::DispatchRdmaBatch* batch)
+                                const EpCombineM45WorkspaceLayout& layout, ReturnBatch* batch)
     {
         args_ = args;
         rdmaBatch_ = batch;
@@ -416,7 +416,7 @@ private:
 
     CombineProfile::View profile_;
     uint32_t recvCores_ = 0;
-    LlTransport::DispatchRdmaBatch* rdmaBatch_ = nullptr;
+    ReturnBatch* rdmaBatch_ = nullptr;
     const __gm__ DispatchDedup::CommArgs* args_ = nullptr;
     TPipe* pipe_ = nullptr;
     LocalTensor<uint8_t> scratch_, outputs_, scan_;

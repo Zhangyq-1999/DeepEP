@@ -12,7 +12,9 @@ while (($#)); do
             cat <<'USAGE'
 build_all.sh [--variants NAME[,NAME...]] [--ranks-per-host 4|16] [--jobs N] [--dry-run]
              [--cann-home DIR] [--mpi-home DIR] [--shmem-root DIR]
-Defaults: base/batch/batch-pipeline (clean), with matching diagnostic builds.
+Defaults: base/card-all/card-row/server-all/server-row, plus matching diagnostic builds.
+card: coalesce returns to the same destination rank; server: relay via the same local slot.
+all: one whole bucket WQE; row: one hidden per WQE (7776 B at H3584/BF16).
 batch: vector batch readiness, route filtering and pipelined local-first reduction.
 batch-pipeline: batch plus next-input prefetch overlapping return staging.
 Optional poll800/poll800-profile: Nop<800>() after each failed flag probe.
@@ -48,15 +50,20 @@ IFS=, read -r -a names <<< "$variants"
 # Validate the complete selection before starting any build.
 for name in "${names[@]}"; do
     case "$name" in
-        batch|batch-profile|batch-pipeline|batch-pipeline-profile|local-first|local-first-profile|poll800|poll800-profile|meta|meta-profile|prefetch|prefetch-profile|prepare|flag|prepare-flag|prepare-profile|flag-profile|prepare-flag-profile|issue|probe|issue-probe|issue-profile|probe-profile|issue-probe-profile|base|remote|pipeline|return|ops-shmem-base|ref-profile|opt-profile|r36-profile|early-profile|remote-profile|pipeline-profile|return-profile) ;;
+        card-all|card-row|server-all|server-row|card-all-profile|card-row-profile|server-all-profile|server-row-profile|batch|batch-profile|batch-pipeline|batch-pipeline-profile|local-first|local-first-profile|poll800|poll800-profile|meta|meta-profile|prefetch|prefetch-profile|prepare|flag|prepare-flag|prepare-profile|flag-profile|prepare-flag-profile|issue|probe|issue-probe|issue-profile|probe-profile|issue-probe-profile|base|remote|pipeline|return|ops-shmem-base|ref-profile|opt-profile|r36-profile|early-profile|remote-profile|pipeline-profile|return-profile) ;;
         *) fail "Unknown experiment: $name (see --help)";;
     esac
 done
 if ((!dry)); then ll_bench_environment "$cann" "$mpi" "$shmem"; fi
 for name in "${names[@]}"; do
+    coalesce=0 coalesce_rows=0
     variant=opt profile=OFF small=OFF early=OFF remote=OFF defer=OFF issue=OFF probe=OFF recv=0 simt_meta=OFF simt_flag=OFF prefetch_return=OFF poll_nop=0 local_first=OFF batch_final=OFF
     if [[ $name == *-profile ]]; then profile=ON; fi
     case "$name" in
+        card-all|card-all-profile) coalesce=1;;
+        card-row|card-row-profile) coalesce=1; coalesce_rows=1;;
+        server-all|server-all-profile) coalesce=2;;
+        server-row|server-row-profile) coalesce=2; coalesce_rows=1;;
         batch|batch-profile) local_first=ON; batch_final=ON;;
         batch-pipeline|batch-pipeline-profile) local_first=ON; batch_final=ON; prefetch_return=ON;;
         local-first|local-first-profile) local_first=ON;;
@@ -82,6 +89,7 @@ for name in "${names[@]}"; do
          --cann-home "$cann" --mpi-home "$mpi" --shmem-root "$shmem"
          --build-dir "$root/build/ll-cpp-$name" --jobs "$jobs"
          --variant "$variant" --profile "$profile" --small-batch "$small"
+         --coalesce "$coalesce" --coalesce-rows "$coalesce_rows"
          --recv-cores "$recv" --early-reduce "$early" --remote-first "$remote" --defer-return "$defer"
          --early-issue "$issue" --progress-probe "$probe" --simt-meta "$simt_meta" --simt-flag "$simt_flag"
          --prefetch-return "$prefetch_return" --local-first "$local_first" --batch-final "$batch_final" --poll-nop "$poll_nop" --ranks-per-host "$ranks_per_host")

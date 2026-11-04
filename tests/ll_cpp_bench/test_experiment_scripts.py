@@ -8,7 +8,8 @@ import subprocess
 import pytest
 
 HERE = Path(__file__).resolve().parent
-PROFILES = ("ref-profile", "batch-profile", "batch-pipeline-profile")
+PROFILES = ("ref-profile", "card-all-profile", "card-row-profile", "server-all-profile", "server-row-profile")
+CLEAN = ("base", "card-all", "card-row", "server-all", "server-row")
 
 
 @pytest.fixture
@@ -70,8 +71,8 @@ def call_options(output):
 def test_build_all_isolated_matrix_and_failure_stop(harness):
     run, env = harness
     calls = call_options(run("build_all.sh").stdout)
-    assert len(calls) == 6
-    for name, call in zip(("base", "batch", "batch-pipeline", *PROFILES), calls):
+    assert len(calls) == 10
+    for name, call in zip((*CLEAN, *PROFILES), calls):
         assert call["--build-dir"].endswith("/build/ll-cpp-" + name)
         assert call["--variant"] == ("base" if name == "base" else "opt")
         assert call["--profile"] == ("ON" if name.endswith("-profile") else "OFF")
@@ -89,10 +90,12 @@ def test_build_all_isolated_matrix_and_failure_stop(harness):
         assert call["--local-first"] == ("ON" if name.startswith("batch") else "OFF")
         assert call["--batch-final"] == ("ON" if name.startswith("batch") else "OFF")
         assert call["--poll-nop"] == ("800" if name.startswith("poll800") else "0")
+        assert call["--coalesce"] == ("1" if name.startswith("card-") else "2" if name.startswith("server-") else "0")
+        assert call["--coalesce-rows"] == ("1" if "-row" in name else "0")
         assert call["--shmem-root"].endswith("/third-party/shmem/install/shmem")
     env["FAIL_BUILD"] = "ref-profile"
     result = run("build_all.sh", ok=False)
-    assert result.returncode == 17 and len(call_options(result.stdout)) == 4
+    assert result.returncode == 17 and len(call_options(result.stdout)) == 6
     assert "CALL" not in run("build_all.sh", "--variants", "base,typo", ok=False).stdout
 
 
@@ -124,7 +127,7 @@ def test_repeat_default_run_and_second_host_join(harness):
         assert call["--node-rank"] == "0" and call["--ep"] == "8"
         assert call["--devices"] == "12,13,14,15" and call["--ranks-per-host"] == "4"
         assert call["--hosts"] == "90.90.93.84,90.90.93.184"
-        assert call["--variants"] == ",".join(("base", "batch", "batch-pipeline", *PROFILES))
+        assert call["--variants"] == ",".join((*CLEAN, *PROFILES))
         assert call["--tokens"] == "32,48,64,72,256"
         assert call["--iters"] == "100" and call["--profile"] == "2"
         assert call["--profile-iters"] == "10"

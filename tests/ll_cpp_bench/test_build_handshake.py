@@ -9,7 +9,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
-@pytest.mark.parametrize("mode", ["plain", "early", "local", "batch"])
+@pytest.mark.parametrize("mode", ["plain", "early", "local", "batch", "card-all", "card-row", "server-all", "server-row"])
 @pytest.mark.parametrize("profile", [False, True])
 def test_benchmark_build_handshake(tmp_path, mode, profile):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
@@ -43,12 +43,16 @@ int main() {
 }
 ''', encoding="utf-8")
     flags = []
-    if mode != "plain":
+    if mode in ("early", "local", "batch"):
         flags.append("-DDEEPEP_LL_COMBINE_" + ("EARLY_REDUCE" if mode == "early" else "LOCAL_FIRST") + "=1")
     if mode == "batch":
         flags.append("-DDEEPEP_LL_COMBINE_BATCH_FINAL=1")
     if profile:
         flags.append("-DDEEPEP_LL_COMBINE_PROFILE=1")
+    coalesce = 1 if mode.startswith("card-") else 2 if mode.startswith("server-") else 0
+    rows = int(mode.endswith("-row"))
+    flags.extend([f"-DDEEPEP_LL_COMBINE_COALESCE={coalesce}", f"-DDEEPEP_BENCH_COALESCE={coalesce}",
+                  f"-DDEEPEP_LL_COMBINE_COALESCE_ROWS={rows}", f"-DDEEPEP_BENCH_COALESCE_ROWS={rows}"])
     for name in ("REMOTE_FIRST", "DEFER_RETURN", "EARLY_ISSUE", "PROGRESS_PROBE",
                  "SIMT_META", "SIMT_FLAG", "PREFETCH_RETURN", "POLL_NOP", "LOCAL_FIRST", "BATCH_FINAL"):
         enabled = (name == "LOCAL_FIRST" and mode in ("local", "batch")) or (name == "BATCH_FINAL" and mode == "batch")

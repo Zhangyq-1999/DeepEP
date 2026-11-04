@@ -122,6 +122,9 @@ public:
         tableUb_ = Allocate<int32_t>(kEpServerDedupCombineTableRows * 12U);
         payloadUb_ = Allocate<uint16_t>(lanes_ * laneBytes_);
         resultUb_ = Allocate<uint8_t>(lanes_ * resultStride_);
+#if defined(DEEPEP_LL_COMBINE_COALESCE) && DEEPEP_LL_COMBINE_COALESCE > 0
+        returnBatch_.Configure(args_,bs_,h_,topK_,experts_,recvCores_,window_,prepareInput_.ReinterpretCast<uint8_t>());
+#endif
     }
 
     // 完整combine调度：本地待归约行准备后，发送核处理DIRECT回传，接收核处理ready与归约。
@@ -136,6 +139,11 @@ public:
             profile_.Mark(CombineProfile::StageEnd);
 
         }
+#if defined(DEEPEP_LL_COMBINE_COALESCE) && DEEPEP_LL_COMBINE_COALESCE > 0
+        if (returnBatch_.IsWorker()) {
+            returnBatch_.Run(arena_.Get<uint8_t>());
+        } else
+#endif
         if (core_ >= sendCores_) {
             if (enableDedup_) {
                 if (core_ >= notifyBegin_) {
@@ -150,6 +158,9 @@ public:
 #endif
 
                 ReturnPartialTokens();
+#if defined(DEEPEP_LL_COMBINE_COALESCE) && DEEPEP_LL_COMBINE_COALESCE > 0
+                returnBatch_.ProducerDone(prepareInput_.ReinterpretCast<uint8_t>());
+#endif
 
                 profile_.Mark(CombineProfile::FinalBegin);
                 const uint32_t retiredOutputs = AggregateSourceTokens();
@@ -159,6 +170,9 @@ public:
                 profile_.Mark(CombineProfile::DrainEnd);
 
             } else {
+#if defined(DEEPEP_LL_COMBINE_COALESCE) && DEEPEP_LL_COMBINE_COALESCE > 0
+                returnBatch_.ProducerDone(prepareInput_.ReinterpretCast<uint8_t>());
+#endif
 
                 profile_.Mark(CombineProfile::FinalBegin);
                 AggregateSourceTokensM6();
@@ -169,6 +183,9 @@ public:
             profile_.Mark(CombineProfile::DirectBegin);
             ReturnDirectTokens();
             profile_.Mark(CombineProfile::DirectEnd);
+#if defined(DEEPEP_LL_COMBINE_COALESCE) && DEEPEP_LL_COMBINE_COALESCE > 0
+            returnBatch_.ProducerDone(prepareInput_.ReinterpretCast<uint8_t>());
+#endif
 
         }
         // Retires prepare publication, both zero sources and server notification;
@@ -417,6 +434,11 @@ private:
     }
     __aicore__ inline void ReturnDirectTokens()
     {
+#if defined(DEEPEP_LL_COMBINE_COALESCE) && DEEPEP_LL_COMBINE_COALESCE > 0
+        const uint32_t directCores = returnBatch_.DirectCores();
+#else
+        const uint32_t directCores = sendCores_;
+#endif
         PrepareDirectRows();
         profile_.Mark(CombineProfile::DirectPrepared);
         if (selected_ == 0U) return;
@@ -426,7 +448,7 @@ private:
         const uint32_t ownServer = uint32_t(args_->rank) / Group;
         uint32_t owner = 0U, sendSequence = 0U;
 #ifdef DEEPEP_LL_COMBINE_SMALL_BATCH
-        const uint32_t owned = uint32_t(selected_) / sendCores_ + (core_ < uint32_t(selected_) % sendCores_ ? 1U : 0U);
+        const uint32_t owned = uint32_t(selected_) / directCores + (core_ < uint32_t(selected_) % directCores ? 1U : 0U);
         if (owned == 0U) return;
         const uint32_t activeLanes = owned < lanes_ ? owned : lanes_;
 #else
@@ -447,9 +469,9 @@ private:
             const uint64_t scanStart = profile_.DetailClock();
             const uint32_t count = SelectDirectServer(CombineReturnServer<Group>(servers, ownServer, step - 1U));
             profile_.Elapsed(CombineProfile::DirectScanTicks, scanStart);
-            const uint32_t first = ServerDedupFirstOwned(core_, owner, sendCores_);
-            owner = (owner + count) % sendCores_;
-            for (uint32_t task = first; task < count; task += sendCores_) {
+            const uint32_t first = ServerDedupFirstOwned(core_, owner, directCores);
+            owner = (owner + count) % directCores;
+            for (uint32_t task = first; task < count; task += directCores) {
                 const uint64_t metadataStart = profile_.DetailClock();
                 const uint32_t row = uint32_t(indexUb_.GetValue(task));
                 // Only owned rows reload a routing triple. The persistent rank
@@ -508,7 +530,7 @@ private:
                 profile_.MarkOnce(CombineProfile::DirectFirstSubmit);
                 const uint64_t submitStart = profile_.DetailClock();
                 SendReturnPacket(returnBatch_, args_, source, offset, output, resultStride_,
-                                 CombineDeferReturn(activeLanes) && task + sendCores_ < count);
+                                 CombineDeferReturn(activeLanes) && task + directCores < count);
                 profile_.SampleMax(CombineProfile::DirectSubmitTicks, CombineProfile::DirectSubmitMaxTicks,
                                    CombineProfile::DirectSubmitMaxPeer, CombineProfile::DirectSubmitMaxToken,
                                    submitStart, source, token);
@@ -640,7 +662,7 @@ private:
     CombineProfile::DeviceProfile* profileOwner_ = nullptr;
 #endif
     EpCombineM45WorkspaceLayout workspace_{};
-    LlTransport::DispatchRdmaBatch returnBatch_;
+    ReturnBatch returnBatch_;
     uint32_t partialTasks_ = 0U;
     uint32_t coreNum_ = 0, sendCores_ = 0, recvCores_ = 0, notifyBegin_ = 0;
     TPipe pipe_;

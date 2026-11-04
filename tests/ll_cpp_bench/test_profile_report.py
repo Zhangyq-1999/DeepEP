@@ -190,7 +190,8 @@ def test_compact_global_comparison_preserves_outliers(reporter, tmp_path):
     assert result.returncode != 0 and "Missing global samples" in result.stderr
 
 
-def test_compact_diagnostics_select_same_global_iteration(reporter, tmp_path):
+@pytest.mark.parametrize("coalesce", [False, True])
+def test_compact_diagnostics_select_same_global_iteration(reporter, tmp_path, coalesce):
     directory = tmp_path / "0-ref-profile"
     directory.mkdir()
     fixture_data(directory)
@@ -205,11 +206,25 @@ def test_compact_diagnostics_select_same_global_iteration(reporter, tmp_path):
             reader = csv.DictReader(f)
             fields = reader.fieldnames
             records.extend(row for row in reader if row["iteration"] in ("1", "2"))
+    if coalesce:
+        workers=[]
+        for row in records:
+            if row["role"] != "send":
+                continue
+            worker=dict(row)
+            worker.update(core=24, coalesce_worker=1, flush_done=2000, pipe_done=1990,
+                          coalesce_rows=12, rdma_packets=1, coalesce_bytes=92608,
+                          coalesce_unpack_rows=12, coalesce_forward_rows=9)
+            workers.append(worker)
+        records.extend(workers)
     write_csv(directory / "diagnostic.csv", fields, records)
     out = subprocess.check_output([str(reporter), "--suite", str(tmp_path)], text=True)
     assert "D 0-ref-profile p50 i=2 event_r=0 us=13.00" in out
     assert "D 0-ref-profile worst i=1 event_r=1 us=30.00" in out
     assert "S r/c=1/0" in out and "R r/c=1/1" in out
+    if coalesce:
+        assert out.count(" A r/c=") == 2
+        assert "rows/wqes/bytes/unpack/forward=12/1/92608/12/9" in out
     # Host 0 alone cannot satisfy the selected global sample contract.
     write_csv(directory / "diagnostic.csv", fields, [r for r in records if r["rank"] == "0"])
     result = subprocess.run([str(reporter), "--suite", str(tmp_path)], capture_output=True, text=True)

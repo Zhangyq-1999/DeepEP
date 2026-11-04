@@ -27,28 +27,26 @@ git pull --ff-only origin perf/ll-combine-small-batch
 bash tests/ll_cpp_bench/build_all.sh
 ```
 
-`build_all.sh` 默认更新以下 6 个构建目录，每个构建使用 4 个编译任务。Dispatch 用于准备 Combine 的输入和路由，同一配置只编译一次，各版本复用它的目标文件。每个版本再单独编译 Combine，并链接成独立的 kernel 库。
+`build_all.sh` 默认更新以下 10 个构建目录，每个构建使用 4 个编译任务。Dispatch 用于准备 Combine 的输入和路由，同一配置只编译一次，各版本复用它的目标文件。每个版本再单独编译 Combine，并链接成独立的 kernel 库。
 
 已有目录继续用于增量编译。只修改 Combine 时，Dispatch 无需重编；修改 Dispatch 或它依赖的头文件时，构建系统自动重编受影响的部分。共享目标文件保存在 `build/ll-cpp-dispatch`，不同编译器、SDK 和每机 rank 数使用独立目录。更新代码后，两台机器都执行一次 `build_all.sh`，更新所有选中的版本。
 
 | 构建名 | 启用的实验 | 打点 |
 | --- | --- | --- |
 | `base` | 冻结的上游原版 | 关闭 |
-| `batch` | 批量 Vector 就绪检查、路由筛选和多缓冲归约 | 关闭 |
-| `batch-pipeline` | `batch` 加回传暂存与下一包输入预取重叠 | 关闭 |
+| `card-all` | 同一目标卡的 hidden 聚合成一个 WQE | 关闭 |
+| `card-row` | 同一目标卡使用相同打包路径，每行 hidden 一个 WQE | 关闭 |
+| `server-all` | 同一目标 server 的 hidden 聚合，发到同号卡后解包转发 | 关闭 |
+| `server-row` | 同号卡接收并转发，每行 hidden 一个 WQE | 关闭 |
 | `ref-profile` | 实验开关全部关闭，用作打点对照 | 开启 |
-| `batch-profile` | 与 `batch` 相同 | 开启 |
-| `batch-pipeline-profile` | 与 `batch-pipeline` 相同 | 开启 |
+| `card-all-profile`、`card-row-profile` | 与对应的 card 版本相同 | 开启 |
+| `server-all-profile`、`server-row-profile` | 与对应的 server 版本相同 | 开启 |
 
-`batch` 一次读取本核负责的全部原始专家路由，用 Vector 比较专家编号范围，生成本机贡献的 slot mask。检查就绪时，一次读取 token 的全部块尾 flag，在 Vector 上屏蔽不参与本次检查的 slot，再归约判断整组是否到齐。每组只做一次 Vector 到 Scalar 的结果交接，保留全部 512 B 块的检查，包括每包最后一块。
+本轮比较按目标卡聚合和按目标 server 聚合。每种路径再比较整批发送与单行发送，详见 [RDMA hidden 聚合实验](COALESCE_AB.md)。聚合以单个发送 rank 为单位，覆盖本 rank 的全部生产核。server 路径将数据发到对端同号卡，由专用核解包，再通过机内 MTE 写入最终目标卡。
 
-每核任务上界不超过两个 token 时，`batch` 先批量确认并归约本机贡献，再批量确认全部跨机贡献。中间和保留在 UB，两个 token 交替推进。任务更多时，算子扫描全部待处理 token，哪个整体就绪就先处理哪个，避免两个未就绪 token 阻塞后续任务。这个分支只保留一份累加缓冲，释放其余空间给搬运缓冲。
+H3584/BF16 的 hidden 为 7168 B。原有块尾 flag 将一行扩展到 7680 B；加入聚合元数据和包头、包尾后，单行实验包为 7776 B。整批版把同一目标的全部行合成一个连续包，用一个 WQE 提交。它会增加等齐和打包开销，是否降低总时延需要实测。
 
-确认就绪后，算子预取多份贡献，边归约边读取下一份。两种调度都先按 slot 顺序累加本机贡献，再按 slot 顺序累加跨机贡献，最终写回时才将 FP32 中间和转为 BF16 或 FP16。这会改变相对 base 的浮点累加顺序，结果可能有舍入差异。跨机 FIRST_HOP 的部分归约次序保持不变。
-
-`batch-pipeline` 在上述修改之外启用已有的 `prefetch-return`：发起前一包的 UB 到 GM 暂存后，先预取下一包输入，再等待前一包暂存完成并提交 RDMA 回传，让两次搬运有机会重叠。两包使用独立 UB 输出槽；单输出槽和组内末包仍立即提交。GM 源缓冲继续按原批次 quiet 回收。两个实验版用于分开观察接收优化与回传重叠的收益。
-
-旧的逐贡献 `local-first` 版本仍可用 `--variants local-first,local-first-profile` 选择。新版本已通过 Host 模拟检查，覆盖不同权重、延迟块尾、跨多个 server、就绪 token 跳过延迟 token 和缓冲复用；CANN 编译、设备精度和性能仍需实测。
+四个版本关闭此前的 `local-first`、`batch-final`、SIMT 和 Nop 实验，保持原有数值计算顺序。Host 模型已检查路由、空包、多轮缓冲复用和逐字节解包；CANN 编译、设备精度和性能仍需在目标机器验证。
 
 EP8 实测中，轮询暂停没有带来稳定收益，默认构建和运行均关闭 Nop。筛选、flag 检查和归约继续使用 Vector。此前的 SIMT 筛选实验也保持关闭。
 
@@ -66,7 +64,7 @@ bash tests/ll_cpp_bench/run_all.sh
 bash tests/ll_cpp_bench/run_all.sh 第一台打印的RUN_ID
 ```
 
-默认先跑干净版 `base`、`batch` 和 `batch-pipeline`，再跑对应的三个打点版。每版测试 **BS32、48、64、72、256**，形状为 EP8、H3584、TopK 8、384 个专家、BF16、随机路由、seed 0、capacity 256。每个 BS 预热 10 轮；干净版采样 100 轮，打点版采样 10 轮。`--iters` 和 `--profile-iters` 分别控制两类采样次数。
+默认先跑 base 和四个聚合干净版，再跑对应的五个打点版。每版测试 **BS32、48、64、72、256**，形状为 EP8、H3584、TopK 8、384 个专家、BF16、随机路由、seed 0、capacity 256。每个 BS 预热 10 轮；干净版采样 100 轮，打点版采样 10 轮。`--iters` 和 `--profile-iters` 分别控制两类采样次数。
 
 干净版在编译时关闭打点，使用独立 kernel。打点版在预热前启用所选打点级别，让预热和采样执行相同路径。一次运行可同时包含两类版本，`--profile 2` 只作用于支持打点的构建。
 
@@ -93,7 +91,7 @@ bash tests/ll_cpp_bench/build_all.sh \
 
 # 单机 EP16：先把全部选中版本重编为每机 16 个 rank。
 bash tests/ll_cpp_bench/build_all.sh --ranks-per-host 16
-bash tests/ll_cpp_bench/run_all.sh --ep 16 --ranks-per-host 16
+bash tests/ll_cpp_bench/run_all.sh --ep 16 --ranks-per-host 16 --variants base,ref-profile
 # 双机 EP32 使用同一套 16-rank 构建，第二台复制第一台打印的命令。
 bash tests/ll_cpp_bench/run_all.sh --ep 32 --ranks-per-host 16
 
@@ -122,7 +120,7 @@ bash tests/ll_cpp_bench/run_all.sh --hosts HOST0,HOST1 --node-rank 0 \
 
 跨机适配使用 `aclshmemx_roce_qp_put_nbi`，在原有批次边界调用 `aclshmemx_roce_qp_quiet`。这与原仓 Hcomm 的批量提交、CQE 策略有差异，结果用于比较 SHMEM 后端上的算法方案。单机也运行这套分层算法，只执行机内阶段。原来的 `base` 继续使用冻结的 DeepEP kernel。
 
-两边分别按需编译，默认 `build_all.sh` 构建前文的 6 个版本：
+两边分别按需编译，默认 `build_all.sh` 构建前文的 10 个版本：
 
 ```bash
 bash tests/ll_cpp_bench/build_all.sh --ranks-per-host 16 --variants base,ops-shmem-base
@@ -181,6 +179,8 @@ base 和 opt 使用各自的 Combine kernel 源码。base 从上游提交 `5b38b
 | 编译参数 | 默认值 | 作用 |
 | --- | --- | --- |
 | `--ranks-per-host 4` | 16 | 编译每机参与 rank 数；便捷脚本 `build_all.sh` 默认传 4 |
+| `--coalesce 1` | 0 | 0 关闭，1 按目标卡聚合，2 按目标 server 聚合并经同号卡转发；仅适用于跨机测试 |
+| `--coalesce-rows 1` | 0 | 聚合路径中，0 表示整个目标一包，1 表示每行一包 |
 | `--local-first ON` | OFF | 源卡先累加本机贡献，再累加跨机贡献；各组内部按 slot 顺序累加 |
 | `--batch-final ON` | OFF | 与 `--local-first ON` 配合，批量 Vector 检查、筛选路由并恢复多缓冲预取 |
 | `--poll-nop 800` | 0 | 每次 flag 检查失败后暂停；base 不启用 |
@@ -429,7 +429,7 @@ bash tests/ll_cpp_bench/summarize.sh results/ll-cpp/RUN_ID/3-ref-profile
 
 `notify_local_ready` 分开本卡准备等待与通知发布。`direct_first_submit`、`direct_last_submit` 和 `direct_pending_end` 标出首个提交调用、末个调用返回以及待提交任务处理完的位置。`final_first_ready`、`final_last_ready` 标出成功检查数据就绪的位置；`final_last_store` 标出末个输出写回的下发位置。最终输出完成仍以原有 drain 和 kernel 收尾为准。
 
-时间字段使用设备原始 tick。`entry_tick` 保留原始值，其余阶段时间戳均减去本核入口时间；缺失阶段留空。`profile_init_end` 标出诊断记录初始化完成的位置，可据此分开打点初始化与业务初始化。一级打点中的二级字段留空。schema 8 每核使用 1536 B 记录，在原有收尾完成后集中写出。
+时间字段使用设备原始 tick。`entry_tick` 保留原始值，其余阶段时间戳均减去本核入口时间；缺失阶段留空。`profile_init_end` 标出诊断记录初始化完成的位置，可据此分开打点初始化与业务初始化。一级打点中的二级字段留空。schema 9 每核使用 1792 B 记录，在原有收尾完成后集中写出。新增的 `coalesce_*` 字段记录聚合等待、打包、接收与解包，终端以 `A` 行显示专用核的信息。
 
 分析时先选择同一配置、同一轮的记录，比较发送核与接收核的任务量和阶段耗时。常见判断如下：
 

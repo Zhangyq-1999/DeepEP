@@ -77,6 +77,18 @@ double percentile(const std::vector<double>& sorted, double fraction)
 }
 void compact_record(const Record& r)
 {
+    if(r[CoalesceWorker]) {
+        std::cout << " A r/c=" << r[Rank] << '/' << r[Core] << " body=" << r[FlushDone] << " end";
+        for(Word w : {CoalesceReady,CoalesceSendBegin,RdmaFirstPut,RdmaLastPut,CoalesceSendEnd,
+                      CoalesceFirstReady,CoalesceLastReady,CoalesceReceiveEnd})
+            if(r.present[w]) std::cout << ' ' << names[w] << '=' << r[w];
+        std::cout << "\n  pack wait/gather/put/quiet/recv_wait/unpack=" << r[CoalesceWaitTicks] << '/'
+                  << r[CoalescePackTicks] << '/' << r[RdmaPutTicks] << '/' << r[RdmaQuietTicks] << '/'
+                  << r[CoalesceReceiveWaitTicks] << '/' << r[CoalesceUnpackTicks]
+                  << " rows/wqes/bytes/unpack/forward=" << r[CoalesceRows] << '/' << r[RdmaPackets] << '/'
+                  << r[CoalesceBytes] << '/' << r[CoalesceUnpackRows] << '/' << r[CoalesceForwardRows] << '\n';
+        return;
+    }
     std::cout << (r.receive ? " R" : " S") << " r/c=" << r[Rank] << '/' << r[Core]
               << " body=" << r[FlushDone] << " rows=" << r[StageRows] << '/' << r[DirectRows] << '/' << r[PartialRows]
               << " final=" << r[FinalTokens] << '/' << r[Contributions] << " local/get=" << r[PartialLocalContrib]
@@ -239,11 +251,16 @@ void suite_report(const fs::path& root)
                 for (bool receive : {false, true}) {
                     const Record* tail = nullptr;
                     for (const auto& r : records)
-                        if (r[Rank] == event.rank && r.receive == receive && (!tail || r[FlushDone] > (*tail)[FlushDone])) tail = &r;
+                        if (!r[CoalesceWorker] && r[Rank] == event.rank && r.receive == receive &&
+                            (!tail || r[FlushDone] > (*tail)[FlushDone])) tail = &r;
                     if (!tail) throw std::runtime_error("Missing Event rank diagnostic role");
                     compact_record(*tail);
                     if (receive) tail_producers(d, *tail);
                 }
+                const Record* worker=nullptr;
+                for(const auto& r:records) if(r[Rank]==event.rank && r[CoalesceWorker] &&
+                    (!worker || r[FlushDone]>(*worker)[FlushDone])) worker=&r;
+                if(worker) compact_record(*worker);
                 std::vector<const Record*> puts;
                 for (const auto& r : records) if (r.present[RdmaLastPut]) puts.push_back(&r);
                 std::stable_sort(puts.begin(), puts.end(), [](auto a, auto b) { return (*a)[RdmaLastPut] > (*b)[RdmaLastPut]; });

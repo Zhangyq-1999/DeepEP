@@ -5,19 +5,21 @@ mpi=${MPI_HOME:-/usr/local/mpich-3.2.1}
 cann=${ASCEND_HOME_PATH:-}
 shmem=${SHMEM_ROOT:-}
 build="$root/build/ll-cpp-base"
+coalesce=0 coalesce_rows=0
 batch_final=OFF local_first=OFF poll_nop=0 ranks_per_host=16 issue=OFF probe=OFF simt_meta=OFF simt_flag=OFF prefetch_return=OFF
 small=OFF early=OFF profile=OFF remote_first=OFF defer_return=OFF recv=0 jobs=4 variant=auto ops_source=${OPS_SOURCE_DIR:-}
 while (($#)); do
     case "$1" in
         --help|-h)
             echo 'build.sh --shmem-root SDK [--cann-home SDK] [--mpi-home DIR] [--build-dir DIR]'
+            echo '         [--coalesce 0|1|2] [--coalesce-rows 0|1] (off/card/server; whole bucket/one hidden)'
             echo '         [--variant base|opt|ops-shmem-base|auto] [--profile ON|OFF] [--small-batch ON|OFF] [--early-reduce ON|OFF] [--recv-cores 0|8..36] [--jobs N]'
             echo '         [--ops-source DIR] optional pinned ops-transformer checkout'
             echo '         [--remote-first ON|OFF] [--defer-return ON|OFF] [--early-issue ON|OFF] [--progress-probe ON|OFF] [--ranks-per-host 4|16]'
             echo '         [--local-first ON|OFF] [--poll-nop 0..65535] [--simt-meta ON|OFF] [--simt-flag ON|OFF] [--prefetch-return ON|OFF]'
             echo '         [--batch-final ON|OFF] requires --local-first ON; vector batch checks and pipelined reduction'
             exit 0;;
-        --shmem-root|--cann-home|--mpi-home|--build-dir|--variant|--profile|--small-batch|--early-reduce|--recv-cores|--jobs|--remote-first|--defer-return|--ops-source|--early-issue|--progress-probe|--ranks-per-host|--simt-meta|--simt-flag|--prefetch-return|--poll-nop|--local-first|--batch-final)
+        --shmem-root|--cann-home|--mpi-home|--build-dir|--variant|--profile|--small-batch|--early-reduce|--recv-cores|--jobs|--remote-first|--defer-return|--ops-source|--early-issue|--progress-probe|--ranks-per-host|--simt-meta|--simt-flag|--prefetch-return|--poll-nop|--local-first|--batch-final|--coalesce|--coalesce-rows)
             (($# >= 2)) || { echo "Missing value: $1" >&2; exit 2; }
             key=$1 value=$2; shift 2
             case "$key" in
@@ -28,10 +30,18 @@ while (($#)); do
                 --ops-source) ops_source=$value;; --early-issue) issue=$value;; --progress-probe) probe=$value;; --ranks-per-host) ranks_per_host=$value;;
                 --local-first) local_first=$value;; --poll-nop) poll_nop=$value;; --simt-meta) simt_meta=$value;; --simt-flag) simt_flag=$value;; --prefetch-return) prefetch_return=$value;;
                 --batch-final) batch_final=$value;;
+                --coalesce) coalesce=$value;; --coalesce-rows) coalesce_rows=$value;;
             esac;;
         *) echo "Unknown build option: $1" >&2; exit 2;;
     esac
 done
+[[ $coalesce =~ ^[012]$ && $coalesce_rows =~ ^[01]$ ]] || { echo 'Invalid coalesce options' >&2; exit 2; }
+if [[ $coalesce != 0 ]]; then
+    if [[ $variant == auto ]]; then variant=opt; fi
+    [[ $variant == opt ]] || { echo 'Use --variant opt for coalescing' >&2; exit 2; }
+elif [[ $coalesce_rows != 0 ]]; then
+    echo 'coalesce-rows requires coalesce=1 or 2' >&2; exit 2
+fi
 [[ $profile =~ ^(ON|OFF)$ && $small =~ ^(ON|OFF)$ && $early =~ ^(ON|OFF)$ && $recv =~ ^(0|[89]|[12][0-9]|3[0-6])$ ]] || { echo 'Invalid Combine build option' >&2; exit 2; }
 [[ $variant =~ ^(base|opt|ops-shmem-base|auto)$ ]] || { echo 'Unknown variant' >&2; exit 2; }
 [[ $remote_first =~ ^(ON|OFF)$ && $defer_return =~ ^(ON|OFF)$ ]] || { echo 'Return options must be ON or OFF' >&2; exit 2; }
@@ -86,6 +96,7 @@ cmake -S "$root/tests/ll_cpp_bench" -B "$build" -G 'Unix Makefiles' \
     "-DDEEPEP_LL_COMBINE_PREFETCH_RETURN=$prefetch_return" \
     "-DDEEPEP_LL_COMBINE_LOCAL_FIRST=$local_first" \
     "-DDEEPEP_LL_COMBINE_BATCH_FINAL=$batch_final" \
+    "-DDEEPEP_LL_COMBINE_COALESCE=$coalesce" "-DDEEPEP_LL_COMBINE_COALESCE_ROWS=$coalesce_rows" \
     "-DDEEPEP_LL_COMBINE_POLL_NOP=$poll_nop"
 cmake --build "$build" --parallel "$jobs"
 printf 'Built runner: %s/ll_combine_bench\nVariant module: %s/libll_bench_variant.so\n' "$build" "$build"

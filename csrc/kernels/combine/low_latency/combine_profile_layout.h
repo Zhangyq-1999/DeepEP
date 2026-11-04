@@ -2,8 +2,8 @@
 #include <cstdint>
 
 namespace CombineProfile {
-// One 1536-byte record per AIV. Timestamps precede StageRows; detail counters
-// are exported only at level 2. Schema 6 adds the failed-probe pause cost.
+// One 1792-byte record per AIV. Timestamps precede StageRows; detail counters
+// are exported only at level 2. Schema 9 adds coalesced return diagnostics.
 enum Word : uint32_t {
     Entry,
     ProfileInitEnd,
@@ -50,6 +50,13 @@ enum Word : uint32_t {
     RdmaLastStage,
     RdmaFirstPut,
     RdmaLastPut,
+    CoalesceProducerDone,
+    CoalesceReady,
+    CoalesceSendBegin,
+    CoalesceSendEnd,
+    CoalesceFirstReady,
+    CoalesceLastReady,
+    CoalesceReceiveEnd,
     StageRows,
     DirectRows,
     PartialRows,
@@ -183,6 +190,16 @@ enum Word : uint32_t {
     BatchGroupCalls,
     BatchWholeTokens,
     BatchRouteTicks,
+    CoalesceStageTicks,
+    CoalesceWaitTicks,
+    CoalescePackTicks,
+    CoalesceReceiveWaitTicks,
+    CoalesceUnpackTicks,
+    CoalesceRows,
+    CoalesceBytes,
+    CoalesceUnpackRows,
+    CoalesceForwardRows,
+    CoalesceWorker,
     Rank,
     Core,
     Tokens,
@@ -193,9 +210,9 @@ enum Word : uint32_t {
     Level,
     Count
 };
-constexpr uint32_t kWords = 192U;
-constexpr uint64_t kSchema = 8U;
+constexpr uint32_t kWords = 224U;
+constexpr uint64_t kSchema = 9U;
 constexpr Word kDetailBegin = InitPrefixTicks;
-constexpr Word kDetailEnd = BatchRouteTicks;
+constexpr Word kDetailEnd = CoalesceForwardRows;
 static_assert(Count <= kWords && StageRows <= 64U, "profile record bounds");
 }  // namespace CombineProfile

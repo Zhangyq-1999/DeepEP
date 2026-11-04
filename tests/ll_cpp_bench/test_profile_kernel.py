@@ -13,7 +13,8 @@ ROOT = Path(__file__).resolve().parents[2]
 
 @pytest.mark.parametrize("profile", [False, True])
 @pytest.mark.parametrize("small", [False, True])
-@pytest.mark.parametrize("returns", [False, True, "new", "simt", "poll", "local", "batch", "batch-pipeline"])
+@pytest.mark.parametrize("returns", [False, True, "new", "simt", "poll", "local", "batch", "batch-pipeline",
+                                     "card-all", "card-row", "server-all", "server-row"])
 def test_all_combine_profile_paths_compile(tmp_path, profile, small, returns):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
     if not zig:
@@ -24,6 +25,7 @@ def test_all_combine_profile_paths_compile(tmp_path, profile, small, returns):
     source = tmp_path / "all.cpp"
     source.write_text('#include "simt_test_stub.h"\n' + arithmetic + r'''
 namespace AscendC {
+template<class T> void Adds(LocalTensor<T> d,LocalTensor<T> s,T x,uint32_t n) { for(uint32_t i=0;i<n;++i)d.p[i]=s.p[i]+x; }
 template<class T> void ReduceSum(LocalTensor<T>,LocalTensor<T>,LocalTensor<T>,uint32_t,uint32_t,uint32_t) {}
 template<class T> void Gather(LocalTensor<T>,LocalTensor<T>,LocalTensor<uint32_t>,uint32_t,uint32_t) {}
 struct ProfileCopyParams {uint32_t dstStride,srcStride,dstRepeat,srcRepeat;};
@@ -38,7 +40,11 @@ int main() {}
     (tmp_path / "shmem.h").write_text('#pragma once\ninline void dcci_cachelines(uint8_t*, uint64_t) {}\n')
     flags = ["-DDEEPEP_LL_RDMA=1", "-DDEEPEP_LL_COMBINE_EARLY_REDUCE=1",
              "-DDEEPEP_LL_COMBINE_RECV_CORES=36"]
-    if returns == "poll":
+    if isinstance(returns,str) and returns.startswith(("card-","server-")):
+        flags = ["-DDEEPEP_LL_RDMA=1", "-DDEEPEP_LL_PHYSICAL_RANKS_PER_HOST=4",
+                 f'-DDEEPEP_LL_COMBINE_COALESCE={1 if returns.startswith("card-") else 2}',
+                 f'-DDEEPEP_LL_COMBINE_COALESCE_ROWS={int(returns.endswith("-row"))}']
+    elif returns == "poll":
         flags += ["-DDEEPEP_LL_COMBINE_POLL_NOP=800", "-DDEEPEP_LL_PHYSICAL_RANKS_PER_HOST=4"]
     elif returns in ("local", "batch", "batch-pipeline"):
         flags = ["-DDEEPEP_LL_RDMA=1", "-DDEEPEP_LL_COMBINE_LOCAL_FIRST=1",
