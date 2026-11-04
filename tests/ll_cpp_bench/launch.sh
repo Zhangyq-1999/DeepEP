@@ -74,7 +74,6 @@ fi
 [[ -z $master || $master =~ ^[a-zA-Z0-9_.-]+$ ]] || fail 'Invalid master address'
 [[ $variants =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*(,[a-zA-Z0-9][a-zA-Z0-9_-]*)*$ ]] || fail 'Use comma-separated build names containing letters, digits, _ or -'
 IFS=, read -r -a sequence <<< "$variants"
-((${#sequence[@]}<=8)) || fail 'At most eight comparison phases are supported'
 [[ $port =~ ^[1-9][0-9]{3,4}$ ]] && ((port>=1024 && port<=65535)) || fail 'Invalid master-port'
 [[ $run_id =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]] || fail 'Use letters, digits, _, . or - for run-id'
 [[ $job_timeout =~ ^[1-9][0-9]*$ && $join_timeout =~ ^[1-9][0-9]*$ ]] || fail 'Invalid timeout'

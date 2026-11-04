@@ -28,7 +28,6 @@ struct Suite {
                         throw std::invalid_argument("Invalid variant name: " + name);
                     variants.push_back(name);
                 }
-                if (variants.size() > 8) throw std::invalid_argument("At most eight phases are supported");
             } else if (key == "--build-root") {
                 if (haveRoot || value.empty()) throw std::invalid_argument("Invalid --build-root");
                 haveRoot = true;

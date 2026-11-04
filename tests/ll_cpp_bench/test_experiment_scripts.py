@@ -44,7 +44,9 @@ if [[ ${FAIL_BUILD:-} != '' && " $* " == *"ll-cpp-$FAIL_BUILD "* ]]; then exit 1
     env["PATH"] = helper_path + ":" + original_path
     env["TEST_LOCAL_IP"] = "90.90.93.84"
 
-    def run(script, *args, ok=True):
+    def run(script, *args, ok=True, real_launch=False):
+        if real_launch:
+            shutil.copyfile(HERE / "launch.sh", scripts / "launch.sh")
         # Git Bash prepends its system directories during startup. Put the
         # hostname fixture first after startup, as a Linux PATH lookup would.
         result = subprocess.run([bash, "-c", 'export PATH="$1:$PATH"; shift; script=$1; shift; source "$script" "$@"',
@@ -137,6 +139,18 @@ def test_repeat_default_run_and_second_host_join(harness):
     joined, = call_options(run("run_all.sh", ids[0]).stdout)
     assert joined["--node-rank"] == "1" and joined["--run-id"] == ids[0]
     assert "Copy RUN_ID" in run("run_all.sh", ok=False).stderr
+
+
+def test_default_suite_reaches_real_launcher_on_both_hosts(harness):
+    run, env = harness
+    run_id = "ep8-default-launch-regression"
+    for node, host in enumerate(("90.90.93.84", "90.90.93.184")):
+        env["TEST_LOCAL_IP"] = host
+        result = run("run_all.sh", run_id, "--dry-run", real_launch=True)
+        for phase, name in enumerate((*CLEAN, *PROFILES)):
+            assert f"phase={phase} variant={name} output=" in result.stdout
+        assert f"--proxy-id {node}" in result.stdout
+        assert "one shared initialization" in result.stdout
 
 
 def test_host_detection_and_benchmark_overrides(harness):

@@ -145,20 +145,28 @@ int main(int argc,char** argv) {
     failPhase=mode=="phase-failure" ? 1:-1;
     failFinalize=mode=="finalize-failure";
     failStream=mode=="stream-timeout";
-    std::vector<std::string> args={"bench","--variants","base,opt,base",
+    const std::vector<std::string> names=mode=="ten-phases" ?
+        std::vector<std::string>{"base","card-all","card-row","server-all","server-row",
+            "ref-profile","card-all-profile","card-row-profile","server-all-profile","server-row-profile"}:
+        std::vector<std::string>{"base","opt","base"};
+    std::string selection;
+    for(const auto& name:names) { if(!selection.empty()) selection+=","; selection+=name; }
+    std::vector<std::string> args={"bench","--variants",selection,
         "--build-root",(root/"build").string(),"--output-dir",(root/"results").string()};
     std::vector<char*> pointers;
     for(auto& arg:args) pointers.push_back(arg.data());
     int rc=run_suite(int(pointers.size()),pointers.data(),root/"build/ll-cpp-base/ll_combine_bench");
-    assert(mpiInit==1 && aclInitCount==1 && sessionInit==1 && loads==2);
-    const bool ok=mode=="success";
+    assert(mpiInit==1 && aclInitCount==1 && sessionInit==1 && loads==(mode=="ten-phases" ? 10:2));
+    const bool ok=mode=="success" || mode=="ten-phases";
     assert((rc==0)==ok && aborts==!ok && mpiEnd==ok && aclEnd==ok);
-    assert(resets==(failPhase<0 ? 2:1));
+    assert(resets==(failPhase<0 ? int(names.size())-1:1));
     assert(sessionEnd==(failPhase<0));
-    assert(order==(failPhase<0 ? std::vector<std::string>{"base","opt","base"}:
-                               std::vector<std::string>{"base","opt"}));
-    for(int i=0;i<3;++i) {
-        const auto folder=root/"results"/(std::to_string(i)+(i==1?"-opt":"-base"));
+    std::vector<std::string> expected;
+    for(size_t i=0;i<names.size() && (failPhase<0 || i<=size_t(failPhase));++i)
+        expected.push_back(names[i]=="base" ? "base":"opt");
+    assert(order==expected);
+    for(size_t i=0;i<names.size();++i) {
+        const auto folder=root/"results"/(std::to_string(i)+"-"+names[i]);
         assert(std::filesystem::exists(folder/"rank-0.PASS")==ok);
         assert(std::filesystem::exists(folder/"rank-0.SAMPLED")== (failPhase<0 || i<failPhase));
     }
@@ -167,7 +175,7 @@ int main(int argc,char** argv) {
     executable = tmp_path / "test.exe"
     subprocess.run([zig, "c++", "-std=c++17", "-O1", "-UNDEBUG", "-I", str(tmp_path), "-I", str(HERE),
                     str(tmp_path / "test.cpp"), "-o", str(executable)], check=True, timeout=180)
-    for mode in ("success", "phase-failure", "finalize-failure"):
+    for mode in ("success", "ten-phases", "phase-failure", "finalize-failure"):
         subprocess.run([str(executable), str(tmp_path / mode), mode], check=True, timeout=30)
     timed = subprocess.run([str(executable), str(tmp_path / "stream-timeout"), "stream-timeout"],
                            capture_output=True, text=True, timeout=10)
