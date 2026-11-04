@@ -24,6 +24,9 @@ int main()
     assert(parse({"bench", "--entry-sync", "auto"}).entrySync == "device");
     assert(parse({"bench", "--entry-sync", "device"}).entrySync == "device");
     assert(parse({"bench", "--profile-iters", "4"}).profileIterations == 4);
+    assert(o.profileFrequencyHz == 1000000000);
+    assert(parse({"bench", "--profile-frequency-hz", "0"}).profileFrequencyHz == 0);
+    assert(parse({"bench", "--profile-frequency-hz", "500000000"}).signature() != o.signature());
     auto diagnostic = parse({"bench", "--tokens", "1,72", "--dtype", "fp16", "--profile", "2"});
     assert(diagnostic.profile == 2 && diagnostic.signature() != o.signature());
     assert(o.rank == 17 && o.world == 32 && o.device == 1 && o.tokens.back() == 72);

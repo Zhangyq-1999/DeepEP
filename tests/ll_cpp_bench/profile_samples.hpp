@@ -1,5 +1,6 @@
 #pragma once
 #include "profile.hpp"
+#include "perfetto.hpp"
 #include "mpi_coordinator.hpp"
 #include "options.hpp"
 #include <filesystem>
@@ -13,12 +14,14 @@ namespace llbench {
 // Also keep the slowest coalescing worker; duplicates are removed on export.
 class ProfileSamples {
     std::vector<uint64_t> records_;
+    std::vector<uint64_t> full_;
 public:
-    void capture(const std::vector<uint64_t>& data, uint32_t cores, uint32_t recv)
+    void capture(const std::vector<uint64_t>& data, uint32_t cores, uint32_t recv, bool trace = true)
     {
         using namespace CombineProfile;
         if (!recv || recv >= cores || data.size() != size_t(cores) * kWords)
             throw std::runtime_error("Invalid profile sample dimensions");
+        if (trace) full_.insert(full_.end(), data.begin(), data.end());
         uint32_t selected[4] = {0, cores - recv, 0, 0};
         for (uint32_t c=0;c<cores-recv;++c)
             if (!data[c*kWords+CoalesceWorker]) { selected[0]=c; break; }
@@ -37,7 +40,7 @@ public:
         for (auto c : selected) records_.insert(records_.end(), data.begin() + c * kWords, data.begin() + (c + 1) * kWords);
     }
     void write(const Coordinator& peers, const Options& o, uint32_t bs, uint32_t cores, uint32_t recv,
-               const std::vector<float>& times)
+               const std::vector<float>& times, const std::string& source = "")
     {
         using namespace CombineProfile;
         if (times.empty() || records_.size() != times.size() * 4 * kWords)
@@ -73,6 +76,33 @@ public:
         if (!o.rank) {
             out.close();
             if (!out) throw std::runtime_error("Cannot write global diagnostic records");
+        }
+        if (!o.profileFrequencyHz) return;
+        if (full_.size() != times.size() * cores * kWords)
+            throw std::runtime_error("Missing full-core Perfetto samples");
+        std::vector<uint32_t> order(times.size());
+        std::iota(order.begin(), order.end(), 0);
+        std::stable_sort(order.begin(), order.end(), [&](auto a, auto b) { return times[a] < times[b]; });
+        const auto median = order[(order.size() - 1) / 2], worst = order.back();
+        for (auto iteration : std::set<uint32_t>{median, worst}) {
+            std::vector<uint64_t> send(1 + size_t(cores) * kWords);
+            send[0] = o.device;
+            std::copy_n(full_.data() + size_t(iteration) * cores * kWords, cores * kWords, send.data() + 1);
+            // Gather only two real collective samples, after all timed iterations.
+            const auto all = peers.gather(send.data(), send.size() * sizeof(uint64_t));
+            if (o.rank) continue;
+            std::vector<TraceRow> rows;
+            for (uint32_t rank = 0; rank < o.world; ++rank) {
+                std::memcpy(send.data(), all.data() + size_t(rank) * send.size() * sizeof(uint64_t),
+                            send.size() * sizeof(uint64_t));
+                for (uint32_t core = 0; core < cores; ++core)
+                    rows.push_back(trace_row(send.data() + 1 + core * kWords, uint32_t(send[0]), core >= cores - recv));
+            }
+            const std::string label = iteration == median ? (median == worst ? "p50-worst" : "p50") : "worst";
+            const auto filename = "bs" + std::to_string(bs) + "-" + label + "-i" + std::to_string(iteration) + ".perfetto.json";
+            write_perfetto(std::filesystem::path(o.output) / "perfetto" / filename, rows,
+                           {bs, iteration, o.world, o.profileFrequencyHz, times[iteration],
+                            "global rank-MAX " + label, o.output + "; build=" + source + "; config=" + o.signature()});
         }
     }
 };

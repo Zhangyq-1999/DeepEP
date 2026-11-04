@@ -7,10 +7,10 @@ ep=8 ranks_per_host=4 node_rank=${NODE_RANK:-} hosts="${HOST0:-90.90.93.84},${HO
 master= port=29671 variants=$ll_bench_variants run_id= dry=0
 cann=$ll_bench_cann mpi=$ll_bench_mpi shmem=$ll_bench_shmem
 job_timeout=3600 join_timeout=300
-bench_keys=(tokens hidden topk experts capacity dtype route seed entry-sync warmup iters profile-iters profile timeout kernel-timeout)
+bench_keys=(tokens hidden topk experts capacity dtype route seed entry-sync warmup iters profile-iters profile profile-frequency-hz timeout kernel-timeout)
 declare -A bench=([tokens]=32,48,64,72,256 [hidden]=3584 [topk]=8 [experts]=384
                   [capacity]=256 [dtype]=bf16 [route]=random [seed]=0 [entry-sync]=device
-                  [warmup]=10 [iters]=100 [profile-iters]=10 [profile]=2 [timeout]=300 [kernel-timeout]=10)
+                  [warmup]=10 [iters]=100 [profile-iters]=10 [profile]=2 [profile-frequency-hz]=1000000000 [timeout]=300 [kernel-timeout]=10)
 fail() { echo "ERROR: $*" >&2; exit 2; }
 while (($#)); do
     case "$1" in
@@ -27,6 +27,7 @@ Benchmark options (with or without a preceding --):
          --dtype bf16|fp16 --route random|hotspot --seed N --entry-sync device|host|auto
          --warmup N --iters N --profile-iters N --profile 0|1|2 --timeout SECONDS
          --kernel-timeout SECONDS (default 10; bounded stream wait)
+         --profile-frequency-hz HZ (default 1000000000; 0 disables Perfetto export)
 Defaults: EP8, four ranks/host, devices 12,13,14,15 on each host; hosts 90.90.93.84,90.90.93.184, port 29671.
           base/card-all/card-row/server-all/server-row, with matching diagnostics; BS 32,48,64,72,256; H3584/K8/E384/BF16.
           Warmup 10; clean samples 100; diagnostic samples 10, level 2.
@@ -50,7 +51,7 @@ USAGE
                 --run-id) run_id=$value;; --mpi-home) mpi=$value;; --cann-home) cann=$value;;
                 --shmem-root) shmem=$value;; --job-timeout) job_timeout=$value;; --join-timeout) join_timeout=$value;;
             esac;;
-        --tokens|--devices|--hidden|--topk|--experts|--capacity|--dtype|--route|--seed|--entry-sync|--warmup|--iters|--profile-iters|--profile|--timeout|--kernel-timeout)
+        --tokens|--devices|--hidden|--topk|--experts|--capacity|--dtype|--route|--seed|--entry-sync|--warmup|--iters|--profile-iters|--profile|--profile-frequency-hz|--timeout|--kernel-timeout)
             (($#>=2)) || fail "Missing value: $1"
             bench[${1#--}]=$2; shift 2;;
         -*) fail "Unknown option: $1";;

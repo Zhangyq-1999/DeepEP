@@ -133,6 +133,7 @@ def test_repeat_default_run_and_second_host_join(harness):
         assert call["--tokens"] == "32,48,64,72,256"
         assert call["--iters"] == "100" and call["--profile"] == "2"
         assert call["--profile-iters"] == "10"
+        assert call["--profile-frequency-hz"] == "1000000000"
         assert call["--entry-sync"] == "device"
         assert f"run_all.sh {ids[-1]} \n" in result.stdout
     assert len(set(ids)) == 2

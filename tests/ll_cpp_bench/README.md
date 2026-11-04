@@ -416,6 +416,37 @@ bash tests/ll_cpp_bench/summarize.sh results/ll-cpp/RUN_ID/3-ref-profile
 ```
 
 这两个命令只运行 Host C++ 汇总程序，无需 CANN、MPI 或 Python。逐阶段最大值可能来自不同核，需分别分析。所有核内偏移以本核入口为零点。
+
+### 在 Perfetto 中查看阶段图
+
+打点版每完成一个 BS，就自动在该版本的 `perfetto/` 目录生成 Chrome Trace Event JSON。打开 [Perfetto](https://ui.perfetto.dev/)，选择 `Open trace file` 加载文件即可。这个格式由 [Perfetto 直接支持](https://perfetto.dev/docs/getting-started/other-formats#chrome-json-format)，无需安装转换包。
+
+```text
+results/ll-cpp/RUN_ID/5-ref-profile/perfetto/
+  bs32-p50-i4.perfetto.json
+  bs32-worst-i9.perfetto.json
+```
+
+文件名中的轮次只是示例。程序按逐轮全局 rank-MAX Event 排序，选取中间偏前的真实轮次和最慢轮。两者相同时只生成一个 `p50-worst` 文件。每份文件包含所选同一轮的全部 rank、全部 AIV 核，统一保存在第一台。无需等整个测试结束，也无需从第二台复制这些新生成的图。
+
+轨道按 rank、设备和 AIV 核命名，区分发送核、接收核和聚合核。阶段条显示暂存、就绪等待、DIRECT 回传、FIRST_HOP 部分归约、最终归约、聚合发送与解包。`observations` 轨道标出 Put、就绪检查和缺失 flag 的观察位置。点击 `profiled body` 可查看任务量、轮询次数及各项累计 tick。累计开销可能重叠，只作为详情保留。
+
+**每个核都以自身入口为零点，图中的不同核和 rank 尚未对齐时钟。** 图用于分析各核内部的阶段分布；判断跨卡启动偏差或端到端传输时延，需要另行校准时钟。Put 标记表示调用位置，就绪标记表示观察位置，不能视为网卡的发包和收包时间。干净版仍用 Event 比较性能，不生成虚构的内部阶段图。
+
+时间换算沿用仓内 `tests/ll_stage_timer` 的默认值：`GetSystemCycle` 为 1 GHz，即 1000 tick 对应 1 μs。导出文件同时记录频率和原始 tick；不会根据 Event 反推频率。更换计数器频率不同的环境时，用 `run_all.sh --profile-frequency-hz 频率` 指定。频率尚未确认时，可设为 `0`，只保留原有 CSV。
+
+导出使用现有设备打点，在采样结束后选轮、汇总和写文件，不增加 kernel 打点或同步。每个 BS 的全量记录暂存在 Host 内存中；默认 56 核、10 轮约占每 rank 1 MiB，用完释放。进度显示为 `profile gather and Perfetto export`，完成后打印保存路径。
+
+旧结果也可以直接转换，无需重跑或重编设备 kernel：
+
+```bash
+bash tests/ll_cpp_bench/summarize.sh --perfetto \
+    results/ll-cpp/RUN_ID/5-ref-profile
+# 第三个参数可覆盖计数器频率，单位 Hz。
+```
+
+这个命令只使用本机的 `rank-N-profile.csv` 和配套的 `rank-N.csv`，按已有 rank 选取代表轮次。文件中的 `selection` 会标明覆盖的 rank 数。输出保存在 `perfetto-local/`；重复执行会创建带数字后缀的新目录，保留之前的图。需要完整旧结果时，将各机同一版本目录里的上述 CSV 汇集到一个目录再转换。终端汇总缺少全量逐核记录，不能代替这些 CSV。
+
 ### 字段与分析方法
 
 每个 rank 的 `rank-N-profile.csv` 保存每轮、每个 AIV 核的记录。一级打点记录阶段边界和任务量。二级打点进一步区分以下操作：
@@ -469,6 +500,7 @@ bash tests/ll_cpp_bench/summarize.sh results/ll-cpp/RUN_ID/3-ref-profile
 | `--profile-iters` | 10 | 启用打点时的采样轮数 |
 | `--entry-sync` | device | 计时前执行 MTE/RoCE 设备同步；host 用于 MPI 对照，auto 等同 device |
 | `--profile` | 0 | 0 关闭，1 记录阶段边界，2 增加热循环打点；干净构建自动保持关闭 |
+| `--profile-frequency-hz` | 1000000000 | Perfetto 的 tick 换算频率，单位 Hz；0 关闭导出，保留 CSV |
 | `--timeout` | 300 | SHMEM 初始化和控制操作超时，单位为秒 |
 | `--kernel-timeout` | 10 | 单次设备 stream 等待上限，单位为秒；包含准备 Dispatch 和采样 Combine |
 

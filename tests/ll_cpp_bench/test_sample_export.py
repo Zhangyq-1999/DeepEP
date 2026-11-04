@@ -1,5 +1,6 @@
 """Exercise global Event selection and compact profile collection without NPU."""
 import csv
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -33,13 +34,14 @@ inline int MPI_Bcast(void*,int,int,int,int) {return 0;}
 inline int MPI_Barrier(int) {return 0;}
 inline int MPI_Allgather(const void* p,int n,int type,void* out,int,int,int) {
     using namespace CombineProfile;
-    assert(type==MPI_BYTE && n==(1+4*kWords)*sizeof(uint64_t));
+    assert(type==MPI_BYTE && (n==(1+4*kWords)*sizeof(uint64_t) || n==(1+6*kWords)*sizeof(uint64_t)));
+    const uint32_t rows=(n/sizeof(uint64_t)-1)/kWords;
     for (uint32_t rank=0;rank<TEST_WORLD;++rank) {
         auto dest=static_cast<uint8_t*>(out)+rank*n;
         std::memcpy(dest,p,n);
         const uint64_t device=TEST_WORLD==4 ? rank+8 : rank%16;
         std::memcpy(dest,&device,sizeof(device));
-        for (uint32_t j=0;j<4;++j) {
+        for (uint32_t j=0;j<rows;++j) {
             const uint64_t r=rank;
             std::memcpy(dest+(1+j*kWords+Rank)*8,&r,sizeof(r));
         }
@@ -117,3 +119,13 @@ int main(int argc,char** argv) {
         assert int(row["device"]) == (rank + 8 if world == 4 else rank % 16)
         assert int(row["stage_rows"]) == int(row["iteration"]) * 10 + int(row["core"])
         assert int(row["entry_tick"]) == (1 << 60) + int(row["iteration"]) * 10000
+    traces = list((tmp_path / "perfetto").glob("*.json"))
+    assert len(traces) == 2
+    for path in traces:
+        trace = json.loads(path.read_text())
+        bodies = [e for e in trace["traceEvents"] if e["name"] == "profiled body"]
+        assert len(bodies) == world * 6
+        assert {e["args"]["rank"] for e in bodies} == set(range(world))
+        iteration = trace["otherData"]["iteration"]
+        assert iteration in (1, 2)
+        assert all(e["args"]["stage_rows"] == iteration * 10 + e["args"]["core"] for e in bodies)

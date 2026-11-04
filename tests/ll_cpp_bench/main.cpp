@@ -415,7 +415,7 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
                 profileBuffer->download(profileData.data(), profileBuffer->bytes);
                 llbench::profile_rows(profileCsv, profileData, cores, recv, o.rank, o.world, bs, o.device, o.profile,
                                       i);
-                selectedProfiles.capture(profileData, cores, recv);
+                selectedProfiles.capture(profileData, cores, recv, o.profileFrequencyHz != 0);
             }
         }
         session.report("precision check and result gather", bs, o.iterations, o.iterations);
@@ -425,8 +425,9 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
         auto data = peers.gather(times.data(), times.size() * sizeof(float));
         const auto rankMax = llbench::rank_max_samples(data, o, bs);
         if (o.profile) {
+            session.report("profile gather and Perfetto export", bs, o.iterations, o.iterations);
             c.exportProducers(o, peers, cores, recv, returnOptions);
-            selectedProfiles.write(peers, o, bs, cores, recv, rankMax);
+            selectedProfiles.write(peers, o, bs, cores, recv, rankMax, DEEPEP_BENCH_SOURCE_ID);
         }
         if (o.rank == 0) {
             auto s = llbench::stats(rankMax);
@@ -444,6 +445,9 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
             summary.flush();
             std::cout << "BS=" << bs << " rank-MAX Event us: mean=" << s.mean << " range=[" << s.min << ',' << s.max
                       << "] p99=" << s.p99 << " rank0_max_abs_error=" << error << std::endl;
+            if (o.profile && o.profileFrequencyHz)
+                std::cout << "Perfetto: " << o.output << "/perfetto/bs" << bs
+                          << "-*.perfetto.json (global samples; core-local origins; Hz=" << o.profileFrequencyHz << ")" << std::endl;
         }
         peers.barrier();
     }

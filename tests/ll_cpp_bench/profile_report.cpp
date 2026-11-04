@@ -1,5 +1,6 @@
 // Offline Host-only report. Reading existing CSVs never starts an NPU or MPI job.
 #include "profile.hpp"
+#include "perfetto.hpp"
 #include <algorithm>
 #include <array>
 #include <bitset>
@@ -136,6 +137,7 @@ struct Case {
     std::array<std::map<uint32_t, Winner>, phaseCount> maxima;
     std::map<std::pair<uint32_t, uint32_t>, std::set<uint32_t>> seen;
     Sample median, worst;
+    std::vector<llbench::TraceRow> traceMedian, traceWorst;
     uint32_t world = 0, level = 0, schema = 0;
 };
 void identify(std::ostream& out, const Record& r)
@@ -262,7 +264,7 @@ void sample(std::ostream& out, const char* label, const Sample& s)
             << " defer_gap=" << (*latest)[RdmaDeferGapTicks] << '\n';
     }
 }
-void report(const fs::path& directory)
+void report(const fs::path& directory, uint64_t traceFrequency = 0)
 {
     std::map<uint32_t, fs::path> files;
     const std::regex pattern("rank-([0-9]+)-profile\\.csv");
@@ -337,9 +339,14 @@ void report(const fs::path& directory)
             }
             for (auto* s : {&c.median, &c.worst})
                 if (r.iteration == s->iteration && rank == s->event.rank) s->records.push_back(r);
+            if (traceFrequency) {
+                const llbench::TraceRow trace{r.v, r.present, r.device, r.receive};
+                if (r.iteration == c.median.iteration) c.traceMedian.push_back(trace);
+                if (r.iteration == c.worst.iteration) c.traceWorst.push_back(trace);
+            }
         }
     }
-    // Each reported rank must contain the same complete core set in every sample.
+    // Validate coverage before publishing any trace.
     for (const auto& [bs, c] : cases) {
         if (!c.world) throw std::runtime_error("Missing profile records");
         const auto& cores = c.seen.begin()->second;
@@ -351,6 +358,26 @@ void report(const fs::path& directory)
                 if (it == c.seen.end() || it->second != cores)
                     throw std::runtime_error("Missing profile rank/core/sample");
             }
+    }
+    if (traceFrequency) {
+        // Fresh export directory also permits repeated conversion with another frequency.
+        auto destination = directory / "perfetto-local";
+        for (uint32_t suffix = 1; !fs::create_directory(destination); ++suffix)
+            destination = directory / ("perfetto-local-" + std::to_string(suffix));
+        for (const auto& [bs, c] : cases) {
+            for (bool worst : {false, true}) {
+                if (worst && c.median.iteration == c.worst.iteration) continue;
+                const auto& s = worst ? c.worst : c.median;
+                const std::string label = worst ? "worst" : (c.median.iteration == c.worst.iteration ? "p50-worst" : "p50");
+                const auto file = destination / ("bs" + std::to_string(bs) + "-" + label + "-i" +
+                                                  std::to_string(s.iteration) + ".perfetto.json");
+                llbench::write_perfetto(file, worst ? c.traceWorst : c.traceMedian,
+                    {bs, s.iteration, c.world, traceFrequency, s.event.us,
+                     "available rank-MAX " + label + "; coverage=" + std::to_string(files.size()) + "/" + std::to_string(c.world),
+                     directory.string()});
+            }
+        }
+        std::cout << "Perfetto: " << destination.string() << " (local CSV coverage; independent core origins)\n";
     }
     std::cout
         << "=== LL_COMBINE_PROFILE_SUMMARY BEGIN ===\n"
@@ -423,12 +450,18 @@ void report(const fs::path& directory)
 int main(int argc, char** argv)
 {
     const bool suite = argc == 3 && std::string(argv[1]) == "--suite";
-    if ((!suite && argc != 2) || std::string(argv[1]) == "--help") {
-        std::cout << "Usage: ll_combine_profile_report RESULT_PHASE_DIRECTORY | --suite RUN_DIRECTORY\n";
+    const bool trace = (argc == 3 || argc == 4) && std::string(argv[1]) == "--perfetto";
+    if ((!suite && !trace && argc != 2) || (argc >= 2 && std::string(argv[1]) == "--help")) {
+        std::cout << "Usage: ll_combine_profile_report RESULT_PHASE_DIRECTORY | --suite RUN_DIRECTORY | --perfetto PHASE_DIRECTORY [FREQUENCY_HZ]\n";
         return argc == 2 ? 0 : 2;
     }
     try {
         if (suite) suite_report(argv[2]);
+        else if (trace) {
+            const auto frequency = argc == 4 ? integer(argv[3]) : 1000000000ULL;
+            if (!frequency) throw std::runtime_error("Perfetto frequency must be positive");
+            report(argv[2], frequency);
+        }
         else report(argv[1]);
     } catch (const std::exception& e) {
         std::cerr << "Profile summary failed: " << e.what() << '\n';
