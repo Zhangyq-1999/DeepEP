@@ -119,6 +119,37 @@ def native_args(a, local_size):
     return args
 
 
+class ConfigurationMismatch(RuntimeError):
+    """The local leader already printed the shared mismatch report."""
+
+
+def configuration_diff(records):
+    lines = []
+    for key in sorted(set().union(*(record.keys() for record in records))):
+        groups = {}
+        for rank, record in enumerate(records):
+            value = json.dumps(record[key],sort_keys=True) if key in record else "<missing>"
+            groups.setdefault(value,[]).append(str(rank))
+        if len(groups)>1:
+            lines.append(f"{key}: "+"; ".join(f"ranks={','.join(ranks)} value={value}" for value,ranks in groups.items()))
+    return lines
+
+
+def require_agreement(dist, record, world, rank, local, output, stage):
+    agreed = [None]*world
+    dist.all_gather_object(agreed,record)
+    differences = configuration_diff(agreed)
+    if local==0:
+        output.mkdir(parents=True,exist_ok=True)
+        (output/f"rank-{rank}-{stage}.json").write_text(json.dumps(agreed,indent=2)+"\n")
+        if differences:
+            print("\n".join([f"LL_PY_MISMATCH_BEGIN stage={stage}",*differences,"LL_PY_MISMATCH_END"]),flush=True)
+    if differences:
+        # Let every host save/print its diagnostics before torchrun stops peers.
+        dist.barrier()
+        raise ConfigurationMismatch(f"{stage} differs across ranks")
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     for name in ("output","module-dir","shmem-ip-port","variant","sync","devices","tokens","dtype","route"):
@@ -130,17 +161,11 @@ def main():
     rank,world,local = (int(os.environ[k]) for k in ("RANK","WORLD_SIZE","LOCAL_RANK"))
     local_size = int(os.environ["LOCAL_WORLD_SIZE"])
     progress = Progress(local==0)
-    progress.set(f"rank={rank} import Torch and initialize device")
+    progress.set(f"rank={rank} import Torch")
     import torch
     import torch_npu
     import torch.distributed as dist
     torch.set_num_threads(1)
-    torch.npu.set_device(local)
-    torch.npu.init()
-    sys.path.insert(0,a.module_dir)
-    import _ll_py_combine as native
-    if native.ranks_per_host!=a.ranks_per_host or local_size!=a.ranks_per_host:
-        raise ValueError("Python launch and compiled ranks-per-host differ")
     progress.set(f"rank={rank} Gloo rendezvous")
     dist.init_process_group("gloo",timeout=timedelta(seconds=a.timeout))
     # Agree before collective SHMEM initialization, even for different local paths.
@@ -148,10 +173,16 @@ def main():
     config = {k:v for k,v in vars(a).items() if k not in ("output","module_dir")}
     config.update(source_id=manifest["source"],env=Path(sys.prefix).name,python=sys.version.split()[0],
                   torch=torch.__version__,torch_npu=torch_npu.__version__,world=world)
-    agreed = [None]*world
-    dist.all_gather_object(agreed,config)
-    if any(v!=agreed[0] for v in agreed): raise RuntimeError("Build/configuration differs across ranks")
     output = Path(a.output)
+    progress.set(f"rank={rank} configuration check")
+    require_agreement(dist,config,world,rank,local,output,"configuration")
+    sys.path.insert(0,a.module_dir)
+    import _ll_py_combine as native
+    if native.ranks_per_host!=a.ranks_per_host or local_size!=a.ranks_per_host:
+        raise ValueError("Python launch and compiled ranks-per-host differ")
+    progress.set(f"rank={rank} initialize NPU")
+    torch.npu.set_device(local)
+    torch.npu.init()
     output.mkdir(parents=True,exist_ok=True)
     rank_file = output/f"rank-{rank}.jsonl"
     results = []
@@ -161,8 +192,7 @@ def main():
         bench = native.Bench(rank,world,local,native_args(a,local_size),stream.npu_stream,a.shmem_ip_port)
         dist.barrier()
         identity = bench.identity()
-        dist.all_gather_object(agreed,identity)
-        if any(v!=agreed[0] for v in agreed): raise RuntimeError("Native identity differs across ranks")
+        require_agreement(dist,identity,world,rank,local,output,"native")
         gate = None
         if a.sync in ("device","both"):
             progress.set(f"rank={rank} HCCL gate initialization")
@@ -228,6 +258,8 @@ def main():
 
 if __name__=="__main__":
     try: main()
+    except ConfigurationMismatch:
+        os._exit(1)
     except BaseException:
         traceback.print_exc(); sys.stderr.flush(); sys.stdout.flush()
         # Let torchrun terminate peers; don't enter SHMEM collectives or release

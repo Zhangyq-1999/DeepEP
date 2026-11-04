@@ -128,6 +128,8 @@ PyTorch 默认使用端口 30011，SHMEM 使用下一端口 30012。`--shmem-ip-
 
 ## 读取结果
 
+脚本先通过 Gloo 核对各 rank 的测试参数、源码标识和 Python／Torch 版本，通过后才初始化 NPU。若配置不同，每台机器会打印一段 `LL_PY_MISMATCH_BEGIN` 至 `LL_PY_MISMATCH_END` 的错误信息，列出不同的字段、rank 和实际值。复制这一段即可定位差异。脚本还会将全部 rank 的配置保存到 `rank-0-configuration.json` 等文件中。
+
 每个 BS 完成后立即输出表格，并保存到 `results/ll-python/<RUN_ID>/`。全部结束后，第一台集中打印 `LL_PY_REPORT_BEGIN` 至 `LL_PY_REPORT_END` 的汇总块。正常跑完后，复制这一块即可分析两台机器的全局数据。
 
 汇总先给配置和时延表，再列每个 case 的 `D` 行。表格包含均值、P50、最小值、P99、最大值、末 50 轮 P50、rank0 P50 和最大精度误差。`D` 行补充前 3／10／20 轮均值、各 rank 的 P50 范围，以及最慢 3 轮的轮次、rank 和耗时。轮次从 1 开始；并列最慢时显示编号最小的 rank。`--sync both` 还输出设备同步相对 Host 同步的 P50 降幅。

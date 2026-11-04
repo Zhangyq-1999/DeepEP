@@ -132,8 +132,17 @@ int main() {
     subprocess.run([str(exe)],check=True,timeout=20)
 
 
-@pytest.mark.parametrize("fail_close",[False,True])
-def test_worker_saves_each_case_and_closes_once(tmp_path,monkeypatch,capsys,fail_close):
+def test_configuration_diff_groups_fields_and_ranks():
+    run = module("run")
+    records = [dict(source_id="old",iters=100,extra=None)]*4 + [dict(source_id="new",iters=100)]*4
+    assert run.configuration_diff(records)==[
+        'extra: ranks=0,1,2,3 value=null; ranks=4,5,6,7 value=<missing>',
+        'source_id: ranks=0,1,2,3 value="old"; ranks=4,5,6,7 value="new"']
+    assert run.configuration_diff([dict(iters=100),dict(iters=100)])==[]
+
+
+@pytest.mark.parametrize("failure",[None,"finalize","configuration","native"])
+def test_worker_saves_each_case_and_closes_once(tmp_path,monkeypatch,capsys,failure):
     run = module("run")
     calls=[]
     class Context:
@@ -150,11 +159,16 @@ def test_worker_saves_each_case_and_closes_once(tmp_path,monkeypatch,capsys,fail
         def precision(self): return 0.0
         def close(self):
             calls.append("close")
-            if fail_close: raise RuntimeError("injected finalize failure")
-    def gather(out,value): out[:]=[value]*len(out)
+            if failure=="finalize": raise RuntimeError("injected finalize failure")
+    def gather(out,value):
+        out[:]=[value]*len(out)
+        stage = "configuration" if "tokens" in value else "native"
+        if failure==stage:
+            out[4:] = [dict(value,source_id="other")]*4
     def barrier(): calls.append("barrier")
     torch = SimpleNamespace(__version__="test",set_num_threads=lambda n:None,
-        npu=SimpleNamespace(set_device=lambda d:None,init=lambda:None,Stream=Context,stream=lambda s:s,synchronize=lambda:None))
+        npu=SimpleNamespace(set_device=lambda d:calls.append("set_device"),init=lambda:calls.append("npu_init"),
+                            Stream=Context,stream=lambda s:s,synchronize=lambda:None))
     dist = SimpleNamespace(init_process_group=lambda *a,**k:None,all_gather_object=gather,barrier=barrier,
                            destroy_process_group=lambda *a:None)
     torch.distributed=dist
@@ -176,6 +190,19 @@ def test_worker_saves_each_case_and_closes_once(tmp_path,monkeypatch,capsys,fail
           "--dtype","bf16","--route","random","--seed","0","--warmup","2","--iters","3",
           "--timeout","180","--kernel-timeout","10"]
     monkeypatch.setattr(sys,"argv",args)
+    if failure in ("configuration","native"):
+        with pytest.raises(run.ConfigurationMismatch,match=failure): run.main()
+        assert calls.count("init")==int(failure=="native")
+        assert calls.count("set_device")==calls.count("npu_init")==int(failure=="native")
+        assert not any(isinstance(call,tuple) and call[0]=="sample" for call in calls)
+        snapshot=json.loads((tmp_path/f"out/rank-0-{failure}.json").read_text())
+        assert snapshot[0]["source_id"]=="same" and snapshot[4]["source_id"]=="other"
+        console=capsys.readouterr().out
+        assert f"LL_PY_MISMATCH_BEGIN stage={failure}" in console
+        assert 'source_id: ranks=0,1,2,3 value="same"; ranks=4,5,6,7 value="other"' in console
+        assert not (tmp_path/"out/rank-0.PASS").exists()
+        return
+    fail_close = failure=="finalize"
     if fail_close:
         with pytest.raises(RuntimeError,match="finalize failure"): run.main()
     else:
