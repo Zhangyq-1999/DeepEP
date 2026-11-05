@@ -8,7 +8,7 @@ args=()
 while (($#)); do
     case "$1" in
         --help|-h)
-            echo 'build_all.sh [--variants base,ready-snapshot,wqe-prep,wqe-prefetch] [build.sh environment options]'
+            echo 'build_all.sh [--variants base,wqe-prep,wqe-prefetch,input6,input-ready] [build.sh environment options]'
             echo 'Defaults: four clean Combine variants installed in py311_zyq; Dispatch is shared.'
             exit 0;;
         --variants)
@@ -24,7 +24,7 @@ done
 IFS=, read -r -a names <<< "$variants"
 for name in "${names[@]}"; do
     case "$name" in
-        base|ready-snapshot|wqe-prep|wqe-prefetch|mte-pack|card-all|card-row|server-all|server-row) ;;
+        base|ready-snapshot|wqe-prep|wqe-prefetch|input6|input-ready|mte-pack|card-all|card-row|server-all|server-row) ;;
         *) echo "Unknown clean variant: $name" >&2; exit 2;;
     esac
 done

@@ -49,7 +49,8 @@ static_assert(kEpServerDedupCombineLaunchUbBytes + (8U + 32U) * 1024U <= 256U * 
 constexpr uint32_t kEpServerDedupCombineRecvUbBytes = 240U * 1024U;
 constexpr uint32_t kEpServerDedupCombineLaunchUbBytes = 0U;
 #endif
-constexpr uint32_t kEpServerDedupCombineM4MaxInputLanes = 3U;
+// Reserve event 7 for metadata/control; keep one more payload event spare.
+constexpr uint32_t kEpServerDedupCombineM4MaxInputLanes = DEEPEP_LL_COMBINE_READY >= 12 ? 6U : 3U;
 constexpr uint32_t kEpServerDedupCombineM5MaxInputLanes = 7U;  // MTE2_V(7) belongs to probe
 constexpr uint32_t kEpServerDedupCombineM5MaxOutputLanes = 2U;
 constexpr uint32_t kEpServerDedupCombineTableRows = 512U;
@@ -214,7 +215,7 @@ COMBINE_DEDUP_EP_COMBINE_CONSTEXPR EpCombineM45WorkspaceLayout EpCombineM45Layou
         return result;
     const uint64_t owned = EpCombineM5TokenCount(bs, recvCores);
     const uint64_t partial = EpCombineM4TaskBytes(tokens, recvCores) +
-#if DEEPEP_LL_COMBINE_READY == 9 || DEEPEP_LL_COMBINE_READY == 11
+#if DEEPEP_LL_COMBINE_READY == 9 || DEEPEP_LL_COMBINE_READY >= 11
                              128U + // private WQE/doorbell scratch; never aliases the live payload
 #endif
 #if DEEPEP_LL_COMBINE_READY == 1 || DEEPEP_LL_COMBINE_READY >= 3

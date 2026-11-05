@@ -258,16 +258,19 @@ enum Word : uint32_t {
     WqePreparedPackets,
     WqeFallbackPackets,
     MtePackPackets,
+    PartialInputLanes,
+    ReadyInputIssued,
+    ReadyInputUsed,
     Count
 };
 constexpr uint32_t kWords = 256U;
-constexpr uint64_t kSchema = 17U;
+constexpr uint64_t kSchema = 18U;
 constexpr Word kDetailBegin = InitPrefixTicks;
 constexpr Word kDetailEnd = RouteCompactTicks;
 constexpr bool IsDetailWord(uint32_t word)
 {
     return (word >= kDetailBegin && word <= kDetailEnd) ||
-           (word >= WqePrepareTicks && word <= MtePackPackets);
+           (word >= WqePrepareTicks && word <= ReadyInputUsed);
 }
 static_assert(Count <= kWords && StageRows <= 64U, "profile record bounds");
 }  // namespace CombineProfile

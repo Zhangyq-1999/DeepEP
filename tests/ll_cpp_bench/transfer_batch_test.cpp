@@ -26,7 +26,7 @@ int main()
         a.reservedConfig[0]=LlRdma::kBackend;a.reservedConfig[1]=cores;
         for(unsigned p=rank/host*host;p<(rank/host+1U)*host;++p)a.peerMems[p]=local.data()+p*1024U;
         CombineDedup::ReturnBatch batch;batch.Init(&a,bytes);
-#if DEEPEP_LL_COMBINE_READY == 9 || DEEPEP_LL_COMBINE_READY == 11
+#if DEEPEP_LL_COMBINE_READY == 9 || DEEPEP_LL_COMBINE_READY >= 11
         if(partial)batch.SetPartialScratch({scratch.data()});
         constexpr unsigned depth=512;
         std::vector<aclshmemi_rdma_sq_ctx> sq(world*cores);
@@ -72,7 +72,7 @@ int main()
             expected.push_back(packet);
             const unsigned postsBefore=Model::puts;
             const bool defer=DEEPEP_LL_COMBINE_READY==11 && partial && cross && i%3U!=2U && i+1U<n;
-#if DEEPEP_LL_COMBINE_READY == 9 || DEEPEP_LL_COMBINE_READY == 11
+#if DEEPEP_LL_COMBINE_READY == 9 || DEEPEP_LL_COMBINE_READY >= 11
             HnsModel::peer=peer;
             // Force admission failure without consuming the live payload event.
             const bool full=partial && cross && i%7U==3U;
@@ -114,7 +114,7 @@ int main()
             quiets+=peers.size();
         }
         assert(Model::quiets==quiets);
-#if DEEPEP_LL_COMBINE_READY == 9 || DEEPEP_LL_COMBINE_READY == 11
+#if DEEPEP_LL_COMBINE_READY == 9 || DEEPEP_LL_COMBINE_READY >= 11
         assert(HnsModel::builds==HnsModel::published);
         assert(HnsModel::published==(partial?Model::puts-fallbacks:0U));
         if(partial)assert(std::find(HnsModel::heads.begin(),HnsModel::heads.end(),depth)!=HnsModel::heads.end());
@@ -123,7 +123,7 @@ int main()
         profile.Finish(rank,world,n);auto* r=record.data()+core*CombineProfile::kWords;
         assert(r[CombineProfile::RdmaPackets]==Model::puts);
         assert(r[CombineProfile::RdmaStageWaitCalls]==Model::puts);
-#if DEEPEP_LL_COMBINE_READY == 9 || DEEPEP_LL_COMBINE_READY == 11
+#if DEEPEP_LL_COMBINE_READY == 9 || DEEPEP_LL_COMBINE_READY >= 11
         assert(r[CombineProfile::WqePreparedPackets]==HnsModel::published);
         assert(r[CombineProfile::WqeFallbackPackets]==fallbacks);
 #if DEEPEP_LL_COMBINE_READY == 11

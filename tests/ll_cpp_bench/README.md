@@ -27,24 +27,28 @@ git pull --ff-only origin perf/ll-combine-small-batch
 bash tests/ll_cpp_bench/build_all.sh
 ```
 
-`build_all.sh` 默认更新以下 8 个构建目录，每个构建使用 4 个编译任务。Dispatch 用于准备 Combine 的输入和路由，同一配置只编译一次，各版本复用它的目标文件。每个版本再单独编译 Combine，并链接成独立的 kernel 库。
+`build_all.sh` 默认更新以下 10 个构建目录，每个构建使用 4 个编译任务。Dispatch 用于准备 Combine 的输入和路由，同一配置只编译一次，各版本复用它的目标文件。每个版本再单独编译 Combine，并链接成独立的 kernel 库。
 
 已有目录继续用于增量编译。只修改 Combine 时，Dispatch 无需重编；修改 Dispatch 或它依赖的头文件时，构建系统自动重编受影响的部分。共享目标文件保存在 `build/ll-cpp-dispatch`，不同编译器、SDK 和每机 rank 数使用独立目录。更新代码后，两台机器都执行一次 `build_all.sh`，更新所有选中的版本。
 
 | 构建名 | 实验 | 打点 |
 | --- | --- | --- |
 | `base` | 冻结的上游原版 | 关闭 |
-| `ready-snapshot` | 机内 ready 依赖调度；空闲 payload UB 一次读入路由 | 关闭 |
 | `wqe-prep` | snapshot + M4 暂存搬运期间在独立 UB 构造 WQE | 关闭 |
 | `wqe-prefetch` | wqe-prep + 下一条已就绪任务的输入读取与上一包提交重叠 | 关闭 |
+| `input6` | wqe-prep + 最多 6 个 M4 输入槽 | 关闭 |
+| `input-ready` | input6 + 按贡献就绪提前读取 | 关闭 |
 | `ref-profile` | 实验开关全部关闭 | 开启 |
-| `ready-snapshot-profile` | 与 ready-snapshot 相同 | 开启 |
 | `wqe-prep-profile` | 与 wqe-prep 相同 | 开启 |
 | `wqe-prefetch-profile` | 与 wqe-prefetch 相同 | 开启 |
+| `input6-profile` | 与 input6 相同 | 开启 |
+| `input-ready-profile` | 与 input-ready 相同 | 开启 |
 
 优化和验收以 **BS32、48、64** 为主，BS72 作邻近对照，BS256 只检查回退。上一轮 EP8 干净版 ready-snapshot 的三个 BS 的 P50 分别为 57.11、63.56、70.19 μs，增加接收核没有持续改善这三个场景。ready-r32、ready-r36、stage-stream、plan-compact 保留为可选实验，不再默认编译运行。
 
 EP32 收尾修复后的实测中，`wqe-prep` 在 BS48/64 的均值比 snapshot 低约 2.20%/2.84%，BS32 基本持平，尚需重复验证。它在独立 128 B UB 提前构造 WQE，payload 完成后才发布 SQ/doorbell。新增 `wqe-prefetch` 在下一条任务已经就绪时，先发起其输入 MTE2，再等上一包 MTE3 并提交 WQE；不会等待下一条完整规约。末条任务和单输出 lane 仍立即提交，M5 前排空待提交包，最终 quiet 保留。新方案尚待 CANN/NPU 验证。`mte-pack` 收益不稳定，保留为可选项，不再默认编译。完整数据、生命周期与打点说明见 [TRANSFER_AB.md](TRANSFER_AB.md)。
+
+打点 schema 18 新增 `input=lanes/early_reads/used_reads`，分别为 M4 输入槽数、就绪后提前读取的贡献数、实际消费的提前读取数；两者之差是已安全释放但未使用的读。新增计数也写入 CSV/Perfetto，原 256-word 记录长度不变。最慢样本回显保留接收核流水、RDMA 和拖尾，完整计数留在 CSV/Perfetto，P50 样本仍完整展示。
 
 打点 schema 17 的 `xfer prepare_ticks/prepared/fallback/mte_pack` 给出 WQE 构造累计 ticks、成功预构造包数、队列容量回退包数、直接 MTE 打包数。`rdma_stage_wait_ticks` 是预构造后剩余等待，`rdma_put_ticks` 是之后的 SQ 发布与 doorbell（回退包包含完整 SDK put）。CSV 和 Perfetto 的 `profiled body` 参数也包含这些计数；累计 ticks 不作为独立流水块，也不能直接等同于网卡或网络耗时。
 
@@ -59,7 +63,7 @@ bash tests/ll_cpp_bench/run_all.sh --variants ready-snapshot,stage-stream,plan-c
 
 打点 schema 16 增加 `route_first_hop_rows`、`route_filter_rows`、`route_compact_ticks`。回显的 `compact=a/b/c` 分别对应有效 FIRST_HOP 行数、所有 server 筛选输入行数之和、压缩准备段的打点 ticks。原 snapshot 的筛选量为 server 数 × 完整行数，新版为 server 数 × FIRST_HOP 行数。压缩计时是本核发出 Vector 指令及屏障的区间，整体建表耗时看 `plan_select_ticks`；不把累计耗时伪装成独立流水段。CSV 与 Perfetto 的 `profiled body` 参数包含这些字段。
 
-`compact=v3` 回显在每个 BS 开头保留完整版本表，后面的 D/IQR/Tfreq 用表中 phase 编号引用版本，减少重复名字；保留 P50、最慢轮、拖尾来源和全量 CSV。默认 5 个 BS、8 个版本的合成回显检查限制在 62 KiB 内。增加 BS 或自选更多版本时可分次粘贴。
+`compact=v3` 回显在每个 BS 开头保留完整版本表，后面的 D/IQR/Tfreq 用表中 phase 编号引用版本，减少重复名字；保留 P50、最慢轮、拖尾来源和全量 CSV。默认 5 个 BS、10 个版本的合成回显检查限制在 62 KiB 内。增加 BS 或自选更多版本时可分次粘贴。
 
 原有 remote、notify-simt、notify-core、聚合发送、SIMT 筛选等实验继续通过 `--variants` 选择；不在默认构建中。RDMA hidden 聚合实验见 [COALESCE_AB.md](COALESCE_AB.md)。
 

@@ -101,7 +101,7 @@ public:
         planScratchBytes_ = EpCombineRouteSnapshotBytes(layout);
 #endif
         low_ = Allocate<uint16_t>(blocks_ * 480U);
-#if DEEPEP_LL_COMBINE_READY == 9 || DEEPEP_LL_COMBINE_READY == 11
+#if DEEPEP_LL_COMBINE_READY == 9 || DEEPEP_LL_COMBINE_READY >= 11
         rdmaBatch_->SetPartialScratch(Allocate<uint8_t>(128U));
 #endif
         inputs_ = scratch[layout.inputOffset].ReinterpretCast<uint16_t>();
@@ -143,6 +143,7 @@ public:
         profile_.Elapsed(CombineProfile::ReadyPlanTicks, planStart);
 #endif
         if (LlTransport::Rdma(args_)) rdmaBatch_->Init(args_, packetBytes_);
+        profile_.Set(CombineProfile::PartialInputLanes, inputLanes_);
         for (uint32_t lane = 0; lane < inputLanes_; ++lane) SetFlag<HardEvent::V_MTE2>(lane);
         uint64_t flagMask[2] = {0xffU, 0U};
         for (uint32_t lane = 0; lane < outputLanes_; ++lane) {
@@ -302,6 +303,50 @@ private:
         }
     }
 
+#if DEEPEP_LL_COMBINE_READY == 13
+    // Only cached metadata is eligible: it cannot alias a live payload lane.
+    // Speculate on ONE pending task, but never hold up another runnable task.
+    __aicore__ inline void PrefetchReadyInputs(uint32_t observed, uint32_t count)
+    {
+        if (!readyCached_) return;
+        if (prefetchTask_ == 0xffffffffU) {
+            uint32_t pending = SelectReadyCombineTasks(readyDeps_, readyWork_, readyTasks_, readyMask_, count, 0U, true);
+            if (!pending) pending = SelectReadyCombineTasks(readyDeps_, readyWork_, readyTasks_, readyMask_, count, 0U, false);
+            if (!pending) return;
+            prefetchTask_ = uint32_t(readyTasks_.GetValue(0U));
+        }
+        LoadReadyMetadata(prefetchTask_);
+        const uint32_t contributions = table3Ub_.GetValue(0U) + 1U;
+        const uint32_t preload = contributions < inputLanes_ ? contributions : inputLanes_;
+        for (uint32_t member = 0; member < preload; ++member) {
+            const uint32_t bit = 1U << member;
+            if (prefetchMask_ & bit) continue;
+            if (member != 0U) {
+                const uint32_t rank = (table3Ub_.GetValue(member * 2U) & 0xffffU) / localExperts_;
+                if (!(observed & (1U << (rank % Group)))) continue;
+            }
+            Load(uint32_t(rows_.GetValue(prefetchTask_)), uint32_t(table2Ub_.GetValue(0U)), member);
+            prefetchMask_ |= bit;
+            profile_.Add(CombineProfile::ReadyInputIssued);
+        }
+    }
+
+    __aicore__ inline void KeepReadyInputs(uint32_t task)
+    {
+        if (task == prefetchTask_) return;
+        // Another task won. Retire every speculative read before reusing UB;
+        // the MTE2->V->MTE2 event chain also covers asynchronous DMA completion.
+        for (uint32_t member = 0; member < inputLanes_; ++member) {
+            if (!(prefetchMask_ & (1U << member))) continue;
+            const uint32_t lane = (inputSequence_ + member) % inputLanes_;
+            WaitFlag<HardEvent::MTE2_V>(lane);
+            SetFlag<HardEvent::V_MTE2>(lane);
+        }
+        prefetchTask_ = 0xffffffffU;
+        prefetchMask_ = 0U;
+    }
+#endif
+
     __aicore__ inline uint32_t ProcessReadyTasks(uint32_t servers, uint32_t ownServer)
     {
 #if DEEPEP_LL_COMBINE_READY < 4
@@ -370,6 +415,9 @@ private:
             if (!runnable) runnable = SelectReadyCombineTasks(readyDeps_, readyWork_, readyTasks_, readyMask_, count, missing, false);
             profile_.Elapsed(CombineProfile::ReadyFilterTicks, filterStart);
             if (!runnable) {
+#if DEEPEP_LL_COMBINE_READY == 13
+                PrefetchReadyInputs(observed, count);
+#endif
                 blockedMask = observed;
                 profile_.Add(CombineProfile::ReadyTaskStalls);
                 PauseAfterFlagMiss(profile_);
@@ -379,6 +427,9 @@ private:
             profile_.MarkOnce(CombineProfile::ReadyFirstTask);
             for (uint32_t index = 0; index < runnable; ++index) {
                 const uint32_t task = uint32_t(readyTasks_.GetValue(index));
+#if DEEPEP_LL_COMBINE_READY == 13
+                KeepReadyInputs(task);
+#endif
                 const uint32_t row = uint32_t(rows_.GetValue(task));
                 const uint64_t metaStart = profile_.DetailClock();
                 LoadReadyMetadata(task);
@@ -589,11 +640,27 @@ private:
                          issueStart);
         profile_.Add(member == 0U ? CombineProfile::PartialLocalContrib : CombineProfile::PartialGetContrib);
     }
+    __aicore__ inline void PreloadInputs(uint32_t row, uint32_t source, uint32_t contributions)
+    {
+        const uint32_t preload = contributions < inputLanes_ ? contributions : inputLanes_;
+        for (uint32_t member = 0; member < preload; ++member) {
+#if DEEPEP_LL_COMBINE_READY == 13
+            if (prefetchMask_ & (1U << member)) {
+                profile_.Add(CombineProfile::ReadyInputUsed);
+                continue;
+            }
+#endif
+            Load(row, source, member);
+        }
+#if DEEPEP_LL_COMBINE_READY == 13
+        prefetchMask_ = 0U;
+        prefetchTask_ = 0xffffffffU;
+#endif
+    }
     template <class T>
     __aicore__ inline void Aggregate(uint32_t row, uint32_t source, uint32_t contributions)
     {
-        const uint32_t preload = contributions < inputLanes_ ? contributions : inputLanes_;
-        for (uint32_t member = 0; member < preload; ++member) Load(row, source, member);
+        PreloadInputs(row, source, contributions);
 #if (defined(DEEPEP_LL_COMBINE_PREFETCH_RETURN) && DEEPEP_LL_COMBINE_READY != 7) || DEEPEP_LL_COMBINE_READY == 6 || DEEPEP_LL_COMBINE_READY == 11
         // Let current MTE2 input reads overlap the previous packet's MTE3 wait
         // and Put submission. The old output lane is still owned by the batch.
@@ -717,6 +784,9 @@ private:
     LocalTensor<uint32_t> readyTable3_;
     uint32_t readyTable3Stride_ = 0U;
     bool readyCached_ = false;
+#endif
+#if DEEPEP_LL_COMBINE_READY == 13
+    uint32_t prefetchTask_ = 0xffffffffU, prefetchMask_ = 0U;
 #endif
     CombineProfile::View profile_;
     uint32_t recvCores_ = 0;

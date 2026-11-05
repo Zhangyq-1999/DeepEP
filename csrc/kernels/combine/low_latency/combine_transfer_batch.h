@@ -1,7 +1,7 @@
 #pragma once
 #include "../../dispatch/low_latency/device/ll_transport.h"
 #include "combine_profile_device.h"
-#if DEEPEP_LL_COMBINE_READY == 9 || DEEPEP_LL_COMBINE_READY == 11
+#if DEEPEP_LL_COMBINE_READY == 9 || DEEPEP_LL_COMBINE_READY >= 11
 #include "combine_wqe_prepare.h"
 #endif
 
@@ -16,7 +16,7 @@ class TransferBatch {
     uint32_t peers_[kWords]{};
     GM_ADDR stage_ = nullptr;
     CombineProfile::View profile_;
-#if DEEPEP_LL_COMBINE_READY == 9 || DEEPEP_LL_COMBINE_READY == 11
+#if DEEPEP_LL_COMBINE_READY == 9 || DEEPEP_LL_COMBINE_READY >= 11
     AscendC::LocalTensor<uint8_t> privateUb_;
     bool partial_ = false;
 #endif
@@ -83,7 +83,7 @@ class TransferBatch {
 #endif
         if (!park) SubmitPending();
 #else
-#if DEEPEP_LL_COMBINE_READY == 9
+#if DEEPEP_LL_COMBINE_READY == 9 || DEEPEP_LL_COMBINE_READY >= 12
         PreparedWrite write;
         bool prepared = false;
         if (partial_) {
@@ -100,7 +100,7 @@ class TransferBatch {
             CombineProfile::RdmaStageWaitMaxPeer, CombineProfile::RdmaStageWaitMaxPeer, wait, peer, peer);
         const uint64_t put = profile_.DetailClock();
         profile_.MarkOnce(CombineProfile::RdmaFirstPut);
-#if DEEPEP_LL_COMBINE_READY == 9
+#if DEEPEP_LL_COMBINE_READY == 9 || DEEPEP_LL_COMBINE_READY >= 12
         if (prepared) write.Publish();
         else
 #endif
@@ -121,7 +121,7 @@ public:
         if (uint32_t(args->rankSize) > DispatchDedup::kLlPhysicalRanksPerHost)
             stage_ = LlTransport::Stage(args, capacity_ * bytes);
     }
-#if DEEPEP_LL_COMBINE_READY == 9 || DEEPEP_LL_COMBINE_READY == 11
+#if DEEPEP_LL_COMBINE_READY == 9 || DEEPEP_LL_COMBINE_READY >= 11
     __aicore__ inline void SetPartialScratch(AscendC::LocalTensor<uint8_t> scratch)
     { privateUb_ = scratch; partial_ = true; }
 #endif

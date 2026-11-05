@@ -8,7 +8,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
-@pytest.mark.parametrize("mode", [1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+@pytest.mark.parametrize("mode", [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13])
 def test_ready_lifecycle_and_vector_selection(tmp_path, mode):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
     if not zig:
@@ -23,7 +23,7 @@ def test_ready_lifecycle_and_vector_selection(tmp_path, mode):
     subprocess.run([str(exe)], check=True, timeout=30)
 
 
-@pytest.mark.parametrize("mode,pipeline", [(1, False), (3, False), (3, True), (4, False), (5, False), (6, False), (7, False), (8, False), (9, False), (10, False)])
+@pytest.mark.parametrize("mode,pipeline", [(1, False), (3, False), (3, True), (4, False), (5, False), (6, False), (7, False), (8, False), (9, False), (10, False), (11, False), (12, False), (13, False)])
 def test_production_dependency_scheduler(tmp_path, mode, pipeline):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
     if not zig:
@@ -32,6 +32,7 @@ def test_production_dependency_scheduler(tmp_path, mode, pipeline):
     start = text.rindex("#if", 0, text.index("    __aicore__ inline uint32_t ProcessReadyTasks("))
     end = text.index("    template <class T>\n    __aicore__ inline LocalTensor<T> Allocate", start)
     method = text[start:end]
+    preload = text[text.index("    __aicore__ inline void PreloadInputs("):text.index("    template <class T>\n    __aicore__ inline void Aggregate(")]
     process = text[text.index("    __aicore__ inline uint32_t Process()\n"):text.index("\nprivate:", text.index("    __aicore__ inline uint32_t Process()\n"))]
     load = text[text.index("    __aicore__ inline void LoadTask(uint32_t row)"):text.index("#ifdef DEEPEP_LL_COMBINE_SIMT_META", text.index("    __aicore__ inline void LoadTask(uint32_t row)"))]
     load = load.replace("        // Route", "        ++loads;\n        // Route")
@@ -57,7 +58,8 @@ template<uint32_t Group> struct Scheduler {
     struct Task {uint32_t mask,source;};
     struct Ready {
         uint32_t round=0,mask=0,delay=1;
-        uint32_t Poll() {mask=round++ >= delay ? (1U<<Group)-1U : 1U;return mask;}
+        std::vector<uint32_t> sequence;
+        uint32_t Poll() {mask=sequence.empty() ? (round++ >= delay ? (1U<<Group)-1U : 1U) : sequence[std::min<size_t>(round++,sequence.size()-1)];return mask;}
         bool All(){return mask==((1U<<Group)-1U);}
     } ready;
     struct Batch {
@@ -72,7 +74,8 @@ template<uint32_t Group> struct Scheduler {
     DispatchDedup::CommArgs args{};
     DispatchDedup::CommArgs* args_=&args;
     uint32_t k_=8,localExperts_=1,outputLanes_=3,dtype_=0,loads=0,overlaps=0;
-    uint32_t aggregated=0;
+    uint32_t aggregated=0,inputSequence_=0,earlyReads=0,usedReads=0;
+    uint32_t prefetchTask_=0xffffffffU,prefetchMask_=0U;
     uint64_t returnOffset_=0U,window_=0U;
     std::vector<Task> input;
     std::vector<uint32_t> sent;
@@ -98,7 +101,7 @@ template<uint32_t Group> struct Scheduler {
     GlobalTensor<int32_t> types_;
     std::vector<uint64_t> arena;
     LocalTensor<uint8_t> planScratch_,outputs_;
-    uint32_t planScratchBytes_=0,tokens_=0,recvCores_=1,inputLanes_=3,blocks_=15,packetBytes_=7680;
+    uint32_t planScratchBytes_=0,tokens_=0,recvCores_=1,inputLanes_=kEpServerDedupCombineM4MaxInputLanes,blocks_=15,packetBytes_=7680;
 #endif
     explicit Scheduler(std::vector<Task> tasks,uint32_t world=2*Group,uint32_t rank=0,uint32_t topk=8):k_(topk),input(std::move(tasks)) {
         args.rank=rank;args.rankSize=world;args.reserved0=Group;args.reservedConfig[0]=LlRdma::kBackend;
@@ -129,6 +132,19 @@ template<uint32_t Group> struct Scheduler {
         for(uint32_t row=0;row<input.size();++row) if(input[row].source/Group==server) rows[append++]=row;
         return append;
     }
+#if DEEPEP_LL_COMBINE_READY >= 4
+    void Load(uint32_t row,uint32_t source,uint32_t member) {
+        assert(source==input[row].source);
+        if(member) {
+            const uint32_t rank=(table3Ub_.GetValue(member*2U)&0xffffU)/localExperts_;
+            assert(ready.mask&(1U<<(rank%Group)));
+        }
+        const uint32_t lane=(inputSequence_+member)%inputLanes_;
+        WaitFlag<HardEvent::V_MTE2>(lane);
+        SetFlag<HardEvent::MTE2_V>(lane);
+        if(input[row].mask & ~ready.mask) ++earlyReads;
+    }
+#endif
     template<class T>void Aggregate(uint32_t row,uint32_t source,uint32_t members) {
 #if DEEPEP_LL_COMBINE_READY >= 4
         // The route snapshot aliases the output ring. Process must initialize
@@ -139,10 +155,21 @@ template<uint32_t Group> struct Scheduler {
         assert(source==input[row].source && members==table3Ub_.GetValue(0U)+1U);
         assert(!std::memcmp(table2Ub_.p,gm2.data()+row*3U,12U));
         assert(!std::memcmp(table3Ub_.p,gm3.data()+row*k_*2U,k_*8U));
-        assert(!(input[row].mask & ~ready.mask)); // No unready stage read.
+        assert(!(input[row].mask & ~ready.mask)); // Arithmetic only after all members ready.
+#if DEEPEP_LL_COMBINE_READY >= 4
+        usedReads+=__builtin_popcount(prefetchMask_);
+        PreloadInputs(row,source,members);
+        for(uint32_t member=0;member<members;++member) {
+            const uint32_t lane=(inputSequence_+member)%inputLanes_;
+            WaitFlag<HardEvent::MTE2_V>(lane);
+            SetFlag<HardEvent::V_MTE2>(lane);
+            if(member+inputLanes_<members)Load(row,source,member+inputLanes_);
+        }
+        inputSequence_+=members;
+#endif
         for(uint32_t previous:sent) assert(previous!=row);
         if(batch.pending) {assert(batch.lane!=sent.size()%outputLanes_);++overlaps;}
-#if DEEPEP_LL_COMBINE_READY == 6
+#if DEEPEP_LL_COMBINE_READY == 6 || DEEPEP_LL_COMBINE_READY == 11
         batch.SubmitPending(); // Production Aggregate submits after input preload.
 #endif
         ++aggregated;
@@ -167,7 +194,7 @@ template<uint32_t Group> struct Scheduler {
             if(!defer)batch.SubmitPending();
         } else batch.SubmitPending();
     }
-''' + load + method + ('\n' + process if mode >= 4 else '') + r'''
+''' + load + method + ('\n' + preload if mode >= 4 else '') + ('\n' + process if mode >= 4 else '') + r'''
     uint32_t Run(uint32_t servers,uint32_t own) {
 #if DEEPEP_LL_COMBINE_READY >= 4
         cores=2;core=1; // One receiver owns every FIRST_HOP in this fixture.
@@ -240,9 +267,9 @@ void CacheAndPipeline() {
         assert(t.Run(4,0)==count);
         assert(t.aggregated==count && !t.batch.pending && t.batch.posted==count);
 #if DEEPEP_LL_COMBINE_READY >= 3
-        assert(filterCalls-before==3U); // empty remote+local, then ready remote
+        assert(filterCalls-before==3U+(DEEPEP_LL_COMBINE_READY==13 && t.readyCached_ ? 1U:0U));
         assert(t.loads==(count<=EpCombineReadyCacheCapacity(k)?0U:count*2U));
-#if defined(DEEPEP_LL_COMBINE_DEFER_RETURN) || DEEPEP_LL_COMBINE_READY == 6
+#if defined(DEEPEP_LL_COMBINE_DEFER_RETURN) || DEEPEP_LL_COMBINE_READY == 6 || DEEPEP_LL_COMBINE_READY == 11
         assert(t.overlaps==(lanes>1U?count-1U:0U));
 #elif DEEPEP_LL_COMBINE_READY == 7
         assert(t.overlaps==(lanes>1U && count>2U?count-2U:0U));
@@ -259,7 +286,28 @@ void CacheAndPipeline() {
         NoLiveEvents();
     }
 }
-int main(){Check<2>();Check<4>();Check<16>();FourHosts();CacheAndPipeline();}
+void EarlyInputs() {
+#if DEEPEP_LL_COMBINE_READY == 13
+    // Partially ready reads are reused when that task wins.
+    Scheduler<16> reuse({{6U,16U}},64);
+    reuse.ready.sequence={0U,2U,2U,6U,65535U};
+    assert(reuse.Run(4,0)==1 && reuse.earlyReads==2 && reuse.usedReads==2);
+    NoLiveEvents();
+    // A different remote task becomes runnable first: discard the speculative
+    // reads, let it run immediately, then reload the old task after ring advance.
+    Scheduler<16> cancel({{8U,16U},{2U,32U}},64);
+    cancel.ready.sequence={0U,2U,10U,65535U};
+    assert(cancel.Run(4,0)==2 && cancel.earlyReads==1 && cancel.usedReads==0);
+    assert((cancel.sent==std::vector<uint32_t>{1U,0U}));
+    NoLiveEvents();
+    // More members than lanes: refill and wrap without reordering contributions.
+    Scheduler<16> wrap({{127U,16U},{127U,32U}},64,0,32);
+    wrap.ready.sequence={3U,15U,127U,65535U};
+    assert(wrap.Run(4,0)==2 && wrap.usedReads==5 && wrap.inputSequence_==16);
+    NoLiveEvents();
+#endif
+}
+int main(){Check<2>();Check<4>();Check<16>();FourHosts();CacheAndPipeline();EarlyInputs();}
 
 ''', encoding="utf-8")
     subprocess.run([zig, "c++", "-std=c++17", "-O1", "-UNDEBUG", f"-DDEEPEP_LL_COMBINE_READY={mode}",

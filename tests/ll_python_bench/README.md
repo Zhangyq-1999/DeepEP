@@ -7,7 +7,7 @@
 | 参数 | 默认值 |
 | --- | --- |
 | 主机 | `90.90.93.84,90.90.93.184` |
-| 算子 | 干净的 `base,ready-snapshot,wqe-prep,wqe-prefetch` |
+| 算子 | 干净的 `base,wqe-prep,wqe-prefetch,input6,input-ready` |
 | BS | `32,48,64,72,256` |
 | Hidden / TopK / Experts | `3584 / 8 / 384` |
 | 数据和路由 | BF16、random、seed 0 |
@@ -31,7 +31,7 @@ bash tests/ll_python_bench/build_all.sh
 
 脚本自动激活 `py311_zyq`，用该环境的 Python 编译并安装测试扩展。扩展、对应 kernel 库和构建记录安装在 `py311_zyq/lib/python3.11/site-packages/deepep_ll_bench/base/`。运行脚本自动切换到同一环境，并加载这里的安装产物。
 
-默认编译四个干净版本，复用已有 Dispatch 编译产物。`--variants base` 可缩减为原版。脚本保留环境中的 Torch 和 torch-npu 版本，只在缺少构建工具时安装 pybind11 或 CMake。测试扩展独立安装，环境中原有的 `deep_ep` 包保持不变。
+默认编译五个干净版本，复用已有 Dispatch 编译产物。`--variants base` 可缩减为原版。脚本保留环境中的 Torch 和 torch-npu 版本，只在缺少构建工具时安装 pybind11 或 CMake。测试扩展独立安装，环境中原有的 `deep_ep` 包保持不变。
 
 编译和运行都会打印 `ENV=py311_zyq PYTHON=...`，安装完成后打印 `INSTALLED=...`。即使当前终端激活了 `base` 或其他环境，脚本也会切换到 `py311_zyq`；激活失败则退出。若 Conda 不在常见路径，可先设置 `CONDA_EXE=/实际路径/bin/conda`。
 
@@ -116,7 +116,7 @@ bash tests/ll_python_bench/run_all.sh \
 
 ## 参数和其他实验
 
-默认一次测试四个版本。只测原版可用 `--variant base`；要测聚合实验，两台机器都编译同一版本，然后在第一台启动，第二台粘贴输出的命令：
+默认一次测试五个版本。只测原版可用 `--variant base`；要测聚合实验，两台机器都编译同一版本，然后在第一台启动，第二台粘贴输出的命令：
 
 ```bash
 bash tests/ll_python_bench/build.sh --variant card-all
@@ -125,13 +125,13 @@ bash tests/ll_python_bench/run_all.sh --variant card-all
 
 可用 `--variants base,wqe-prefetch` 指定比较列表，或 `--variant base` 只选一个版本。版本各自独立安装、使用独立 kernel 库，原版 kernel 保持不变。版本切换在所有 rank 完成上一阶段后释放 case、清空共享工作区及注册暂存区，再准备下一版输入；SHMEM 通信资源保持到整个测试结束才释放。
 
-当前四版对照可在两台机器上各用一条命令编译安装，默认仅编译干净版，Dispatch 复用已有构建：
+当前五版对照可在两台机器上各用一条命令编译安装，默认仅编译干净版，Dispatch 复用已有构建：
 
 ```bash
 bash tests/ll_python_bench/build_all.sh
 ```
 
-默认安装 `base,ready-snapshot,wqe-prep,wqe-prefetch`，可用 `--variants` 缩减。`wqe-prefetch` 将下一条已就绪规约任务的输入读取，提前到上一包 GM 暂存等待之前；保留数据完成后才发布 WQE 的要求。详见 [实验记录](../ll_cpp_bench/TRANSFER_AB.md)。
+默认安装 `base,wqe-prep,wqe-prefetch,input6,input-ready`，可用 `--variants` 缩减。`wqe-prefetch` 将下一条已就绪规约任务的输入读取，提前到上一包 GM 暂存等待之前；保留数据完成后才发布 WQE 的要求。新增 input6/input-ready 针对 BS32 的 M4 输入等待：前者把输入槽从 3 扩到最多 6，后者再按贡献的 ready 状态提前读取；两者都基于 wqe-prep，保持累加顺序。ready-snapshot 仍可通过 --variants 选择。详见 [实验记录](../ll_cpp_bench/TRANSFER_AB.md)。
 
 EP32 两台分别编译：
 
@@ -139,13 +139,13 @@ EP32 两台分别编译：
 bash tests/ll_python_bench/build_all.sh --ranks-per-host 16
 ```
 
-第一台选择一个版本启动，第二台复制它打印的命令。以下显式使用 HCCL all_reduce 作计时前同步，便于核对参考仓；该同步不计入 Combine Event：
+第一台启动所有默认版本，第二台复制它打印的命令。以下显式使用 HCCL all_reduce 作计时前同步，便于核对参考仓；该同步不计入 Combine Event：
 
 ```bash
 bash tests/ll_python_bench/run_all.sh --ranks-per-host 16 --sync hccl
 ```
 
-一条命令连续跑四个版本，在第二台粘贴打印的命令即可。整个测试共用一个新 RUN_ID。省略 `--ranks-per-host 16` 就是双机各 12–15 卡的 EP8。省略 `--sync hccl` 则统一用默认 SHMEM device 同步，不混用两种同步结果判断算子收益。默认 BS 为 `32,48,64,72,256`，可用 `--tokens` 修改。
+一条命令连续跑五个版本，在第二台粘贴打印的命令即可。整个测试共用一个新 RUN_ID。省略 `--ranks-per-host 16` 就是双机各 12–15 卡的 EP8。省略 `--sync hccl` 则统一用默认 SHMEM device 同步，不混用两种同步结果判断算子收益。默认 BS 为 `32,48,64,72,256`，可用 `--tokens` 修改。
 
 IP、端口、设备和 case 参数都可修改：
 

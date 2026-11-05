@@ -12,6 +12,9 @@ namespace CombineDedup {
 // that combination is forbidden for coalescing, and ready excludes coalesce.
 constexpr uint32_t CombineReadyOptions(uint32_t mode)
 {
+    // notify=3 is reserved; use the coalesce bit for modes 12..15 without
+    // spilling into poll-nop's upper 16 bits. Ready excludes coalescing.
+    if (mode >= 12U) return (3U << 12U) | (1U << 10U) | ((mode - 12U) << 14U);
     if (mode >= 8U) return (3U << 12U) | (1U << 11U) | ((mode - 8U) << 14U);
     return mode >= 4U ? ((3U << 12U) | ((mode - 4U) << 14U)) : (mode << 14U);
 }

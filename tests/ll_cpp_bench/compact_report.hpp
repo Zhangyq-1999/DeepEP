@@ -103,7 +103,7 @@ void compact_times(const Record& r, std::initializer_list<Word> words)
         first = false;
     }
 }
-void compact_record(const Record& r)
+void compact_record(const Record& r, bool brief = false)
 {
     if(r[CoalesceWorker]) {
         std::cout << " A r/c=" << r[Rank] << '/' << r[Core] << " body=" << r[FlushDone] << " end";
@@ -117,6 +117,12 @@ void compact_record(const Record& r)
                   << r[CoalesceBytes] << '/' << r[CoalesceUnpackRows] << '/' << r[CoalesceForwardRows] << '\n';
         return;
     }
+    if (brief && !r.receive) {
+        std::cout << " S r/c=" << r[Rank] << '/' << r[Core] << " body=" << r[FlushDone] << " send_end=";
+        compact_times(r, {DirectLastSubmit, DirectEnd, PipeDone});
+        std::cout << '\n';
+        return;
+    }
     std::cout << (r.receive ? " R" : " S") << " r/c=" << r[Rank] << '/' << r[Core]
               << " body=" << r[FlushDone] << " rows=" << r[StageRows] << '/' << r[DirectRows] << '/' << r[PartialRows]
               << " final=" << r[FinalTokens] << '/' << r[Contributions] << " lg=" << r[PartialLocalContrib]
@@ -127,6 +133,15 @@ void compact_record(const Record& r)
                            RdmaFirstPut, RdmaLastPut, FinalFirstReady, FinalLastReady, FinalLastStore, DrainEnd, PipeDone});
     else
         compact_times(r, {InitEnd, StageEnd, CoreNotifyEnd, NotifyEnd, DirectFirstSubmit, DirectLastSubmit, DirectEnd, PipeDone});
+    if (brief) {
+        std::cout << "\n  rdma=" << r[RdmaPackets] << '/' << r[RdmaDeferredPackets]
+                  << '/' << r[RdmaDeferGapTicks] << '/' << r[RdmaStageIssueTicks] << '/' << r[RdmaStageWaitTicks]
+                  << '/' << r[RdmaPutTicks] << '/' << r[RdmaQuietTicks];
+        if (r.receive && r[PartialInputLanes])
+            std::cout << " input=" << r[PartialInputLanes] << '/' << r[ReadyInputIssued] << '/' << r[ReadyInputUsed];
+        std::cout << '\n';
+        return;
+    }
     std::cout << "\n  top";
     const auto costs = top_costs(r, kDetailBegin, kDetailEnd);
     for (size_t j = 0; j < std::min<size_t>(4, costs.size()); ++j)
@@ -162,6 +177,9 @@ void compact_record(const Record& r)
     if (r.receive && (r[WqePreparedPackets] || r[WqeFallbackPackets] || r[MtePackPackets]))
         std::cout << "  xfer=" << r[WqePrepareTicks] << '/'
                   << r[WqePreparedPackets] << '/' << r[WqeFallbackPackets] << '/' << r[MtePackPackets] << '\n';
+    if (r.receive && r[PartialInputLanes])
+        std::cout << "  input=" << r[PartialInputLanes] << '/' << r[ReadyInputIssued]
+                  << '/' << r[ReadyInputUsed] << '\n';
     if (r[ReadyPollCalls]) {
         std::cout << "  g=" << r[ReadyPollMisses] << '/' << r[ReadyPollCalls]
                   << '/' << r[ReadyPollMaxTicks] << '/' << r[ReadyInspectTicks] << ' ';
@@ -271,12 +289,13 @@ void suite_report(const fs::path& root)
     }
     std::cout << "LL_COMBINE compact=v3 global rank-MAX; Event=us; profile=ticks/core-entry; no samples removed\n"
                  "D/IQR/Tfreq use the phase number from the variant table.\n"
+                 "p50=full counters; worst=R timeline/RDMA/tail, S send_end=last_submit/direct/pipe; full CSV/Perfetto.\n"
                  "IQR=candidates; WIDE=(max-min)/P50>20%; full samples/fields in CSV; '-'=absent.\n"
                  "e(S)=init/stage/core_notify/notify/direct_first/direct_last/direct_end/pipe\n"
                  "e(R)=init/stage_drained/core_notify/ready_begin/ready_observed/ready_end/partial_end/put_first/put_last/final_first/final_last/store/drain/pipe\n"
                  "top4 cumulative ticks: s.=stage_, d.=direct_, m4.=partial_, m5.=final_, g.=ready_; overlapping costs are not additive.\n"
                  "rdma=n/deferred/gap/stage_issue/stage_wait/put/quiet; stage=wait_calls/pairs/prefetch_calls; stream=packed_posts/eager/ticks\n"
-                 "lg=local/get; xfer=prepare_ticks/prepared/fallback/mte_pack\n"
+                 "lg=local/get; xfer=prepare_ticks/prepared/fallback/mte_pack; input=lanes/early_reads/used_reads\n"
                  "probe=miss/calls/miss_ticks/flags/confirmed; N=r/c local_wait/publish miss/calls/max_probe missing_core/count stores inspect\n"
                  "P=own-entry rank/core:first_put/last_put/partial_end/packets\n"
                  "g=miss/calls/max_probe/inspect missing_rank/core/count; 4294967295=all\n"
@@ -341,7 +360,7 @@ void suite_report(const fs::path& root)
                         if (!r[CoalesceWorker] && r[Rank] == event.rank && r.receive == receive &&
                             (!tail || r[FlushDone] > (*tail)[FlushDone])) tail = &r;
                     if (!tail) throw std::runtime_error("Missing Event rank diagnostic role");
-                    compact_record(*tail);
+                    compact_record(*tail, i == worst && i != median);
                     if (receive) { receiveRecord = tail; tail_producers(d, *tail); }
                 }
                 const Record* notifier=nullptr;

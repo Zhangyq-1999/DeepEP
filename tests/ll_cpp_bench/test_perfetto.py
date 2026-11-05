@@ -119,7 +119,8 @@ def test_dependency_work_is_not_rendered_as_blocking_wait(reporter, tmp_path):
                        route_select_passes=4, route_snapshot_bytes=41728,
                        route_first_hop_rows=256, route_filter_rows=1024, route_compact_ticks=19,
                        route_snapshot_capacity=181888, route_snapshot_fallbacks=0,
-                       wqe_prepare_ticks=23, wqe_prepared_packets=2, wqe_fallback_packets=1, mte_pack_packets=3)
+                       wqe_prepare_ticks=23, wqe_prepared_packets=2, wqe_fallback_packets=1, mte_pack_packets=3,
+                       partial_input_lanes=6, ready_input_issued=5, ready_input_used=3)
     write_csv(path, fields, rows)
     subprocess.run([str(reporter), '--perfetto', str(tmp_path)], check=True, capture_output=True)
     trace = read_trace(next((tmp_path/'perfetto-local').glob('*p50-*.json')))
@@ -137,6 +138,7 @@ def test_dependency_work_is_not_rendered_as_blocking_wait(reporter, tmp_path):
     assert args['route_select_passes'] == 4 and args['route_snapshot_fallbacks'] == 0
     assert (args['route_first_hop_rows'], args['route_filter_rows'], args['route_compact_ticks']) == (256, 1024, 19)
     assert (args['wqe_prepare_ticks'], args['wqe_prepared_packets'], args['wqe_fallback_packets'], args['mte_pack_packets']) == (23, 2, 1, 3)
+    assert (args['partial_input_lanes'], args['ready_input_issued'], args['ready_input_used']) == (6, 5, 3)
     assert spans['partial plan']['dur'] == pytest.approx(.002)
 
 

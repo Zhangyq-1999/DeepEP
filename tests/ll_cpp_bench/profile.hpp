@@ -264,6 +264,9 @@ inline void profile_header(std::ostream& out)
         "wqe_prepared_packets",
         "wqe_fallback_packets",
         "mte_pack_packets",
+        "partial_input_lanes",
+        "ready_input_issued",
+        "ready_input_used",
     };
     static_assert(sizeof(names) / sizeof(names[0]) == CombineProfile::Count, "profile CSV fields");
     for (uint32_t w = 0; w < CombineProfile::Count; ++w) out << (w ? "," : "") << names[w];

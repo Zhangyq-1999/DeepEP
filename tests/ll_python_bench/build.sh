@@ -7,7 +7,7 @@ mpi=${MPI_HOME:-/usr/local/mpich-3.2.1} shmem=${SHMEM_ROOT:-$root/third-party/sh
 while (($#)); do
     case "$1" in
         --help|-h)
-            echo 'build.sh [--variant base|ready-snapshot|wqe-prep|wqe-prefetch|mte-pack|card-all|card-row|server-all|server-row]'
+            echo 'build.sh [--variant base|ready-snapshot|wqe-prep|wqe-prefetch|input6|input-ready|mte-pack|card-all|card-row|server-all|server-row]'
             echo '         [--conda-env py311_zyq]'
             echo '         [--ranks-per-host 4|16] [--jobs N] [--cann-home DIR] [--shmem-root DIR] [--mpi-home DIR]'
             exit 0;;
@@ -20,7 +20,7 @@ while (($#)); do
         *) echo "Unknown option: $1" >&2; exit 2;;
     esac
 done
-case "$variant" in base|ready-snapshot|wqe-prep|wqe-prefetch|mte-pack|card-all|card-row|server-all|server-row) ;; *) echo 'Choose a clean variant' >&2; exit 2;; esac
+case "$variant" in base|ready-snapshot|wqe-prep|wqe-prefetch|input6|input-ready|mte-pack|card-all|card-row|server-all|server-row) ;; *) echo 'Choose a clean variant' >&2; exit 2;; esac
 source "$root/tests/ll_python_bench/environment.sh"
 ll_python_environment "$env_name"
 "$ll_python" -c 'import torch, torch_npu; print("torch:",torch.__version__,"torch_npu:",torch_npu.__version__)'

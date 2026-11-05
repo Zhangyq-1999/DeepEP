@@ -139,3 +139,37 @@ including partial tails, queue wrap/capacity fallback, 4/16 ranks per host,
 two/four hosts and stage recycling. SDK stubs validate call/order/address
 contracts, not actual NIC encoding or CANN compiler behavior. CANN build,
 device correctness and latency still require the target machines.
+
+## 2026-11-05：BS32 输入预取实验（待 NPU 验证）
+
+EP32/HCCL 最新干净版实测 mean：BS32 的 wqe-prep=58.16 μs，
+wqe-prefetch=58.28 μs；后者 BS48/64/72 为 66.23/74.04/78.18 μs。
+因此保留 base 和这两个对照，新增两种隔离实验，目标是缩短 M4
+贡献加载的依赖路径；不把旧设备同步的 profile 时间直接套到 HCCL 测量。
+
+- **input6 / ready=12**：基于 wqe-prep，M4 输入槽上限 3→6。
+  H3584 每槽 7200 B，共多用 21600 B；240 KiB 接收 UB 上限不变，
+  动态布局仍校验空间，较大 H/K 时允许减少槽数。目标 H3584/K8
+  保留 8 个输出槽；M5 按新布局计算复用与退休 mask。
+- **input-ready / ready=13**：在全部任务暂不可执行时，Vector 选一个
+  未完成任务（跨 server 优先），已 ready 的成员发起 MTE2 读取。
+  最多预取首 6 项，只有 resident metadata cache 可用时启用。
+  某项任务变为可执行后，若它就是候选则复用读；若不是则通过
+  MTE2_V→V_MTE2 释放候选槽，优先执行当前就绪任务，不阻塞进度。
+  累加仍按原成员序，未改变权重、FP32 中间计算、BF16 cast 或最终完成语义。
+- 不增加包、WQE 或 ready 通知，不改变 SQ/QP 所有权、GM 暂存复用和末尾 quiet。
+  没有引入“读到旧数据再重试”的推测读取，跨机数据仍沿原路径回传。
+- 接收输入使用 event 0–5；event 7 仍用于控制/元数据。候选最多一个，
+  读取使用固定环形槽，未消费前不可覆盖。缓存容量不足时退回普通按任务调度。
+  支持 Group2/4/16 和四机 EP64，不假设只有一个远端 server。
+
+默认五个干净版本为 base,wqe-prep,wqe-prefetch,input6,input-ready，
+另带对应五个 C++ 打点版本；ready-snapshot 等旧实验保留可选。
+Python build_all 仅编译安装五个干净版本，run_all 共用一次初始化，
+使用 --sync hccl 与当前结果对照。
+
+schema18 的 input=lanes/early_reads/used_reads 可量化提前读是否被复用，
+issued-used 表示被安全丢弃的读。还要联合观察 partial_get_wait_ticks、
+partial_end、rdma_first_put/last_put 与干净 Event mean/P50/min/max。
+若提前读几乎未触发或取消过多，不能仅凭输入槽增加判断有效。
+这是待测假设，不能保证减少 5 μs。
