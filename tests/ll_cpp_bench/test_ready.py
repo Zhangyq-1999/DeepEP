@@ -8,7 +8,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
-@pytest.mark.parametrize("mode", [1, 2, 3, 4, 5, 6])
+@pytest.mark.parametrize("mode", [1, 2, 3, 4, 5, 6, 7])
 def test_ready_lifecycle_and_vector_selection(tmp_path, mode):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
     if not zig:
@@ -23,7 +23,7 @@ def test_ready_lifecycle_and_vector_selection(tmp_path, mode):
     subprocess.run([str(exe)], check=True, timeout=30)
 
 
-@pytest.mark.parametrize("mode,pipeline", [(1, False), (3, False), (3, True), (4, False), (5, False), (6, False)])
+@pytest.mark.parametrize("mode,pipeline", [(1, False), (3, False), (3, True), (4, False), (5, False), (6, False), (7, False)])
 def test_production_dependency_scheduler(tmp_path, mode, pipeline):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
     if not zig:
@@ -73,6 +73,7 @@ template<uint32_t Group> struct Scheduler {
     DispatchDedup::CommArgs* args_=&args;
     uint32_t k_=8,localExperts_=1,outputLanes_=3,dtype_=0,loads=0,overlaps=0;
     uint32_t aggregated=0;
+    uint64_t returnOffset_=0U,window_=0U;
     std::vector<Task> input;
     std::vector<uint32_t> sent;
     std::vector<int32_t> gm2;
@@ -148,8 +149,14 @@ template<uint32_t Group> struct Scheduler {
     }
     void Send(uint32_t lane,uint32_t source,uint32_t token,uint32_t topk,bool defer) {
         assert(lane==sent.size()%outputLanes_ && source==input[token].source && topk==token%k_);
+#if DEEPEP_LL_COMBINE_READY == 7
+        batch.SubmitPending(); // Send queues the current Vector packet first.
+#endif
 #if DEEPEP_LL_COMBINE_READY != 5
         assert(!batch.pending); // Ordinary batch has one unposted packet.
+#endif
+#if DEEPEP_LL_COMBINE_READY == 7
+        assert(returnOffset_==COMBINE_DEDUP_EP_SERVER_DEDUP_SHARED_DATA_OFFSET+(uint64_t(token)*k_+topk)*packetBytes_);
 #endif
         sent.push_back(token);
         if(LlTransport::RemoteWrite(args_,source)) {
@@ -237,6 +244,8 @@ void CacheAndPipeline() {
         assert(t.loads==(count<=EpCombineReadyCacheCapacity(k)?0U:count*2U));
 #if defined(DEEPEP_LL_COMBINE_DEFER_RETURN) || DEEPEP_LL_COMBINE_READY == 6
         assert(t.overlaps==(lanes>1U?count-1U:0U));
+#elif DEEPEP_LL_COMBINE_READY == 7
+        assert(t.overlaps==(lanes>1U && count>2U?count-2U:0U));
 #endif
 #else
         assert(filterCalls-before==11U && t.loads==count*2U);

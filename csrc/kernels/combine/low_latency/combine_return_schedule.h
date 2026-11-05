@@ -36,5 +36,12 @@ COMBINE_RETURN_INLINE constexpr bool CombineDeferReturn(uint32_t outputLanes)
     return false;
 #endif
 }
+// Stream experiment: publish the first result of each ready batch immediately.
+// Only middle results may overlap the next task, which is already known ready.
+// A one-lane output, one/two-task batch or batch tail never leaves a pending Put.
+COMBINE_RETURN_INLINE constexpr bool CombineStreamDefer(uint32_t index, uint32_t count, uint32_t outputLanes)
+{
+    return outputLanes > 1U && index > 0U && index + 1U < count;
+}
 #undef COMBINE_RETURN_INLINE
 }  // namespace CombineDedup

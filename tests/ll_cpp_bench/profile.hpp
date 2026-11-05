@@ -246,6 +246,8 @@ inline void profile_header(std::ostream& out)
         "rdma_stage_wait_calls",
         "rdma_stage_pair_groups",
         "partial_prefetch_submit_calls",
+        "partial_packed_submit_calls",
+        "partial_eager_packets",
         "coalesce_worker",
         "rank",
         "core",

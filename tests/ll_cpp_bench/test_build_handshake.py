@@ -9,7 +9,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
-@pytest.mark.parametrize("mode", ["plain", "early", "local", "batch", "card-all", "card-row", "server-all", "server-row", "notify-simt", "notify-core", "ready-task", "ready-shared", "ready-fast", "ready-pipeline", "ready-snapshot", "stage-pair", "stage-prefetch"])
+@pytest.mark.parametrize("mode", ["plain", "early", "local", "batch", "card-all", "card-row", "server-all", "server-row", "notify-simt", "notify-core", "ready-task", "ready-shared", "ready-fast", "ready-pipeline", "ready-snapshot", "stage-pair", "stage-prefetch", "stage-stream"])
 @pytest.mark.parametrize("profile", [False, True])
 def test_benchmark_build_handshake(tmp_path, mode, profile):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
@@ -39,12 +39,12 @@ int main() {
     Check(56);
     // The new identity must not consume poll-nop bits or alias any previously
     // allowed ready/notify combination (these two modes are mutually exclusive).
-    for (unsigned m=4;m<=6;++m) {
+    for (unsigned m=4;m<=7;++m) {
     const auto snapshot = CombineDedup::CombineReadyOptions(m);
     assert(!(snapshot & 0xffff0000U));
     for(unsigned ready=0;ready<4;++ready)for(unsigned notify=0;notify<3;++notify)
         if(!ready || !notify)assert(snapshot!=(CombineDedup::CombineReadyOptions(ready)|(notify<<12U)));
-    for(unsigned other=4;other<=6;++other) if(other!=m) assert(snapshot!=CombineDedup::CombineReadyOptions(other));
+    for(unsigned other=4;other<=7;++other) if(other!=m) assert(snapshot!=CombineDedup::CombineReadyOptions(other));
     }
     bool rejected=false;
     try { Check(0); } catch (const std::runtime_error&) { rejected=true; }
@@ -62,7 +62,7 @@ int main() {
     coalesce = 1 if mode.startswith("card-") else 2 if mode.startswith("server-") else 0
     rows = int(mode.endswith("-row"))
     notify = 1 if mode == "notify-simt" else 2 if mode == "notify-core" else 0
-    ready = 1 if mode == "ready-task" else 2 if mode == "ready-shared" else 3 if mode in ("ready-fast", "ready-pipeline") else 4 if mode == "ready-snapshot" else 5 if mode == "stage-pair" else 6 if mode == "stage-prefetch" else 0
+    ready = 1 if mode == "ready-task" else 2 if mode == "ready-shared" else 3 if mode in ("ready-fast", "ready-pipeline") else 4 if mode == "ready-snapshot" else 5 if mode == "stage-pair" else 6 if mode == "stage-prefetch" else 7 if mode == "stage-stream" else 0
     flags.extend([f"-DDEEPEP_LL_COMBINE_READY={ready}", f"-DDEEPEP_BENCH_READY={ready}"])
     flags.extend([f"-DDEEPEP_LL_COMBINE_NOTIFY={notify}", f"-DDEEPEP_BENCH_NOTIFY={notify}"])
     flags.extend([f"-DDEEPEP_LL_COMBINE_COALESCE={coalesce}", f"-DDEEPEP_BENCH_COALESCE={coalesce}",

@@ -384,9 +384,15 @@ private:
                 const uint32_t token = uint32_t(table2Ub_.GetValue(1U));
                 const uint32_t topk = uint32_t(table2Ub_.GetValue(2U));
                 const uint32_t n = table3Ub_.GetValue(0U);
+#if DEEPEP_LL_COMBINE_READY == 7
+                // Prepare the output address before payload work. The batch
+                // still owns SDK WQE construction and registered GM lifetime.
+                returnOffset_ = window_ + COMBINE_DEDUP_EP_SERVER_DEDUP_SHARED_DATA_OFFSET +
+                    (uint64_t(token) * k_ + topk) * packetBytes_;
+#endif
                 if (dtype_ == DispatchDedup::DISPATCH_DEDUP_DATA_TYPE_FP16) Aggregate<half>(row, source, n + 1U);
                 else Aggregate<bfloat16_t>(row, source, n + 1U);
-#ifdef DEEPEP_LL_COMBINE_DEFER_RETURN
+#if defined(DEEPEP_LL_COMBINE_DEFER_RETURN) && DEEPEP_LL_COMBINE_READY != 7
                 // The preceding output lane is distinct from current inputs,
                 // sum and low_. Post it BEFORE queuing the next V->MTE3 wait.
                 // The last ready task is immediate: never park a pending Put
@@ -395,8 +401,15 @@ private:
                 rdmaBatch_->SubmitPending();
                 profile_.Elapsed(CombineProfile::ReadyPipelineIssueTicks, issueStart);
 #endif
+#if DEEPEP_LL_COMBINE_READY == 7
+                const bool defer = CombineStreamDefer(index, runnable, outputLanes_);
+                profile_.Add(CombineProfile::PartialEagerPackets,
+                             index == 0U && LlTransport::RemoteWrite(args_, source) ? 1U : 0U);
+                Send(completed % outputLanes_, source, token, topk, defer);
+#else
                 Send(completed % outputLanes_, source, token, topk,
                      deferReady && index + 1U < runnable);
+#endif
                 readyDeps_.SetValue(task, int32_t(kReadyTaskDone));
                 ++completed;
                 if (!ready_->All()) {
@@ -577,7 +590,7 @@ private:
     {
         const uint32_t preload = contributions < inputLanes_ ? contributions : inputLanes_;
         for (uint32_t member = 0; member < preload; ++member) Load(row, source, member);
-#if defined(DEEPEP_LL_COMBINE_PREFETCH_RETURN) || DEEPEP_LL_COMBINE_READY == 6
+#if (defined(DEEPEP_LL_COMBINE_PREFETCH_RETURN) && DEEPEP_LL_COMBINE_READY != 7) || DEEPEP_LL_COMBINE_READY == 6
         // Let current MTE2 input reads overlap the previous packet's MTE3 wait
         // and Put submission. The old output lane is still owned by the batch.
         if (rdmaBatch_->HasStaged()) {
@@ -632,14 +645,36 @@ private:
         auto src = low_.ReinterpretCast<int32_t>();
         Copy(dst, src, uint64_t(64U), uint8_t(blocks_), {1U, 1U, 16U, 15U});
         Copy(dst[64U], src[64U], uint64_t(56U), uint8_t(blocks_), {1U, 1U, 16U, 15U});
+#if DEEPEP_LL_COMBINE_READY == 7
+        profile_.Elapsed(CombineProfile::PartialPackTicks, packStart);
+        // Current inputs/accumulators/packet use different UB from the pending
+        // packet. Queue all its Vector work before waiting for the old MTE3.
+        // Submit BEFORE the next V->MTE3 wait: the SDK borrows MTE3_S(7) and
+        // the retired packet's first 128 B, never this packet's output lane.
+        if (rdmaBatch_->HasStaged()) {
+            const uint64_t issueStart = profile_.DetailClock();
+            rdmaBatch_->SubmitPending();
+            profile_.Elapsed(CombineProfile::ReadyPipelineIssueTicks, issueStart);
+            profile_.Add(CombineProfile::PartialPackedSubmitCalls);
+        }
+        const uint64_t packWait = profile_.DetailClock();
+#endif
         SetFlag<HardEvent::V_MTE3>(lane);
         WaitFlag<HardEvent::V_MTE3>(lane);
+#if DEEPEP_LL_COMBINE_READY == 7
+        profile_.Elapsed(CombineProfile::PartialPackTicks, packWait);
+#else
         profile_.Elapsed(CombineProfile::PartialPackTicks, packStart);
+#endif
 
         // This reduced output has one destination; the next use rewrites its
         // body and never reads the SDK's borrowed first 128 bytes.
+#if DEEPEP_LL_COMBINE_READY == 7
+        const uint64_t offset = returnOffset_;
+#else
         const uint64_t offset = window_ + COMBINE_DEDUP_EP_SERVER_DEDUP_SHARED_DATA_OFFSET +
             (uint64_t(token) * k_ + topk) * packetBytes_;
+#endif
         const uint64_t submitStart = profile_.DetailClock();
 #if DEEPEP_LL_COMBINE_READY == 5
         // Only M4 combines local staging waits. The ready scheduler closes the
@@ -685,6 +720,9 @@ private:
     uint32_t blocks_ = 0, packetBytes_ = 0, inputBytes_ = 0, inputLanes_ = 0, outputLanes_ = 0;
     uint32_t inputSequence_ = 0, scanRows_ = 0;
     uint64_t stageStride_ = 0, stageBase_ = 0, window_ = 0;
+#if DEEPEP_LL_COMBINE_READY == 7
+    uint64_t returnOffset_ = 0U;
+#endif
 #ifdef DEEPEP_LL_COMBINE_SIMT_META
     LocalTensor<int32_t> table2Cache_;
     LocalTensor<uint32_t> table3Cache_;

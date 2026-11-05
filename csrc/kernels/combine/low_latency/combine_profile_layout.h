@@ -240,6 +240,8 @@ enum Word : uint32_t {
     RdmaStageWaitCalls,
     RdmaStagePairGroups,
     PartialPrefetchSubmitCalls,
+    PartialPackedSubmitCalls,
+    PartialEagerPackets,
     CoalesceWorker,
     Rank,
     Core,
@@ -252,8 +254,8 @@ enum Word : uint32_t {
     Count
 };
 constexpr uint32_t kWords = 256U;
-constexpr uint64_t kSchema = 14U;
+constexpr uint64_t kSchema = 15U;
 constexpr Word kDetailBegin = InitPrefixTicks;
-constexpr Word kDetailEnd = PartialPrefetchSubmitCalls;
+constexpr Word kDetailEnd = PartialEagerPackets;
 static_assert(Count <= kWords && StageRows <= 64U, "profile record bounds");
 }  // namespace CombineProfile

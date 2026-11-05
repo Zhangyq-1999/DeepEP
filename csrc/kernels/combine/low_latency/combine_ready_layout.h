@@ -6,7 +6,7 @@
 
 namespace CombineDedup {
 // Host build identity: modes 0..3 retain their original two-bit encoding.
-// Modes 4..6 use the unused notify=3 tag; ready modes cannot enable notify.
+// Modes 4..7 use the unused notify=3 tag; ready modes cannot enable notify.
 // This keeps the upper 16 bits available for the existing poll-nop value.
 constexpr uint32_t CombineReadyOptions(uint32_t mode)
 {

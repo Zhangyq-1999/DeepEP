@@ -134,6 +134,9 @@ void compact_record(const Record& r)
         if (r.receive && r.present[RdmaStageWaitCalls])
             std::cout << " stage=" << r[RdmaStageWaitCalls] << '/' << r[RdmaStagePairGroups]
                       << '/' << r[PartialPrefetchSubmitCalls];
+        if (r.receive && (r[PartialPackedSubmitCalls] || r[PartialEagerPackets]))
+            std::cout << " stream=" << r[PartialPackedSubmitCalls] << '/' << r[PartialEagerPackets]
+                      << '/' << r[ReadyPipelineIssueTicks];
         std::cout << '\n';
     }
     if (r.receive) {
@@ -259,7 +262,7 @@ void suite_report(const fs::path& root)
                  "e(S)=init/stage/core_notify/notify/direct_first/direct_last/direct_end/pipe\n"
                  "e(R)=init/stage_drained/core_notify/ready_begin/ready_observed/ready_end/partial_end/put_first/put_last/final_first/final_last/store/drain/pipe\n"
                  "top4 cumulative ticks: s.=stage_, d.=direct_, m4.=partial_, m5.=final_, g.=ready_; overlapping costs are not additive.\n"
-                 "rdma=n/deferred/gap/stage_issue/stage_wait/put/quiet; stage=wait_calls/pairs/prefetch_calls\n"
+                 "rdma=n/deferred/gap/stage_issue/stage_wait/put/quiet; stage=wait_calls/pairs/prefetch_calls; stream=packed_posts/eager/ticks\n"
                  "probe=miss/calls/miss_ticks/flags/confirmed; N=r/c local_wait/publish miss/calls/max_probe missing_core/count stores inspect\n"
                  "P=own-entry rank/core:first_put/last_put/partial_end/packets\n"
                  "g=miss/calls/max_probe/inspect missing_rank/core/count; 4294967295=all\n"

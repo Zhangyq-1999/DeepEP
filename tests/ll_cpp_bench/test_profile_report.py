@@ -312,18 +312,18 @@ def test_local_first_fields_in_reports(reporter, tmp_path, batch_mode):
 
 
 def test_default_suite_fits_one_paste_and_keeps_each_case(reporter, tmp_path):
-    # Five BS, four clean and four profile variants, two real samples each.
+    # Five BS, three clean and three profile variants, two real samples each.
     # Exercise long counters and eight tail slots rather than mostly-zero rows.
     names = re.findall(r'"([a-z0-9_]+)"',
                        (HERE / "profile.hpp").read_text().split("names[] = {", 1)[1].split("};", 1)[0])
     fields = ["iteration", "device", "role", "profile_build"] + names
-    variants = ("base", "ready-snapshot", "stage-prefetch", "stage-pair", "ref-profile",
-                "ready-snapshot-profile", "stage-prefetch-profile", "stage-pair-profile")
+    variants = ("base", "ready-snapshot", "stage-stream", "ref-profile",
+                "ready-snapshot-profile", "stage-stream-profile")
     defaults = (32, 48, 64, 72, 256)
     for phase, variant in enumerate(variants):
         directory = tmp_path / f"{phase}-{variant}"
         directory.mkdir()
-        profile = phase >= 4
+        profile = phase >= 3
         samples = 10 if profile else 100
         configs, events, records, producers = [], [], [], []
         # Extra BS must not silently disappear when the report exceeds one paste.
@@ -340,7 +340,7 @@ def test_default_suite_fits_one_paste_and_keeps_each_case(reporter, tmp_path):
                     for core, role in ((2, "send"), (30, "receive"), (31, "receive"), (48, "receive")):
                         row = {name: 123456 for name in names}
                         row.update(iteration=i, device=12 + rank % 4, role=role, profile_build=1,
-                                   rank=rank, core=core, tokens=bs, world=8, complete=1, schema=14,
+                                   rank=rank, core=core, tokens=bs, world=8, complete=1, schema=15,
                                    entry_tick=1 << 60, flush_done=250000 + core, coalesce_worker=0,
                                    stage_rows=14, direct_rows=37, partial_rows=10, final_tokens=10,
                                    contributions=47, rdma_packets=10, rdma_deferred_packets=9,
@@ -350,16 +350,18 @@ def test_default_suite_fits_one_paste_and_keeps_each_case(reporter, tmp_path):
                                    notify_begin=10000, notify_local_ready=20000, notify_end=21000,
                                    tail_missing_mask=255, tail_token=7, tail_slot=0, tail_block=14,
                                    tail_missing_blocks=120, tail_observations=10,
-                                   ready_task_rounds=50 if phase > 4 else 0,
-                                   ready_snapshot_ticks=12000 if phase > 4 else 0,
+                                   ready_task_rounds=50 if phase > 3 else 0,
+                                   ready_snapshot_ticks=12000 if phase > 3 else 0,
+                                   partial_packed_submit_calls=9 if phase == 5 else 0,
+                                   partial_eager_packets=1 if phase == 5 else 0,
                                    early_issue_ticks=0, metadata_batches=0, poll_pause_calls=0,
                                    local_contributions=0, remote_contributions=0,
                                    batch_group_calls=0, batch_whole_tokens=0,
                                    ready_ack_wait_ticks=0, ready_consumed_wait_ticks=0,
-                                   route_load_batches=1 if phase == 7 else 16, route_loaded_rows=2048 if phase == 7 else 8192,
-                                   route_load_bytes=32768 if phase == 7 else 131072, route_select_passes=4 if phase == 7 else 16,
-                                   route_snapshot_bytes=41728 if phase == 7 else 0,
-                                   route_snapshot_capacity=181888 if phase == 7 else 0, route_snapshot_fallbacks=0)
+                                   route_load_batches=1 if phase == 5 else 16, route_loaded_rows=2048 if phase == 5 else 8192,
+                                   route_load_bytes=32768 if phase == 5 else 131072, route_select_passes=4 if phase == 5 else 16,
+                                   route_snapshot_bytes=41728 if phase == 5 else 0,
+                                   route_snapshot_capacity=181888 if phase == 5 else 0, route_snapshot_fallbacks=0)
                         records.append(row)
             if profile:
                 for source in range(8):
@@ -378,10 +380,10 @@ def test_default_suite_fits_one_paste_and_keeps_each_case(reporter, tmp_path):
     default_report = header
     for bs in defaults:
         block = re.search(rf"\nBS={bs} .*?END BS={bs}\n", out, flags=re.S)[0]
-        assert block.index("variant ") < block.index("D 4-ref-profile")
+        assert block.index("variant ") < block.index("D 3-ref-profile")
         for phase, variant in enumerate(variants):
             assert re.search(rf"^{phase}-{variant}\s+(clean|profile)\s+", block, re.M)
-            if phase >= 4:
+            if phase >= 3:
                 assert f"D {phase}-{variant} p50 i=4 event_r=4" in block
                 assert f"D {phase}-{variant} worst i=9 event_r=1" in block
                 assert f"IQR {phase}-{variant} n=1" in block
@@ -393,4 +395,5 @@ def test_default_suite_fits_one_paste_and_keeps_each_case(reporter, tmp_path):
     assert "LL_COMBINE END cases=8" in out
     assert "  e=" in out and "'-'=absent" in out
     assert "  q=" in out and "  rdma=" in out and " stage=" in out
+    assert " stream=9/1/123456" in out
     assert not re.search(r"^E ", out, re.M)  # Raw samples remain in rank-max.csv.
