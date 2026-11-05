@@ -8,6 +8,16 @@
 namespace py = pybind11;
 extern "C" void ll_bench_entry_sync_do(void* stream, uint64_t ffts);
 namespace llpython {
+struct SharedSession {
+    std::unique_ptr<deepep::Session> session;
+    llbench::Runtime runtime{};
+    ~SharedSession() {
+        // Failed distributed invocations exit without freeing memory peers use.
+        if (session && !session->closed()) session.release();
+    }
+};
+using Shared = std::shared_ptr<SharedSession>;
+constexpr const char* sessionCapsule = "llpython.shared_session.v1";
 struct Timer {
     Event first, last;
     void begin(aclrtStream s) { first.record(s); }
@@ -21,11 +31,12 @@ struct Timer {
 };
 class Bench {
     llbench::Options o_;
-    std::unique_ptr<deepep::Session> session_;
+    Shared shared_;
+    bool owner_ = true;
     llbench::Runtime runtime_{};
     std::unique_ptr<Buffer> comm_;
     std::unique_ptr<Case> case_;
-    void live() const { if (!session_ || session_->closed()) throw std::runtime_error("Session is closed"); }
+    void live() const { if (!shared_ || shared_->session->closed()) throw std::runtime_error("Session is closed"); }
     void hasCase() const { live(); if (!case_) throw std::runtime_error("Prepare a case first"); }
     void sync() const { wait(runtime_.stream, o_.kernelTimeout * 1000U); }
 public:
@@ -39,20 +50,54 @@ public:
         if (!stream || deepep_ll_combine_profile_enabled()) throw std::runtime_error("Use a stream and clean build");
         const auto cores = deepep::query_ll_core_config().active;
         py::gil_scoped_release release;
-        session_ = std::make_unique<deepep::Session>(rank, world, llbench::workspaceBytes, endpoint, o_.timeout,
+        shared_ = std::make_shared<SharedSession>();
+        shared_->session = std::make_unique<deepep::Session>(rank, world, llbench::workspaceBytes, endpoint, o_.timeout,
                                                    false, false, false);
+        auto& session_ = shared_->session;
         runtime_ = {o_, nullptr, reinterpret_cast<aclrtStream>(stream),
                     static_cast<uint8_t*>(session_->workspace()), static_cast<uint8_t*>(session_->ll_rdma_stage()),
                     session_->capacity(), shmemx_get_ffts_config(), cores, session_->ll_rdma_qps(), nullptr};
+        shared_->runtime = runtime_;
         comm_ = std::make_unique<Buffer>(sizeof(DispatchDedup::CommArgs));
         auto args = comm_args(runtime_);
         comm_->upload(&args, sizeof(args));
     }
+    explicit Bench(py::capsule capsule) : owner_(false) {
+        if (!PyCapsule_IsValid(capsule.ptr(), sessionCapsule))
+            throw std::invalid_argument("Invalid Python benchmark session capsule");
+        shared_ = *capsule.get_pointer<Shared>();
+        live();
+        runtime_ = shared_->runtime;
+        o_ = runtime_.options;
+        if (o_.ranksPerHost != DispatchDedup::kLlPhysicalRanksPerHost || deepep_ll_combine_profile_enabled())
+            throw std::runtime_error("Shared session requires matching topology and clean variants");
+        py::gil_scoped_release release;
+        comm_ = std::make_unique<Buffer>(sizeof(DispatchDedup::CommArgs));
+        auto args = comm_args(runtime_);
+        comm_->upload(&args, sizeof(args));
+    }
+    py::capsule share() const {
+        live();
+        return py::capsule(new Shared(shared_), sessionCapsule, [](void* pointer) {
+            delete static_cast<Shared*>(pointer);
+        });
+    }
+    void releaseCase() { live(); py::gil_scoped_release release; sync(); case_.reset(); }
+    // The caller barriers every rank before and after this untimed phase reset.
+    void resetWorkspace() {
+        live();
+        if (!owner_ || shared_.use_count() != 1 || case_)
+            throw std::runtime_error("Release the previous phase before resetting shared workspace");
+        py::gil_scoped_release release;
+        sync();
+        const auto bytes = shared_->session->workspace_allocation_bytes();
+        checked(aclrtMemset(runtime_.workspace, bytes, 0, bytes), "reset Python suite workspace");
+    }
     // Explicit collective close only; Python error paths terminate the worker
     // without freeing buffers used by peers that may still be running.
     ~Bench() {
-        if (session_ && !session_->closed()) {
-            case_.release(); comm_.release(); session_.release();
+        if (shared_ && !shared_->session->closed()) {
+            case_.release(); comm_.release();
         }
     }
     py::dict identity() const {
@@ -128,15 +173,25 @@ public:
     }
     double precision() { hasCase(); py::gil_scoped_release release; sync(); return case_->precision(o_.dtype=="bf16"); }
     void close() {
-        live(); py::gil_scoped_release release; sync(); case_.reset(); comm_.reset(); session_->close(true);
+        live();
+        if (owner_ && shared_.use_count() != 1)
+            throw std::runtime_error("Close borrowed variants before the shared session owner");
+        py::gil_scoped_release release;
+        sync(); case_.reset(); comm_.reset();
+        if (owner_) shared_->session->close(true);
+        shared_.reset();
     }
 };
 }  // namespace llpython
 
 PYBIND11_MODULE(_ll_py_combine, m) {
+    m.attr("suite_api") = 1;
     m.attr("ranks_per_host") = DispatchDedup::kLlPhysicalRanksPerHost;
-    py::class_<llpython::Bench>(m, "Bench")
+    py::class_<llpython::Bench>(m, "Bench", py::module_local())
         .def(py::init<int,int,int,const std::vector<std::string>&,uintptr_t,const std::string&>())
+        .def(py::init<py::capsule>())
+        .def("share", &llpython::Bench::share).def("release_case", &llpython::Bench::releaseCase)
+        .def("reset_workspace", &llpython::Bench::resetWorkspace)
         .def("identity", &llpython::Bench::identity).def("prepare", &llpython::Bench::prepare)
         .def("dispatch", &llpython::Bench::dispatch).def("clear_flags", &llpython::Bench::clearFlags)
         .def("entry_sync", &llpython::Bench::entrySync).def("check_entry_sync", &llpython::Bench::checkEntrySync)

@@ -107,6 +107,40 @@ def test_worker_environment_disables_blocking_wait(tmp_path,monkeypatch):
     assert env["PYTHONFAULTHANDLER"]=="1"
 
 
+def test_hccl_probe_never_loads_native_or_shmem(tmp_path,monkeypatch,capsys):
+    run=module("run")
+    calls=[]
+    torch=SimpleNamespace(__version__="test",set_num_threads=lambda n:None,
+        npu=SimpleNamespace(set_device=lambda d:calls.append(("device",d)),init=lambda:None,
+                            current_device=lambda:12,synchronize=lambda:calls.append("sync")))
+    dist=SimpleNamespace(init_process_group=lambda *a,**kw:None,
+        all_gather_object=lambda out,v:out.__setitem__(slice(None),[v]*len(out)),
+        barrier=lambda:None,destroy_process_group=lambda *a:None)
+    torch.distributed=dist
+    monkeypatch.setitem(sys.modules,"torch",torch)
+    monkeypatch.setitem(sys.modules,"torch.distributed",dist)
+    monkeypatch.setitem(sys.modules,"torch_npu",SimpleNamespace(__version__="test"))
+    class Gate:
+        group=1
+        def __init__(self,*args,**kwargs): calls.append("hccl-init")
+        def __call__(self): calls.append("reduce")
+    monkeypatch.setattr(run,"DeviceGate",Gate)
+    def forbidden(*args): raise AssertionError("Probe must not load any native modules")
+    monkeypatch.setattr(run,"load_native",forbidden)
+    for key,value in dict(RANK="0",WORLD_SIZE="8",LOCAL_RANK="0",LOCAL_WORLD_SIZE="4").items():
+        monkeypatch.setenv(key,value)
+    launch=module("launch")
+    args=launch.parser().parse_args(["--node-rank","0","--check-hccl"])
+    cmd=launch.plan(args)[-1]
+    worker=cmd[cmd.index(str(HERE/"run.py")):] if str(HERE/"run.py") in cmd else cmd[next(i for i,v in enumerate(cmd) if v.endswith("run.py")):]
+    worker[worker.index("--output")+1]=str(tmp_path)
+    monkeypatch.setattr(sys,"argv",worker)
+    run.main()
+    assert calls[0]==("device",12) and calls.count("hccl-init")==1 and calls.count("reduce")==3
+    assert (tmp_path/"rank-0.HCCL_PASS").exists() and not (tmp_path/"rank-0.PASS").exists()
+    assert "no Combine/SHMEM loaded" in capsys.readouterr().out
+
+
 def test_device_gate_drains_host_queue_after_work_wait():
     run = module("run")
     calls = []
@@ -191,7 +225,9 @@ def test_python_patch_difference_does_not_hide_other_mismatches():
 
 
 @pytest.mark.parametrize("failure",[None,"python_patch","finalize","configuration","native"])
-def test_worker_saves_each_case_and_closes_once(tmp_path,monkeypatch,capsys,failure):
+@pytest.mark.parametrize("variants", [("base",), ("base","ready-snapshot","wqe-prep","wqe-prefetch")])
+@pytest.mark.parametrize("sync", ["both", "hccl"])
+def test_worker_saves_each_case_and_closes_once(tmp_path,monkeypatch,capsys,failure,variants,sync):
     run = module("run")
     calls=[]
     class Context:
@@ -200,8 +236,14 @@ def test_worker_saves_each_case_and_closes_once(tmp_path,monkeypatch,capsys,fail
         def __exit__(self,*args): pass
     class Bench:
         def __init__(self,*args):
-            assert args[3][args[3].index("--devices")+1]=="12,13,14,15"
-            calls.append("init")
+            self.owner = len(args)>1
+            if self.owner:
+                assert args[3][args[3].index("--devices")+1]=="12,13,14,15"
+                calls.append("init")
+            else: calls.append("borrow")
+        def share(self): return "capsule"
+        def reset_workspace(self): calls.append("reset")
+        def release_case(self): calls.append("release-case")
         def identity(self): return dict(source_id="same",active_aiv=56,recv_cores=28,rdma_qps=56,return_options=0)
         def prepare(self,bs): self.bs=bs; calls.append(("prepare",bs))
         def dispatch(self): calls.append("dispatch")
@@ -211,12 +253,12 @@ def test_worker_saves_each_case_and_closes_once(tmp_path,monkeypatch,capsys,fail
         def sample(self,cb,device): cb(); calls.append(("sample",device)); return 12.0
         def precision(self): return 0.0
         def close(self):
-            calls.append("close")
-            if failure=="finalize": raise RuntimeError("injected finalize failure")
+            calls.append("close" if self.owner else "release")
+            if self.owner and failure=="finalize": raise RuntimeError("injected finalize failure")
     def gather(out,value):
         out[:]=[value]*len(out)
         stage = "configuration" if "tokens" in value else "native"
-        if failure==stage:
+        if failure==stage and "source_id" in value:
             out[4:] = [dict(value,source_id="other")]*4
         elif failure=="python_patch" and stage=="configuration":
             out[4:] = [dict(value,python=".".join(value["python"].split(".")[:2])+".999")]*4
@@ -225,7 +267,7 @@ def test_worker_saves_each_case_and_closes_once(tmp_path,monkeypatch,capsys,fail
         assert device==12  # local rank 0 must use selected card 12, never card 0
         calls.append("set_device")
     torch = SimpleNamespace(__version__="test",set_num_threads=lambda n:None,
-        npu=SimpleNamespace(set_device=set_device,init=lambda:calls.append("npu_init"),
+        npu=SimpleNamespace(set_device=set_device,current_device=lambda:12,init=lambda:calls.append("npu_init"),
                             Stream=Context,stream=lambda s:s,synchronize=lambda:None))
     dist = SimpleNamespace(init_process_group=lambda *a,**k:None,all_gather_object=gather,barrier=barrier,
                            destroy_process_group=lambda *a:None)
@@ -233,17 +275,26 @@ def test_worker_saves_each_case_and_closes_once(tmp_path,monkeypatch,capsys,fail
     monkeypatch.setitem(sys.modules,"torch",torch)
     monkeypatch.setitem(sys.modules,"torch.distributed",dist)
     monkeypatch.setitem(sys.modules,"torch_npu",SimpleNamespace(__version__="test"))
-    monkeypatch.setitem(sys.modules,"_ll_py_combine",SimpleNamespace(Bench=Bench,ranks_per_host=4))
+    def load_native(*args):
+        calls.append("load-native")
+        return SimpleNamespace(Bench=Bench,ranks_per_host=4)
+    monkeypatch.setattr(run,"load_native",load_native)
     class Gate:
         group=1
-        def __init__(self,*args): raise AssertionError("Default run must not initialize HCCL")
+        def __init__(self,*args,**kwargs):
+            assert sync=="hccl"
+            assert "init" not in calls and "load-native" not in calls
+            assert "set_device" in calls
+            calls.append("hccl-init")
         def __call__(self): calls.append("gate")
     monkeypatch.setattr(run,"DeviceGate",Gate)
     for key,value in dict(RANK="0",WORLD_SIZE="8",LOCAL_RANK="0",LOCAL_WORLD_SIZE="4").items():
         monkeypatch.setenv(key,value)
-    (tmp_path/"bench-build.txt").write_text("source=same\n")
-    args=["run.py","--output",str(tmp_path/"out"),"--module-dir",str(tmp_path),"--shmem-ip-port","tcp://a:1",
-          "--variant","base","--sync","both","--devices","12,13,14,15","--ranks-per-host","4",
+    for variant in variants:
+        (tmp_path/variant).mkdir()
+        (tmp_path/variant/"bench-build.txt").write_text("source=same\n")
+    args=["run.py","--output",str(tmp_path/"out"),"--module-dir",str(tmp_path/"base"),"--variants",",".join(variants),"--shmem-ip-port","tcp://a:1",
+          "--variant","base","--sync",sync,"--devices","12,13,14,15","--ranks-per-host","4",
           "--tokens","32,48","--hidden","3584","--topk","8","--experts","384","--capacity","256",
           "--dtype","bf16","--route","random","--seed","0","--warmup","2","--iters","3",
           "--timeout","180","--kernel-timeout","10"]
@@ -253,11 +304,12 @@ def test_worker_saves_each_case_and_closes_once(tmp_path,monkeypatch,capsys,fail
         assert calls.count("init")==int(failure=="native")
         assert calls.count("set_device")==calls.count("npu_init")==int(failure=="native")
         assert not any(isinstance(call,tuple) and call[0]=="sample" for call in calls)
-        snapshot=json.loads((tmp_path/f"out/rank-0-{failure}.json").read_text())
-        assert snapshot[0]["source_id"]=="same" and snapshot[4]["source_id"]=="other"
+        snapshot=json.loads((tmp_path/("out" if failure=="configuration" else "out/base")/f"rank-0-{failure}.json").read_text())
+        assert snapshot[0]["source_id"]==({v:"same" for v in variants} if failure=="configuration" else "same")
+        assert snapshot[4]["source_id"]=="other"
         console=capsys.readouterr().out
         assert f"LL_PY_MISMATCH_BEGIN stage={failure}" in console
-        assert 'source_id: ranks=0,1,2,3 value="same"; ranks=4,5,6,7 value="other"' in console
+        assert 'source_id: ranks=0,1,2,3 value=' in console and 'ranks=4,5,6,7 value="other"' in console
         assert not (tmp_path/"out/rank-0.PASS").exists()
         return
     fail_close = failure=="finalize"
@@ -266,22 +318,26 @@ def test_worker_saves_each_case_and_closes_once(tmp_path,monkeypatch,capsys,fail
     else:
         run.main()
     assert calls.count("init")==calls.count("close")==1
-    assert calls.count(("sample",True))==10
-    assert calls.count(("sample",False))==12  # correctness plus two host-mode batches
-    assert calls.count("entry-preflight")==1 and calls.count("device-barrier")==10
-    assert len((tmp_path/"out/rank-0.jsonl").read_text().splitlines())==4
+    assert calls.count("borrow")==calls.count("release")==calls.count("reset")==len(variants)-1
+    assert calls.count("release-case")==1
+    assert calls.count(("sample",True))==10*len(variants)
+    assert calls.count(("sample",False))==(12 if sync=="both" else 2)*len(variants)  # correctness plus two host-mode batches
+    assert calls.count("hccl-init")==int(sync=="hccl")
+    assert calls.count("entry-preflight")==len(variants)*int(sync=="both")
+    assert calls.count("device-barrier")==10*len(variants)*int(sync=="both")
+    assert len((tmp_path/"out/rank-0.jsonl").read_text().splitlines())==(4 if sync=="both" else 2)*len(variants)
     for bs in (32,48):
-        for mode in ("host","device"):
-            data=json.loads((tmp_path/f"out/bs{bs}-{mode}.json").read_text())
+        for mode in (("host","device") if sync=="both" else ("hccl",)):
+            data=json.loads((tmp_path/f"out/base/bs{bs}-{mode}.json").read_text())
             assert data["rank_max"]["n"]==3 and len(data["per_rank_us"])==8
-            assert data["sync_impl"]==("gloo" if mode=="host" else "shmem-mixed-71a2154")
+            assert data["sync_impl"]==run.sync_implementation(mode)
     assert (tmp_path/"out/rank-0.PASS").is_file()==(not fail_close)
     report=(tmp_path/"out/report.txt").read_text()
     assert f"status={'RUNNING' if fail_close else 'PASS'}" in report
     assert "Event_us=per-iteration rank-MAX" in report and "aiv=56 recv=28 qps=56" in report
     assert "device=SHMEM-mixed-71a2154" in report
-    assert "AB BS=32 device_p50_reduction=0.00%" in report
-    assert "D BS=48 sync=device" in report and "i1/r0:12.00" in report
+    if sync=="both": assert "AB BS=32 variant=base device_p50_reduction=0.00%" in report
+    assert f"D BS=48 variant=base sync={'device' if sync=='both' else 'hccl'}" in report and "i1/r0:12.00" in report
     console=capsys.readouterr().out
     assert "samples 0/3" not in console  # sampling progress is only printed on the heartbeat
     assert ("LL_PY_REPORT_BEGIN" in console)==(not fail_close)

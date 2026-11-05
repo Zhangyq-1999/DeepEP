@@ -11,6 +11,9 @@ import sys
 import sysconfig
 
 ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_VARIANTS = "base,ready-snapshot,wqe-prep,wqe-prefetch"
+CLEAN_VARIANTS = ("base", "ready-snapshot", "wqe-prep", "wqe-prefetch", "mte-pack",
+                  "card-all", "card-row", "server-all", "server-row")
 
 
 def parser():
@@ -22,8 +25,10 @@ def parser():
     p.add_argument("--shmem-ip-port", help="SHMEM TCP endpoint; default tcp://HOST0:30012")
     p.add_argument("--devices", help="Default: 12..15 for four ranks, 0..15 for sixteen ranks")
     p.add_argument("--ranks-per-host", type=int, choices=(4, 16), default=4)
-    p.add_argument("--variant", choices=("base", "ready-snapshot", "wqe-prep", "wqe-prefetch", "mte-pack",
-                                         "card-all", "card-row", "server-all", "server-row"), default="base")
+    selection = p.add_mutually_exclusive_group()
+    selection.add_argument("--variant", choices=CLEAN_VARIANTS, help="Run only this variant")
+    selection.add_argument("--variants", help="Comma-separated suite; default: "+DEFAULT_VARIANTS)
+    p.add_argument("--check-hccl", action="store_true", help="Test Torch/HCCL alone without native/SHMEM initialization")
     p.add_argument("--sync", choices=("device", "host", "both", "hccl"), default="device",
                    help="device=SHMEM barrier; both=Gloo vs SHMEM; hccl=explicit legacy HCCL comparison")
     p.add_argument("--tokens", default="32,48,64,72,256")
@@ -52,6 +57,11 @@ def local_node(hosts):
 
 def plan(a):
     hosts = a.hosts.split(",")
+    a.variants = a.variant or a.variants or DEFAULT_VARIANTS
+    names = a.variants.split(",")
+    if len(names)!=len(set(names)) or any(v not in CLEAN_VARIANTS for v in names):
+        raise ValueError("Use distinct clean variants: "+",".join(CLEAN_VARIANTS))
+    if a.check_hccl: a.sync = "hccl"
     if a.devices is None:
         a.devices = "12,13,14,15" if a.ranks_per_host == 4 else ",".join(map(str,range(16)))
     devices = [int(v) for v in a.devices.split(",")]
@@ -74,12 +84,14 @@ def plan(a):
         raise ValueError("Invalid RUN_ID")
     endpoint = a.shmem_ip_port or f"tcp://{hosts[0]}:{a.master_port+1}"
     out = ROOT / "results/ll-python" / run_id
-    build = Path(sysconfig.get_path("platlib")) / "deepep_ll_bench" / a.variant
+    build = Path(sysconfig.get_path("platlib")) / "deepep_ll_bench" / names[0]
     cmd = [sys.executable,"-u","-m","torch.distributed.run",f"--nnodes={len(hosts)}",
            f"--nproc_per_node={len(devices)}",f"--node_rank={node}",f"--master_addr={hosts[0]}",
            f"--master_port={a.master_port}","--max_restarts=0",str(Path(__file__).with_name("run.py")),
            "--output",str(out),"--module-dir",str(build),"--shmem-ip-port",endpoint,
-           "--variant",a.variant,"--sync",a.sync,"--devices",a.devices,"--ranks-per-host",str(a.ranks_per_host)]
+           "--variant",names[0],"--variants",a.variants,"--sync",a.sync,"--devices",a.devices,
+           "--ranks-per-host",str(a.ranks_per_host)]
+    if a.check_hccl: cmd.append("--check-hccl")
     for key in ("tokens","hidden","topk","experts","capacity","dtype","route","seed","warmup","iters",
                 "timeout","kernel_timeout","gate_delay_ms"):
         cmd += ["--"+key.replace("_","-"),str(getattr(a,key))]
@@ -105,17 +117,20 @@ def worker_environment(a, node_dir):
 def main():
     a = parser().parse_args()
     node, hosts, run_id, out, build, cmd = plan(a)
-    print(f"RUN_ID={run_id}\nnode={node} EP={len(hosts)*a.ranks_per_host} variant={a.variant} sync={a.sync}",flush=True)
+    print(f"RUN_ID={run_id}\nnode={node} EP={len(hosts)*a.ranks_per_host} variants={a.variants} sync={a.sync}"
+          f" check_hccl={int(a.check_hccl)}",flush=True)
     print(f"devices={a.devices} BS={a.tokens} warmup={a.warmup} iters={a.iters}\nResults: {out}",flush=True)
     if node == 0:
         custom = []
         defaults = vars(parser().parse_args([]))
+        defaults["variants"] = DEFAULT_VARIANTS
         defaults["devices"] = "12,13,14,15" if a.ranks_per_host == 4 else ",".join(map(str,range(16)))
-        for key in ("hosts","master_port","shmem_ip_port","devices","ranks_per_host","variant","sync","tokens",
+        for key in ("hosts","master_port","shmem_ip_port","devices","ranks_per_host","variants","sync","tokens",
                     "hidden","topk","experts","capacity","dtype","route","seed","warmup","iters","timeout",
                     "kernel_timeout","gate_delay_ms","ifname"):
             value = getattr(a,key)
             if value != defaults[key]: custom += ["--"+key.replace("_","-"),str(value)]
+        if a.check_hccl: custom += ["--check-hccl"]
         for peer in range(1,len(hosts)):
             tail = custom + (["--node-rank",str(peer)] if a.node_rank is not None else [])
             if os.environ.get("LL_PY_CONDA_ENV","py311_zyq") != "py311_zyq":
@@ -123,10 +138,13 @@ def main():
             print(f"Run on node {peer}: "+shlex.join(["bash","tests/ll_python_bench/run_all.sh",run_id,*tail]),flush=True)
     if a.dry_run:
         print(shlex.join(cmd)); return 0
-    if not list(build.glob("_ll_py_combine*.so")):
-        raise RuntimeError(f"Install into {sys.prefix} first: bash tests/ll_python_bench/build.sh --variant {a.variant}")
-    if f"ranks_per_host={a.ranks_per_host}" not in (build/"bench-build.txt").read_text().splitlines():
-        raise RuntimeError("Rebuild with matching --ranks-per-host")
+    if not a.check_hccl:
+        for variant in a.variants.split(","):
+            directory = build.parent/variant
+            if not list(directory.glob("_ll_py_combine*.so")):
+                raise RuntimeError(f"Install {variant} into {sys.prefix}: bash tests/ll_python_bench/build_all.sh")
+            if f"ranks_per_host={a.ranks_per_host}" not in (directory/"bench-build.txt").read_text().splitlines():
+                raise RuntimeError(f"Rebuild {variant} with matching --ranks-per-host")
     import resource
     soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
     if soft < 65536: resource.setrlimit(resource.RLIMIT_NOFILE,(min(65536,hard) if hard>=0 else 65536,hard))

@@ -1,6 +1,7 @@
 """PyTorch synchronization around the unchanged C++ benchmark kernel and inputs."""
 import argparse
 import csv
+import importlib.util
 from datetime import timedelta
 import json
 import math
@@ -41,12 +42,12 @@ def summarize(per_rank):
                        for i in worst])
 
 
-TABLE_HEADER = " BS sync     N     mean      p50      min      p99       max   tail50  rank0p50 error"
+TABLE_HEADER = " BS variant        sync     N     mean      p50      min      p99       max   tail50  rank0p50 error"
 
 
 def result_row(r):
     s = r["rank_max"]
-    return (f"{r['tokens']:3} {r['sync']:6} {s['n']:3} {s['mean']:8.2f} {s['p50']:8.2f} {s['min']:8.2f} "
+    return (f"{r['tokens']:3} {r['variant']:14} {r['sync']:6} {s['n']:3} {s['mean']:8.2f} {s['p50']:8.2f} {s['min']:8.2f} "
             f"{s['p99']:8.2f} {s['max']:9.2f} {r['rank_max_tail50']['p50']:8.2f} "
             f"{r['rank0']['p50']:9.2f} {r['max_abs_error']:.6g}")
 
@@ -55,7 +56,7 @@ def diagnostic_row(r):
     first = "/".join(f"{r['first_means'][str(k)]:.2f}" for k in (3,10,20))
     lo, hi = r["rank_p50_range"]
     worst = ",".join(f"i{w['iteration']}/r{w['rank']}:{w['us']:.2f}" for w in r["worst"])
-    return (f"D BS={r['tokens']} sync={r['sync']} first3/10/20={first} "
+    return (f"D BS={r['tokens']} variant={r['variant']} sync={r['sync']} first3/10/20={first} "
             f"rankP50={lo:.2f}..{hi:.2f} worst={worst}")
 
 
@@ -66,16 +67,17 @@ def format_report(config, identity, results, run_id, status="RUNNING"):
              f"H={c['hidden']} K={c['topk']} E={c['experts']} dtype={c['dtype']} route={c['route']} seed={c['seed']} "
              f"cap={c['capacity']} warmup={c['warmup']} iters={c['iters']} gate_delay_ms={c['gate_delay_ms']}",
              f"SW source={c['source_id']} env={c['env']} python={c['python']} torch={c['torch']} npu={c['torch_npu']} "
-             f"aiv={identity['active_aiv']} recv={identity['recv_cores']} qps={identity['rdma_qps']} "
-             f"options={identity['return_options']}",
+             f"variants={','.join(identity)}",
              "SYNC host=Gloo device=SHMEM-mixed-71a2154 hccl=HCCL-all_reduce; device gates use local ACL Notify",
              "Event_us=per-iteration rank-MAX; no samples removed; worst iteration is 1-based", TABLE_HEADER]
     lines += [result_row(r) for r in results]
+    lines += [f"ID {v} aiv={i['active_aiv']} recv={i['recv_cores']} qps={i['rdma_qps']} options={i['return_options']}"
+              for v,i in identity.items()]
     lines += [diagnostic_row(r) for r in results]
-    for bs in dict.fromkeys(r["tokens"] for r in results):
-        modes = {r["sync"]:r["rank_max"]["p50"] for r in results if r["tokens"]==bs}
+    for variant,bs in dict.fromkeys((r["variant"],r["tokens"]) for r in results):
+        modes = {r["sync"]:r["rank_max"]["p50"] for r in results if r["tokens"]==bs and r["variant"]==variant}
         if "host" in modes and "device" in modes:
-            lines.append(f"AB BS={bs} device_p50_reduction={(1-modes['device']/modes['host'])*100:.2f}%")
+            lines.append(f"AB BS={bs} variant={variant} device_p50_reduction={(1-modes['device']/modes['host'])*100:.2f}%")
     return "\n".join(lines+["LL_PY_REPORT_END"])+"\n"
 
 
@@ -85,7 +87,7 @@ class DeviceGate:
         self.torch, self.dist = torch, dist
         report = progress or (lambda stage: None)
         report("HCCL group creation")
-        self.group = dist.new_group(backend="hccl",timeout=timedelta(seconds=timeout))
+        self.group = dist.new_group(backend="hccl",timeout=timedelta(seconds=timeout+60))
         report("HCCL token allocation")
         self.token = torch.ones(1,dtype=torch.float32,device="npu")
         self.delay_ms = 0
@@ -180,6 +182,50 @@ def require_agreement(dist, record, world, rank, local, output, stage):
         raise ConfigurationMismatch(f"{stage} differs across ranks")
 
 
+def load_native(directory, variant):
+    paths = list(directory.glob("_ll_py_combine*.so"))
+    if len(paths)!=1:
+        raise RuntimeError(f"Rebuild Python variant {variant}: expected one extension in {directory}")
+    # Same PyInit name, distinct module objects and module-local pybind classes.
+    name = "_ll_variant_"+variant.replace("-","_")+"._ll_py_combine"
+    spec = importlib.util.spec_from_file_location(name,paths[0])
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    sys.modules[name] = module
+    if getattr(module,"suite_api",0)!=1:
+        raise RuntimeError(f"Rebuild {variant}: bash tests/ll_python_bench/build_all.sh")
+    return module
+
+
+def runtime_diagnostics(output, rank, device, stage, local):
+    keys = ("ASCEND_HOME_PATH","ASCEND_OPP_PATH","ASCEND_AICPU_PATH","LD_LIBRARY_PATH",
+            "HCCL_OP_EXPANSION_MODE","HCCL_ALGO","HCCL_SOCKET_IFNAME","GLOO_SOCKET_IFNAME",
+            "ASCEND_RT_VISIBLE_DEVICES","TORCH_HCCL_BLOCKING_WAIT")
+    maps = Path("/proc/self/maps")
+    libraries = sorted({line.split()[-1] for line in maps.read_text().splitlines()
+                        if any(name in line for name in ("libascendcl", "libruntime", "libhccl", "libhcomm", "libtorch_npu"))}) if maps.exists() else []
+    info = dict(stage=stage,rank=rank,device=device,pid=os.getpid(),python=sys.executable,
+                env={key:os.environ.get(key,"") for key in keys},libraries=libraries)
+    (output/f"rank-{rank}-runtime.json").write_text(json.dumps(info,indent=2)+"\n")
+    if local==0:
+        print(f"RUNTIME rank={rank} device={device} CANN={os.environ.get('ASCEND_HOME_PATH','unset')} "
+              f"AICPU={os.environ.get('ASCEND_AICPU_PATH','unset')}",flush=True)
+        for library in libraries: print("LIB "+library,flush=True)
+
+
+def initialize_hccl(torch, dist, a, progress, output, rank, local, device, stage):
+    progress.set(f"rank={rank} HCCL check ({stage})")
+    runtime_diagnostics(output,rank,device,stage,local)
+    try:
+        gate = DeviceGate(torch,dist,a.timeout,a.gate_delay_ms,
+                          lambda text: progress.set(f"rank={rank} {text}"))
+    except Exception:
+        runtime_diagnostics(output,rank,device,stage+" failed",local)
+        print(f"HCCL_INIT_FAIL rank={rank} device={device} stage={stage}; Combine not started",flush=True)
+        raise
+    return gate
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     for name in ("output","module-dir","shmem-ip-port","variant","sync","devices","tokens","dtype","route"):
@@ -187,6 +233,8 @@ def main():
     for name in ("ranks-per-host","hidden","topk","experts","capacity","seed","warmup","iters","timeout","kernel-timeout"):
         p.add_argument("--"+name,type=int,required=True)
     p.add_argument("--gate-delay-ms",type=float,default=0)
+    p.add_argument("--variants",help="Clean variants sharing one SHMEM session")
+    p.add_argument("--check-hccl",action="store_true")
     a = p.parse_args()
     rank,world,local = (int(os.environ[k]) for k in ("RANK","WORLD_SIZE","LOCAL_RANK"))
     local_size = int(os.environ["LOCAL_WORLD_SIZE"])
@@ -199,96 +247,135 @@ def main():
     progress.set(f"rank={rank} Gloo rendezvous")
     dist.init_process_group("gloo",timeout=timedelta(seconds=a.timeout))
     # Agree before collective SHMEM initialization, even for different local paths.
-    manifest = dict(line.split("=",1) for line in (Path(a.module_dir)/"bench-build.txt").read_text().splitlines() if "=" in line)
+    names = a.variants.split(",") if a.variants else [a.variant]
+    directories = {name:Path(a.module_dir).parent/name for name in names}
+    directories[names[0]] = Path(a.module_dir)
+    sources = {} if a.check_hccl else {
+        name:dict(line.split("=",1) for line in (directory/"bench-build.txt").read_text().splitlines() if "=" in line)["source"]
+        for name,directory in directories.items()}
     config = {k:v for k,v in vars(a).items() if k not in ("output","module_dir")}
-    config.update(source_id=manifest["source"],env=Path(sys.prefix).name,python=sys.version.split()[0],
+    config.update(source_id=sources,variant=",".join(names),env=Path(sys.prefix).name,python=sys.version.split()[0],
                   torch=torch.__version__,torch_npu=torch_npu.__version__,world=world,
                   device_sync_impl="shmem-mixed-71a2154")
     output = Path(a.output)
     progress.set(f"rank={rank} configuration check")
     require_agreement(dist,config,world,rank,local,output,"configuration")
-    sys.path.insert(0,a.module_dir)
-    import _ll_py_combine as native
-    if native.ranks_per_host!=a.ranks_per_host or local_size!=a.ranks_per_host:
+    if local_size!=a.ranks_per_host:
         raise ValueError("Python launch and compiled ranks-per-host differ")
     device = int(a.devices.split(",")[local])
     progress.set(f"rank={rank} initialize NPU device={device}")
     torch.npu.set_device(device)
     torch.npu.init()
+    actual = torch.npu.current_device()
+    if actual!=device: raise RuntimeError(f"rank={rank} requested device={device}, current={actual}")
+    mapping = [None]*world
+    dist.all_gather_object(mapping,dict(rank=rank,local_rank=local,device=actual))
+    if local==0:
+        print("BIND "+" ".join(f"r{v['rank']}=dev{v['device']}" for v in mapping[rank:rank+local_size]),flush=True)
     output.mkdir(parents=True,exist_ok=True)
+    gate = None
+    if a.sync=="hccl" or a.check_hccl:
+        # HCCL initializes its Device runtime before SHMEM/Hcomm claims resources.
+        # Do not even load the native extension before the first all_reduce.
+        gate = initialize_hccl(torch,dist,a,progress,output,rank,local,device,"before native/SHMEM")
+        dist.barrier()
+    if a.check_hccl:
+        dist.barrier()
+        for _ in range(3): gate(); torch.npu.synchronize()
+        dist.barrier(); dist.destroy_process_group(gate.group); dist.destroy_process_group()
+        (output/f"rank-{rank}.HCCL_PASS").write_text("Torch-only HCCL check passed\n")
+        if local==0: print(f"HCCL_CHECK_PASS rank={rank} devices={a.devices}; no Combine/SHMEM loaded",flush=True)
+        progress.stopped.set()
+        return
+    modules = {name:load_native(directory,name) for name,directory in directories.items()}
+    if any(m.ranks_per_host!=a.ranks_per_host for m in modules.values()) or len(set(sources.values()))!=1:
+        raise ValueError("Rebuild all suite variants with matching source and ranks-per-host")
     rank_file = output/f"rank-{rank}.jsonl"
     results = []
+    identities = {}
     stream = torch.npu.Stream()
     with rank_file.open("x") as raw, torch.npu.stream(stream):
         progress.set(f"rank={rank} SHMEM initialization (once)")
-        bench = native.Bench(rank,world,local,native_args(a),stream.npu_stream,a.shmem_ip_port)
+        owner = modules[names[0]].Bench(rank,world,local,native_args(a),stream.npu_stream,a.shmem_ip_port)
         dist.barrier()
-        identity = bench.identity()
-        require_agreement(dist,identity,world,rank,local,output,"native")
-        gate = None
-        if a.sync in ("device","both"):
-            progress.set(f"rank={rank} SHMEM device entry sync preparation")
-            gate = ShmemGate(bench,dist,a.gate_delay_ms)
-        elif a.sync=="hccl":
-            progress.set(f"rank={rank} HCCL gate initialization")
-            gate = DeviceGate(torch,dist,a.timeout,a.gate_delay_ms,
-                              lambda stage: progress.set(f"rank={rank} {stage}"))
+        if a.sync=="hccl":
+            progress.set(f"rank={rank} verify existing HCCL gate after SHMEM initialization")
+            gate(); torch.npu.synchronize(); dist.barrier()
         modes = ["host","device"] if a.sync=="both" else [a.sync]
-        for bs in map(int,a.tokens.split(",")):
-            progress.set(f"rank={rank} BS={bs} allocation and route preparation")
-            dist.barrier(); bench.prepare(bs); dist.barrier()
-            progress.set(f"rank={rank} BS={bs} Dispatch preparation",emit=False)
-            bench.dispatch(); dist.barrier(); bench.clear_flags(); dist.barrier()
-            progress.set(f"rank={rank} BS={bs} correctness",emit=False)
-            bench.sample(dist.barrier,False)
-            error = bench.precision()
+        for phase,variant in enumerate(names):
+            progress.set(f"rank={rank} phase={phase} variant={variant}")
+            torch.npu.synchronize(); dist.barrier()
+            if phase: owner.reset_workspace()
             dist.barrier()
-            for mode in modes:
-                callback = dist.barrier if mode=="host" else gate
-                progress.set(f"rank={rank} BS={bs} sync={mode} warmup 0/{a.warmup}",emit=False)
-                for i in range(a.warmup):
-                    bench.sample(callback,mode!="host")
-                    progress.set(f"rank={rank} BS={bs} sync={mode} warmup {i+1}/{a.warmup}",emit=False)
-                samples = []
-                for i in range(a.iters):
-                    progress.set(f"rank={rank} BS={bs} sync={mode} samples {i}/{a.iters}",emit=False)
-                    samples.append(float(bench.sample(callback,mode!="host")))
-                progress.set(f"rank={rank} BS={bs} sync={mode} precision check",emit=False)
-                error = max(error,bench.precision())
-                record = dict(config=config,identity=identity,rank=rank,tokens=bs,sync=mode,
-                              sync_impl=sync_implementation(mode),
-                              measurement="native_kernel_event_us",max_abs_error=error,samples_us=samples)
-                raw.write(json.dumps(record)+"\n"); raw.flush()
-                progress.set(f"rank={rank} BS={bs} sync={mode} gather results",emit=False)
-                gathered = [None]*world
-                dist.all_gather_object(gathered,dict(samples=samples,error=error))
-                if rank==0:
-                    result = summarize([v["samples"] for v in gathered])
-                    result.update(config=config,identity=identity,tokens=bs,sync=mode,
-                                  sync_impl=sync_implementation(mode),
-                                  max_abs_error=max(v["error"] for v in gathered))
-                    (output/f"bs{bs}-{mode}.json").write_text(json.dumps(result,indent=2)+"\n")
-                    s = result["rank_max"]
-                    path = output/"summary.csv"
-                    exists = path.exists()
-                    with path.open("a",newline="") as f:
-                        row = dict(bs=bs,variant=a.variant,sync=mode,sync_impl=sync_implementation(mode),**s,
-                                   tail50_p50=result["rank_max_tail50"]["p50"],rank0_p50=result["rank0"]["p50"],
-                                   max_abs_error=result["max_abs_error"])
-                        writer = csv.DictWriter(f,fieldnames=list(row))
-                        if not exists: writer.writeheader()
-                        writer.writerow(row)
-                    results.append(result)
-                    (output/"report.txt").write_text(format_report(config,identity,results,output.name))
-                    print("\n"+TABLE_HEADER+"\n"+result_row(result)+"\n"+diagnostic_row(result),flush=True)
+            bench = owner if phase==0 else modules[variant].Bench(owner.share())
+            phase_output = output/variant
+            phase_output.mkdir(parents=True,exist_ok=True)
+            identity = bench.identity()
+            require_agreement(dist,identity,world,rank,local,phase_output,"native")
+            identities[variant] = identity
+            if a.sync in ("device","both"):
+                progress.set(f"rank={rank} SHMEM device entry sync preparation")
+                gate = ShmemGate(bench,dist,a.gate_delay_ms)
+            for bs in map(int,a.tokens.split(",")):
+                progress.set(f"rank={rank} variant={variant} BS={bs} allocation and route preparation")
+                dist.barrier(); bench.prepare(bs); dist.barrier()
+                progress.set(f"rank={rank} variant={variant} BS={bs} Dispatch preparation",emit=False)
+                bench.dispatch(); dist.barrier(); bench.clear_flags(); dist.barrier()
+                progress.set(f"rank={rank} variant={variant} BS={bs} correctness",emit=False)
+                bench.sample(dist.barrier,False)
+                error = bench.precision()
                 dist.barrier()
+                for mode in modes:
+                    callback = dist.barrier if mode=="host" else gate
+                    progress.set(f"rank={rank} variant={variant} BS={bs} sync={mode} warmup 0/{a.warmup}",emit=False)
+                    for i in range(a.warmup):
+                        bench.sample(callback,mode!="host")
+                        progress.set(f"rank={rank} variant={variant} BS={bs} sync={mode} warmup {i+1}/{a.warmup}",emit=False)
+                    samples = []
+                    for i in range(a.iters):
+                        progress.set(f"rank={rank} variant={variant} BS={bs} sync={mode} samples {i}/{a.iters}",emit=False)
+                        samples.append(float(bench.sample(callback,mode!="host")))
+                    progress.set(f"rank={rank} variant={variant} BS={bs} sync={mode} precision check",emit=False)
+                    error = max(error,bench.precision())
+                    record = dict(config=config,identity=identity,rank=rank,variant=variant,tokens=bs,sync=mode,
+                                  sync_impl=sync_implementation(mode),
+                                  measurement="native_kernel_event_us",max_abs_error=error,samples_us=samples)
+                    raw.write(json.dumps(record)+"\n"); raw.flush()
+                    progress.set(f"rank={rank} variant={variant} BS={bs} sync={mode} gather results",emit=False)
+                    gathered = [None]*world
+                    dist.all_gather_object(gathered,dict(samples=samples,error=error))
+                    if rank==0:
+                        result = summarize([v["samples"] for v in gathered])
+                        result.update(config=config,identity=identity,variant=variant,tokens=bs,sync=mode,
+                                      sync_impl=sync_implementation(mode),
+                                      max_abs_error=max(v["error"] for v in gathered))
+                        (phase_output/f"bs{bs}-{mode}.json").write_text(json.dumps(result,indent=2)+"\n")
+                        s = result["rank_max"]
+                        path = output/"summary.csv"
+                        exists = path.exists()
+                        with path.open("a",newline="") as f:
+                            row = dict(bs=bs,variant=variant,sync=mode,sync_impl=sync_implementation(mode),**s,
+                                       tail50_p50=result["rank_max_tail50"]["p50"],rank0_p50=result["rank0"]["p50"],
+                                       max_abs_error=result["max_abs_error"])
+                            writer = csv.DictWriter(f,fieldnames=list(row))
+                            if not exists: writer.writeheader()
+                            writer.writerow(row)
+                        results.append(result)
+                        (output/"report.txt").write_text(format_report(config,identities,results,output.name))
+                        print("\n"+TABLE_HEADER+"\n"+result_row(result)+"\n"+diagnostic_row(result),flush=True)
+                    dist.barrier()
+            torch.npu.synchronize(); dist.barrier()
+            if phase==0: owner.release_case()
+            else: bench.close()
+            dist.barrier()
+            (phase_output/f"rank-{rank}.SAMPLED").write_text("precision and sampling passed\n")
         progress.set(f"rank={rank} SHMEM finalize")
-        torch.npu.synchronize(); dist.barrier(); bench.close(); dist.barrier()
+        torch.npu.synchronize(); dist.barrier(); owner.close(); dist.barrier()
         (output/f"rank-{rank}.PASS").write_text("precision, sampling and SHMEM finalize passed\n")
         if a.sync=="hccl": dist.destroy_process_group(gate.group)
     dist.destroy_process_group()
     if rank==0:
-        report = format_report(config,identity,results,output.name,"PASS")
+        report = format_report(config,identities,results,output.name,"PASS")
         (output/"report.txt").write_text(report)
         print("\n"+report,flush=True)
     progress.set(f"rank={rank} PASS"); progress.stopped.set()
