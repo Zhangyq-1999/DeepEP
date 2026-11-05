@@ -360,6 +360,50 @@ def test_hydra_command_launcher_only_prints(bash, tmp_path):
     assert not marker.exists()
 
 
+@pytest.mark.parametrize("release", ["file", "parent-exit"])
+def test_hydra_command_launcher_lifetime(bash, tmp_path, release):
+    import time
+    hold = tmp_path / "launcher hold"
+    hold.touch()
+    output = tmp_path / "launcher.log"
+    proxy = tmp_path / "not-executed" / "hydra_pmi_proxy"
+    cmd = ["bash", str(HERE / "hydra_proxy_command.sh"), "-x", "node0",
+           proxy.as_posix(), "--control-port", "node0:29671", "--proxy-id", "0"]
+    env = dict(os.environ, LL_HYDRA_LAUNCH_HOLD_FILE=hold.as_posix())
+    if release == "parent-exit":
+        # Parent waits for our signal so the child must stay alive after READY.
+        done = tmp_path / "parent-exit"
+        wrapper = 'done_file=$1; shift; "$@" & while [[ ! -f $done_file ]]; do sleep 0.05; done'
+        cmd = [bash, "-c", wrapper, "_", done.as_posix(), *cmd]
+    else:
+        # Use Bash's own child executable, bypassing Git for Windows' native
+        # bin/bash.exe wrapper, so kill -0 sees the actual Bash parent.
+        cmd = [bash, "-c", '"$@" & wait "$!"', "_", *cmd]
+    with output.open("w") as log:
+        proc = subprocess.Popen(cmd, env=env, stdout=log, stderr=subprocess.PIPE)
+        try:
+            deadline = time.monotonic() + 5
+            while "LL_HYDRA_PROXY_READY" not in output.read_text() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            assert "LL_HYDRA_PROXY_READY 0 node0:29671" in output.read_text()
+            time.sleep(0.3)
+            assert proc.poll() is None, "launcher exited before proxy handoff"
+            if release == "file":
+                hold.unlink()
+            else:
+                done.touch()
+            # The child inherits stderr: EOF also proves that an orphaned
+            # helper exited after parent death, without removing the hold file.
+            _, errors = proc.communicate(timeout=5)
+            assert proc.returncode == 0, errors
+        finally:
+            hold.unlink(missing_ok=True)
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+    assert output.read_text().count("LL_HYDRA_PROXY_READY") == 1
+
+
 @pytest.mark.parametrize("version", ["3.2.1", "4.1.3"])
 @pytest.mark.parametrize("nodes,failure", [(2, 0), (2, 1), (2, 2), (4, 0), (4, 1), (4, 2), (4, 3)])
 def test_multi_node_script_sequence_with_fake_hydra(bash, tmp_path, nodes, failure, version):
@@ -401,12 +445,28 @@ done
 [[ $launcher == ssh && $launcher_exec == */hydra_proxy_command.sh ]]
 mkdir -p "$out"
 touch "$FAKE_SHARED/controller-$port"
+launch_pids=()
+cleanup_launchers() {
+    for child in "${launch_pids[@]}"; do kill "$child" 2>/dev/null || true; done
+    for child in "${launch_pids[@]}"; do wait "$child" 2>/dev/null || true; done
+}
+trap cleanup_launchers EXIT
 for ((node=0;node<FAKE_NODES;++node)); do
     if [[ ${FAKE_FAIL:-0} == 3 && $node == $((FAKE_NODES-1)) ]]; then continue; fi
     extra=()
     if [[ $FAKE_VERSION == 4.1.3 ]]; then extra=(--pmi-port 0 --gpus-per-proc -2 --gpu-subdevs-per-proc -2); fi
-    bash "$launcher_exec" -x "node$node" '"/fixture/hydra_pmi_proxy"' --control-port "node0:$port" "${extra[@]}" --proxy-id "$node"
+    bash "$launcher_exec" -x "node$node" '"/fixture/hydra_pmi_proxy"' --control-port "node0:$port" "${extra[@]}" --proxy-id "$node" &
+    launch_pids+=("$!")
 done
+# Reproduce 4.1.3's SIGCHLD policy: a command-only launcher must remain alive
+# before the real proxy joins. Also model the end-of-job wait on these children.
+if [[ $FAKE_VERSION == 4.1.3 ]]; then
+    [[ -f $LL_HYDRA_LAUNCH_HOLD_FILE ]]
+    sleep 0.3
+    for child in "${launch_pids[@]}"; do
+        kill -0 "$child" 2>/dev/null || { echo 'Launch proxy failed.'; exit 19; }
+    done
+fi
 if [[ ${FAKE_FAIL:-0} == 2 ]]; then echo 'fixture controller abort'; exit 134; fi
 for ((i=0;i<200;i++)); do
     joined=1
@@ -426,6 +486,7 @@ for phase in "${!phases[@]}"; do
     echo summary >"$phase_out/summary.csv"
 done
 touch "$FAKE_SHARED/done-$port"
+for child in "${launch_pids[@]}"; do wait "$child"; done
 ''')
     write(mpi / "bin/hydra_pmi_proxy", r'''
 pmi=unset gpu=unset subgpu=unset
@@ -477,6 +538,7 @@ exit 1
                 proc.wait(timeout=5)
     assert (shared / "controller-29671").exists()
     assert not (shared / "controller-29672").exists()
+    assert not (root / "results/ll-cpp/test/node-0/hydra-launch.hold").exists()
     if failure == 3:
         assert not (shared / "join-29671-0").exists(), "node 0 joined before all proxy commands were ready"
     if failure == 0:

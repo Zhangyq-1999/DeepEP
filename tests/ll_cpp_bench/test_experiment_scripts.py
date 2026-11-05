@@ -215,6 +215,19 @@ def test_four_host_commands_and_detection(harness):
         assert detected["--node-rank"] == str(node)
 
 
+def test_custom_mpi_environment_travels_in_peer_commands(harness):
+    run, env = harness
+    env["MPI_HOME"] = "/home/user/mpi 4.1.3"
+    result = run("run_all.sh", "--ep", "64", "--ranks-per-host", "16", "--hosts", "a,b,c,d", "--node-rank", "0")
+    lines = [line for line in result.stdout.splitlines() if line.startswith("Run on node ")]
+    assert len(lines) == 3
+    del env["MPI_HOME"]  # Other terminals do not inherit node 0's export.
+    for line in lines:
+        command = shlex.split(line.split(": ", 1)[1])
+        peer, = call_options(run("run_all.sh", *command[2:]).stdout)
+        assert peer["--mpi-home"] == "/home/user/mpi 4.1.3"
+
+
 @pytest.mark.parametrize("args", [
     ("--ep", "64", "--ranks-per-host", "16"),
     ("--ep", "64", "--hosts", "a,b,c,d"),

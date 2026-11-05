@@ -139,7 +139,7 @@ elif ((ep<=ranks_per_host)); then
     result_root="$result_root/TIMESTAMP-UNIQUE"
 fi
 echo "Results: $result_root"
-controller= proxy= monitor=
+controller= proxy= monitor= launcher_hold=
 cleanup() {
     local status=$?
     trap - EXIT INT TERM HUP
@@ -149,6 +149,7 @@ cleanup() {
     # its own application children; controller SIGINT cleans the MPI job.
     [[ -z $controller ]] || kill -INT "$controller" 2>/dev/null || true
     [[ -z $proxy ]] || kill -PIPE -- "-$proxy" 2>/dev/null || true
+    [[ -z $launcher_hold ]] || rm -f -- "$launcher_hold"
     if [[ -n $controller || -n $proxy ]]; then
         sleep 1
         [[ -z $controller ]] || kill -KILL -- "-$controller" 2>/dev/null || true
@@ -182,6 +183,13 @@ if ((ep<=ranks_per_host)); then
     if wait "$controller"; then controller=; else status=$?; cat "$log"; exit "$status"; fi
 else
     if ((node_rank==0)); then
+        # Hydra 4.1.3 monitors launcher children before their proxies connect.
+        # Hold each command-only launcher until the real local proxy exits.
+        # Release before wait(controller), otherwise Hydra's child wait stalls.
+        if ((!dry)) && [[ $mpi_version == 4.1.3 ]]; then
+            launcher_hold="$result_root/node-0/hydra-launch.hold"
+            : >"$launcher_hold"
+        fi
         # Only Hydra's controller port is fixed. MPI's data sockets retain
         # their normal allocation. Explicitly clear higher-priority aliases.
         cmd=(env)
@@ -191,6 +199,7 @@ else
             cmd+=(-u "$name")
         done
         cmd+=("MPIEXEC_PORT_RANGE=$phase_port:$phase_port" "MPIEXEC_TIMEOUT=$job_timeout" HYDRA_LAUNCHER_AUTOFORK=0
+              "LL_HYDRA_LAUNCH_HOLD_FILE=$launcher_hold"
               "$mpi/bin/mpiexec" -launcher ssh -launcher-exec "$root/tests/ll_cpp_bench/hydra_proxy_command.sh"
               -rmk user -demux poll -localhost "$master"
               -hosts "$hosts" -ppn "$per_host" -n "$ep" -bind-to none -wdir "$root"
@@ -234,6 +243,9 @@ else
         exit "$status"
     fi
     if [[ -n $controller ]]; then
+        # The real proxy completed; let placeholder launchers exit before
+        # Hydra finishes waiting for its launcher children.
+        [[ -z $launcher_hold ]] || rm -f -- "$launcher_hold"
         if wait "$controller"; then controller=; else status=$?; cat "$log.controller"; exit "$status"; fi
     fi
 fi

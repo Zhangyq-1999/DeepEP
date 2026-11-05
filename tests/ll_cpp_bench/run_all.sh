@@ -127,7 +127,9 @@ if [[ $ep -gt $ranks_per_host && $node_rank == 0 ]]; then
         peer_cmd+=(--job-timeout "$job_timeout" --join-timeout "$join_timeout")
     fi
     if [[ $cann != "$ll_bench_cann" ]]; then peer_cmd+=(--cann-home "$cann"); fi
-    if [[ $mpi != "$ll_bench_mpi" ]]; then peer_cmd+=(--mpi-home "$mpi"); fi
+    # MPI_HOME is local to this shell, not inherited by other machines. Print
+    # nonstandard installation paths even when selected via the environment.
+    if [[ $mpi != /usr/local/mpich-3.2.1 ]]; then peer_cmd+=(--mpi-home "$mpi"); fi
     if [[ $shmem != "$ll_bench_shmem" ]]; then peer_cmd+=(--shmem-root "$shmem"); fi
     printf 'Run on node %s: ' "$peer"; printf '%q ' "${peer_cmd[@]}"; printf '\n'
   done

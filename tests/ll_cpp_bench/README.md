@@ -324,7 +324,11 @@ MPICH 3.2.1 的内置 `manual` 模式在关闭 autofork 后，可能在打印 `H
 
 4.1.3 的手动代理增加 `--pmi-port 0 --gpus-per-proc -2 --gpu-subdevs-per-proc -2`，匹配 [Hydra 4.1.3 controller 的默认值](https://github.com/pmodels/mpich/blob/v4.1.3/src/pm/hydra/mpiexec/get_parameters.c)及其[代理参数生成](https://github.com/pmodels/mpich/blob/v4.1.3/src/pm/hydra/mpiexec/pmiserv_utils.c)。这些字段在代理初始状态中为 unset，不能直接省略；设备选择仍由用例完成。3.2.1 不传新增参数。仅更新启动脚本无需重编算子；若实际更换 MPI 安装，则需重新核对用例与 SHMEM MPI 插件的链接依赖。
 
-双机/四机回归使用模拟 Hydra 检查参数、会合、单次初始化及失败退出，不能替代目标机器上的真实 MPI/NPU 验证。
+4.1.3 还会在收到 launcher 子进程退出通知时检查对应代理是否已连入；提前退出（即使退出码为 0）会触发 `Launch proxy failed`，见 [Hydra SIGCHLD 处理](https://github.com/pmodels/mpich/blob/v4.1.3/src/pm/hydra/mpiexec/pmiserv_pmci.c)。因此该版本的命令打印助手保持存活，直到 node 0 的真实代理退出。`launch.sh` 在等待 controller 结束**之前**释放助手，避免 controller 等助手、助手等 controller 的循环等待。失败/取消时也释放，controller 异常消失时助手自行退出。3.2.1 保留打印后退出的行为；READY 表示命令已发布，不代表真实代理已连入。
+
+通过 `MPI_HOME` 选中的非默认安装路径也会写入打印给其他节点的 `--mpi-home` 参数，因为另一台终端不会继承本机环境变量。该路径需在各节点可访问；各节点启动时核对 `MPI=版本 path=路径`，一场作业内版本必须一致。
+
+双机/四机回归使用模拟 Hydra 检查参数、会合、单次初始化、4.1.3 的 launcher 存活要求与结束等待，以及失败退出，不能替代目标机器上的真实 MPI/NPU 验证。
 
 所有版本的运行日志保存在 `node-N/suite.log`，第一台另有 `node-0/suite.log.controller`。如果 controller 异常退出，脚本会同时打印这两份日志。优先查看 controller 的首个错误；随后出现的 `Connection refused` 可能只是 controller 退出后的结果。
 
