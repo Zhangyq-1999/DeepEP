@@ -34,21 +34,23 @@ bash tests/ll_cpp_bench/build_all.sh
 | 构建名 | 实验 | 打点 |
 | --- | --- | --- |
 | `base` | 冻结的上游原版 | 关闭 |
-| `wqe-prep` | snapshot + M4 暂存搬运期间在独立 UB 构造 WQE | 关闭 |
 | `wqe-prefetch` | wqe-prep + 下一条已就绪任务的输入读取与上一包提交重叠 | 关闭 |
 | `input6` | wqe-prep + 最多 6 个 M4 输入槽 | 关闭 |
-| `input-ready` | input6 + 按贡献就绪提前读取 | 关闭 |
+| `input-pair` | input6 + 两条独立 Cast/Muls 合并屏障、按原序 Add | 关闭 |
+| `input-pipe` | input6 + wqe-prefetch 的输入/回传提交流水 | 关闭 |
 | `ref-profile` | 实验开关全部关闭 | 开启 |
-| `wqe-prep-profile` | 与 wqe-prep 相同 | 开启 |
 | `wqe-prefetch-profile` | 与 wqe-prefetch 相同 | 开启 |
 | `input6-profile` | 与 input6 相同 | 开启 |
-| `input-ready-profile` | 与 input-ready 相同 | 开启 |
+| `input-pair-profile` | 与 input-pair 相同 | 开启 |
+| `input-pipe-profile` | 与 input-pipe 相同 | 开启 |
 
 优化和验收以 **BS32、48、64** 为主，BS72 作邻近对照，BS256 只检查回退。上一轮 EP8 干净版 ready-snapshot 的三个 BS 的 P50 分别为 57.11、63.56、70.19 μs，增加接收核没有持续改善这三个场景。ready-r32、ready-r36、stage-stream、plan-compact 保留为可选实验，不再默认编译运行。
 
 EP32 收尾修复后的实测中，`wqe-prep` 在 BS48/64 的均值比 snapshot 低约 2.20%/2.84%，BS32 基本持平，尚需重复验证。它在独立 128 B UB 提前构造 WQE，payload 完成后才发布 SQ/doorbell。新增 `wqe-prefetch` 在下一条任务已经就绪时，先发起其输入 MTE2，再等上一包 MTE3 并提交 WQE；不会等待下一条完整规约。末条任务和单输出 lane 仍立即提交，M5 前排空待提交包，最终 quiet 保留。新方案尚待 CANN/NPU 验证。`mte-pack` 收益不稳定，保留为可选项，不再默认编译。完整数据、生命周期与打点说明见 [TRANSFER_AB.md](TRANSFER_AB.md)。
 
-打点 schema 18 新增 `input=lanes/early_reads/used_reads`，分别为 M4 输入槽数、就绪后提前读取的贡献数、实际消费的提前读取数；两者之差是已安全释放但未使用的读。新增计数也写入 CSV/Perfetto，原 256-word 记录长度不变。最慢样本回显保留接收核流水、RDMA 和拖尾，完整计数留在 CSV/Perfetto，P50 样本仍完整展示。
+最新 EP32/HCCL 实测 `input6` 的 BS32/48/64 均值为 57.67/66.35/73.79 μs，是当前小 BS 对照；`input-ready` 在这三个点分别慢 1.42/0.97/2.41 μs，改为可选项。新增 `input-pair` 和 `input-pipe` 分别检查规约屏障和提交重叠，均保留 input6 的 UB 布局、权重/累加序及完成契约。实验目标和完整原始范围见 [TRANSFER_AB.md](TRANSFER_AB.md#2026-11-05ep32-hccl-结果与-m4-实验)。新实验尚待 NPU 验证，默认仍为 5+5 个版本。
+
+打点 schema 18 新增 `input=lanes/early_reads/used_reads`，分别为 M4 输入槽数、就绪后提前读取的贡献数、实际消费的提前读取数；两者之差是已安全释放但未使用的读。新增计数也写入 CSV/Perfetto。schema 19 增加 `vec=pair_groups/barriers`（M4 两项配对次数/显式 Vector 屏障次数，含最终 Cast 屏障），每核记录从 256 words 扩为 272 words；需重新编译打点库，旧 CSV 仍可读取。最慢样本回显保留接收核流水、RDMA 和拖尾，完整计数留在 CSV/Perfetto，P50 样本仍完整展示。
 
 打点 schema 17 的 `xfer prepare_ticks/prepared/fallback/mte_pack` 给出 WQE 构造累计 ticks、成功预构造包数、队列容量回退包数、直接 MTE 打包数。`rdma_stage_wait_ticks` 是预构造后剩余等待，`rdma_put_ticks` 是之后的 SQ 发布与 doorbell（回退包包含完整 SDK put）。CSV 和 Perfetto 的 `profiled body` 参数也包含这些计数；累计 ticks 不作为独立流水块，也不能直接等同于网卡或网络耗时。
 
@@ -83,7 +85,7 @@ bash tests/ll_cpp_bench/run_all.sh
 bash tests/ll_cpp_bench/run_all.sh 第一台打印的RUN_ID
 ```
 
-默认先跑四个干净版，再跑对应的四个打点版。每版测试 **BS32、48、64、72、256**，形状为 EP8、H3584、TopK 8、384 个专家、BF16、随机路由、seed 0、capacity 256。每个 BS 预热 10 轮；干净版采样 100 轮，打点版采样 10 轮。`--iters` 和 `--profile-iters` 分别控制两类采样次数。
+默认先跑五个干净版，再跑对应的五个打点版。每版测试 **BS32、48、64、72、256**，形状为 EP8、H3584、TopK 8、384 个专家、BF16、随机路由、seed 0、capacity 256。每个 BS 预热 10 轮；干净版采样 100 轮，打点版采样 10 轮。`--iters` 和 `--profile-iters` 分别控制两类采样次数。
 
 干净版在编译时关闭打点，使用独立 kernel。打点版在预热前启用所选打点级别，让预热和采样执行相同路径。一次运行可同时包含两类版本，`--profile 2` 只作用于支持打点的构建。
 

@@ -71,7 +71,7 @@ int main()
             for(unsigned j=0;j<bytes/512U;++j)for(unsigned k=0;k<8U;++k){float one=1;std::memcpy(packet.data()+j*512U+480U+k*4U,&one,4);}
             expected.push_back(packet);
             const unsigned postsBefore=Model::puts;
-            const bool defer=DEEPEP_LL_COMBINE_READY==11 && partial && cross && i%3U!=2U && i+1U<n;
+            const bool defer=(DEEPEP_LL_COMBINE_READY==11 || DEEPEP_LL_COMBINE_READY==15) && partial && cross && i%3U!=2U && i+1U<n;
 #if DEEPEP_LL_COMBINE_READY == 9 || DEEPEP_LL_COMBINE_READY >= 11
             HnsModel::peer=peer;
             // Force admission failure without consuming the live payload event.
@@ -83,7 +83,7 @@ int main()
             else
 #endif
                 CombineDedup::SendReturnPacket(batch,&a,peer,i*stride,{packet.data()},bytes,defer);
-#if DEEPEP_LL_COMBINE_READY == 11
+#if DEEPEP_LL_COMBINE_READY == 11 || DEEPEP_LL_COMBINE_READY == 15
             if(defer) {
                 ++deferred;
                 assert(batch.HasStaged() && batch.Pending());
@@ -126,7 +126,7 @@ int main()
 #if DEEPEP_LL_COMBINE_READY == 9 || DEEPEP_LL_COMBINE_READY >= 11
         assert(r[CombineProfile::WqePreparedPackets]==HnsModel::published);
         assert(r[CombineProfile::WqeFallbackPackets]==fallbacks);
-#if DEEPEP_LL_COMBINE_READY == 11
+#if DEEPEP_LL_COMBINE_READY == 11 || DEEPEP_LL_COMBINE_READY == 15
         assert(r[CombineProfile::RdmaDeferredPackets]==deferred);
 #endif
 #else

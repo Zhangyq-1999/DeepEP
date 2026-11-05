@@ -267,6 +267,8 @@ inline void profile_header(std::ostream& out)
         "partial_input_lanes",
         "ready_input_issued",
         "ready_input_used",
+        "partial_pair_groups",
+        "partial_vector_barriers",
     };
     static_assert(sizeof(names) / sizeof(names[0]) == CombineProfile::Count, "profile CSV fields");
     for (uint32_t w = 0; w < CombineProfile::Count; ++w) out << (w ? "," : "") << names[w];

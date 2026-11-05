@@ -179,7 +179,8 @@ void compact_record(const Record& r, bool brief = false)
                   << r[WqePreparedPackets] << '/' << r[WqeFallbackPackets] << '/' << r[MtePackPackets] << '\n';
     if (r.receive && r[PartialInputLanes])
         std::cout << "  input=" << r[PartialInputLanes] << '/' << r[ReadyInputIssued]
-                  << '/' << r[ReadyInputUsed] << '\n';
+                  << '/' << r[ReadyInputUsed] << " vec=" << r[PartialPairGroups]
+                  << '/' << r[PartialVectorBarriers] << '\n';
     if (r[ReadyPollCalls]) {
         std::cout << "  g=" << r[ReadyPollMisses] << '/' << r[ReadyPollCalls]
                   << '/' << r[ReadyPollMaxTicks] << '/' << r[ReadyInspectTicks] << ' ';
@@ -295,7 +296,7 @@ void suite_report(const fs::path& root)
                  "e(R)=init/stage_drained/core_notify/ready_begin/ready_observed/ready_end/partial_end/put_first/put_last/final_first/final_last/store/drain/pipe\n"
                  "top4 cumulative ticks: s.=stage_, d.=direct_, m4.=partial_, m5.=final_, g.=ready_; overlapping costs are not additive.\n"
                  "rdma=n/deferred/gap/stage_issue/stage_wait/put/quiet; stage=wait_calls/pairs/prefetch_calls; stream=packed_posts/eager/ticks\n"
-                 "lg=local/get; xfer=prepare_ticks/prepared/fallback/mte_pack; input=lanes/early_reads/used_reads\n"
+                 "lg=local/get; xfer=prepare_ticks/prepared/fallback/mte_pack; input=lanes/early_reads/used_reads; vec=pair_groups/barriers\n"
                  "probe=miss/calls/miss_ticks/flags/confirmed; N=r/c local_wait/publish miss/calls/max_probe missing_core/count stores inspect\n"
                  "P=own-entry rank/core:first_put/last_put/partial_end/packets\n"
                  "g=miss/calls/max_probe/inspect missing_rank/core/count; 4294967295=all\n"

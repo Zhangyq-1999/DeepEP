@@ -7,7 +7,7 @@
 | 参数 | 默认值 |
 | --- | --- |
 | 主机 | `90.90.93.84,90.90.93.184` |
-| 算子 | 干净的 `base,wqe-prep,wqe-prefetch,input6,input-ready` |
+| 算子 | 干净的 `base,wqe-prefetch,input6,input-pair,input-pipe` |
 | BS | `32,48,64,72,256` |
 | Hidden / TopK / Experts | `3584 / 8 / 384` |
 | 数据和路由 | BF16、random、seed 0 |
@@ -131,7 +131,7 @@ bash tests/ll_python_bench/run_all.sh --variant card-all
 bash tests/ll_python_bench/build_all.sh
 ```
 
-默认安装 `base,wqe-prep,wqe-prefetch,input6,input-ready`，可用 `--variants` 缩减。`wqe-prefetch` 将下一条已就绪规约任务的输入读取，提前到上一包 GM 暂存等待之前；保留数据完成后才发布 WQE 的要求。新增 input6/input-ready 针对 BS32 的 M4 输入等待：前者把输入槽从 3 扩到最多 6，后者再按贡献的 ready 状态提前读取；两者都基于 wqe-prep，保持累加顺序。ready-snapshot 仍可通过 --variants 选择。详见 [实验记录](../ll_cpp_bench/TRANSFER_AB.md)。
+默认安装 `base,wqe-prefetch,input6,input-pair,input-pipe`，可用 `--variants` 缩减。`wqe-prefetch` 将下一条已就绪规约任务的输入读取，提前到上一包 GM 暂存等待之前；保留数据完成后才发布 WQE 的要求。input6 是当前 BS32–64 的较优对照。input-pair 在它的基础上合并两条独立 Cast/Muls 的屏障，Add 仍按原序；input-pipe 将六输入槽与 WQE 提交流水组合。两个新实验都没有增加 UB 或省略末尾 quiet。wqe-prep、input-ready 和 ready-snapshot 仍可通过 --variants 选择。详见 [实验记录](../ll_cpp_bench/TRANSFER_AB.md)。
 
 EP32 两台分别编译：
 

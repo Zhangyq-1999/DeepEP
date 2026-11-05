@@ -373,7 +373,9 @@ def test_default_suite_fits_one_paste_and_keeps_each_case(reporter, tmp_path):
                                    mte_pack_packets=16 if phase == 7 else 0,
                                    partial_input_lanes=6 if variant.startswith("input") else 3,
                                    ready_input_issued=16 if variant.startswith("input-ready") else 0,
-                                   ready_input_used=12 if variant.startswith("input-ready") else 0)
+                                   ready_input_used=12 if variant.startswith("input-ready") else 0,
+                                   partial_pair_groups=32 if variant.startswith("input-pair") else 0,
+                                   partial_vector_barriers=128 if variant.startswith("input-pair") else 192)
                         records.append(row)
             if profile:
                 for source in range(8):
@@ -406,7 +408,7 @@ def test_default_suite_fits_one_paste_and_keeps_each_case(reporter, tmp_path):
     assert size < 62 * 1024, f"Default report is {size} bytes"
     assert "LL_COMBINE END cases=8" in out
     assert "  e=" in out and "'-'=absent" in out
-    assert "input=6/16/12" in out
+    assert "input=6/0/0 vec=32/128" in out
     assert "  q=" in out and "  rdma=" in out and " stage=" in out
     assert " stream=9/1/123456" in out
     assert " compact=256/1024/123456" in out

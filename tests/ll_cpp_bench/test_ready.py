@@ -8,7 +8,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
-@pytest.mark.parametrize("mode", [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13])
+@pytest.mark.parametrize("mode", [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15])
 def test_ready_lifecycle_and_vector_selection(tmp_path, mode):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
     if not zig:
@@ -23,7 +23,7 @@ def test_ready_lifecycle_and_vector_selection(tmp_path, mode):
     subprocess.run([str(exe)], check=True, timeout=30)
 
 
-@pytest.mark.parametrize("mode,pipeline", [(1, False), (3, False), (3, True), (4, False), (5, False), (6, False), (7, False), (8, False), (9, False), (10, False), (11, False), (12, False), (13, False)])
+@pytest.mark.parametrize("mode,pipeline", [(1, False), (3, False), (3, True), (4, False), (5, False), (6, False), (7, False), (8, False), (9, False), (10, False), (11, False), (12, False), (13, False), (14, False), (15, False)])
 def test_production_dependency_scheduler(tmp_path, mode, pipeline):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
     if not zig:
@@ -33,6 +33,7 @@ def test_production_dependency_scheduler(tmp_path, mode, pipeline):
     end = text.index("    template <class T>\n    __aicore__ inline LocalTensor<T> Allocate", start)
     method = text[start:end]
     preload = text[text.index("    __aicore__ inline void PreloadInputs("):text.index("    template <class T>\n    __aicore__ inline void Aggregate(")]
+    preload = preload.split("#if DEEPEP_LL_COMBINE_READY == 14")[0]
     process = text[text.index("    __aicore__ inline uint32_t Process()\n"):text.index("\nprivate:", text.index("    __aicore__ inline uint32_t Process()\n"))]
     load = text[text.index("    __aicore__ inline void LoadTask(uint32_t row)"):text.index("#ifdef DEEPEP_LL_COMBINE_SIMT_META", text.index("    __aicore__ inline void LoadTask(uint32_t row)"))]
     load = load.replace("        // Route", "        ++loads;\n        // Route")
@@ -169,7 +170,7 @@ template<uint32_t Group> struct Scheduler {
 #endif
         for(uint32_t previous:sent) assert(previous!=row);
         if(batch.pending) {assert(batch.lane!=sent.size()%outputLanes_);++overlaps;}
-#if DEEPEP_LL_COMBINE_READY == 6 || DEEPEP_LL_COMBINE_READY == 11
+#if DEEPEP_LL_COMBINE_READY == 6 || (DEEPEP_LL_COMBINE_READY == 11 || DEEPEP_LL_COMBINE_READY == 15)
         batch.SubmitPending(); // Production Aggregate submits after input preload.
 #endif
         ++aggregated;
@@ -269,7 +270,7 @@ void CacheAndPipeline() {
 #if DEEPEP_LL_COMBINE_READY >= 3
         assert(filterCalls-before==3U+(DEEPEP_LL_COMBINE_READY==13 && t.readyCached_ ? 1U:0U));
         assert(t.loads==(count<=EpCombineReadyCacheCapacity(k)?0U:count*2U));
-#if defined(DEEPEP_LL_COMBINE_DEFER_RETURN) || DEEPEP_LL_COMBINE_READY == 6 || DEEPEP_LL_COMBINE_READY == 11
+#if defined(DEEPEP_LL_COMBINE_DEFER_RETURN) || DEEPEP_LL_COMBINE_READY == 6 || (DEEPEP_LL_COMBINE_READY == 11 || DEEPEP_LL_COMBINE_READY == 15)
         assert(t.overlaps==(lanes>1U?count-1U:0U));
 #elif DEEPEP_LL_COMBINE_READY == 7
         assert(t.overlaps==(lanes>1U && count>2U?count-2U:0U));

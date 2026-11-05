@@ -62,6 +62,8 @@ int main() {
             const auto start = view.DetailClock();
             view.Elapsed(ProbeTicks, start);
             view.Add(ProbeCalls, 3);
+            view.Add(PartialPairGroups, 4);
+            view.Add(PartialVectorBarriers, 16);
             view.Mark(StageEnd);
             view.MarkOnce(DirectFirstSubmit);
             view.MarkOnce(DirectFirstSubmit);
@@ -77,6 +79,8 @@ int main() {
                 assert(row[Schema] == kSchema && row[Core] == core && row[StageRows] == 7);
                 assert(row[ProbeTicks] == (level == 2 ? 17U : 0U));
                 assert(row[ProbeCalls] == (level == 2 ? 3U : 0U));
+                assert(row[PartialPairGroups] == (level == 2 ? 4U : 0U));
+                assert(row[PartialVectorBarriers] == (level == 2 ? 16U : 0U));
                 assert(row[DirectSubmitTicks] == (level == 2 ? 17U : 0U));
                 assert(row[DirectSubmitMaxPeer] == (level == 2 ? 3U : 0U));
                 assert(row[DirectSubmitMaxToken] == (level == 2 ? 48U : 0U));

@@ -397,7 +397,7 @@ private:
         uint32_t completed = 0U, blockedMask = 0xffffffffU;
         const bool deferReady = CombineDeferReturn(outputLanes_) ||
             ((DEEPEP_LL_COMBINE_READY == 5 || DEEPEP_LL_COMBINE_READY == 6 ||
-              DEEPEP_LL_COMBINE_READY == 11) && outputLanes_ > 1U);
+              (DEEPEP_LL_COMBINE_READY == 11 || DEEPEP_LL_COMBINE_READY == 15)) && outputLanes_ > 1U);
         while (completed < count) {
             const uint32_t observed = ready_->Poll();
             profile_.Add(CombineProfile::ReadyTaskRounds);
@@ -657,11 +657,30 @@ private:
         prefetchTask_ = 0xffffffffU;
 #endif
     }
+#if DEEPEP_LL_COMBINE_READY == 14
+    template <class T>
+    __aicore__ inline void CastInput(uint32_t row, uint32_t source, uint32_t member,
+                                    uint32_t contributions, LocalTensor<float> dst)
+    {
+        const uint32_t lane = (inputSequence_ + member) % inputLanes_;
+        const uint64_t waitStart = profile_.DetailClock();
+        WaitFlag<HardEvent::MTE2_V>(lane);
+        profile_.Elapsed(member == 0U ? CombineProfile::PartialLocalWaitTicks : CombineProfile::PartialGetWaitTicks,
+                         waitStart);
+        const uint64_t castStart = profile_.DetailClock();
+        Cast(dst, inputs_[lane * inputBytes_ / 2U].template ReinterpretCast<T>(), RoundMode::CAST_NONE, h_);
+        SetFlag<HardEvent::V_MTE2>(lane);
+        profile_.Elapsed(CombineProfile::PartialComputeIssueTicks, castStart);
+        // Refill only after this Cast has released its input lane. The two
+        // FP32 destinations remain distinct even when inputLanes_ is one.
+        if (member + inputLanes_ < contributions) Load(row, source, member + inputLanes_);
+    }
+#endif
     template <class T>
     __aicore__ inline void Aggregate(uint32_t row, uint32_t source, uint32_t contributions)
     {
         PreloadInputs(row, source, contributions);
-#if (defined(DEEPEP_LL_COMBINE_PREFETCH_RETURN) && DEEPEP_LL_COMBINE_READY != 7) || DEEPEP_LL_COMBINE_READY == 6 || DEEPEP_LL_COMBINE_READY == 11
+#if (defined(DEEPEP_LL_COMBINE_PREFETCH_RETURN) && DEEPEP_LL_COMBINE_READY != 7) || DEEPEP_LL_COMBINE_READY == 6 || (DEEPEP_LL_COMBINE_READY == 11 || DEEPEP_LL_COMBINE_READY == 15)
         // Let current MTE2 input reads overlap the previous packet's MTE3 wait
         // and Put submission. The old output lane is still owned by the batch.
         if (rdmaBatch_->HasStaged()) {
@@ -672,6 +691,33 @@ private:
         }
 #endif
         const auto weights = table3Ub_.ReinterpretCast<float>();
+#if DEEPEP_LL_COMBINE_READY == 14
+        for (uint32_t member = 0; member < contributions; member += 2U) {
+            const bool pair = member + 1U < contributions;
+            CastInput<T>(row, source, member, contributions, cast_);
+            if (pair) CastInput<T>(row, source, member + 1U, contributions, product_);
+            const uint64_t computeStart = profile_.DetailClock();
+            PipeBarrier<PIPE_V>();
+            const float firstWeight = weights.GetValue(member * 2U + 1U);
+            if (member == 0U) Muls(sum_, cast_, firstWeight, h_);
+            else Muls(cast_, cast_, firstWeight, h_);
+            if (pair) Muls(product_, product_, weights.GetValue((member + 1U) * 2U + 1U), h_);
+            PipeBarrier<PIPE_V>();
+            // Pair only independent conversions/products. Preserve every
+            // original FP32 addition and its order; no tree reduction or FMA.
+            if (member != 0U) {
+                Add(sum_, sum_, cast_, h_);
+                PipeBarrier<PIPE_V>();
+            }
+            if (pair) {
+                Add(sum_, sum_, product_, h_);
+                PipeBarrier<PIPE_V>();
+            }
+            profile_.Elapsed(CombineProfile::PartialComputeIssueTicks, computeStart);
+        }
+        profile_.Add(CombineProfile::PartialPairGroups, contributions / 2U);
+        profile_.Add(CombineProfile::PartialVectorBarriers, 3U * contributions - 2U * (contributions / 2U));
+#else
         for (uint32_t member = 0; member < contributions; ++member) {
             const uint32_t lane = (inputSequence_ + member) % inputLanes_;
             const float weight = weights.GetValue(member * 2U + 1U);
@@ -698,6 +744,8 @@ private:
             PipeBarrier<PIPE_V>();
             profile_.Elapsed(CombineProfile::PartialComputeIssueTicks, computeStart);
         }
+        profile_.Add(CombineProfile::PartialVectorBarriers, 3U * contributions);
+#endif
         inputSequence_ += contributions;
         const uint64_t castStart = profile_.DetailClock();
         Cast(low_.template ReinterpretCast<T>(), sum_, RoundMode::CAST_RINT, h_);

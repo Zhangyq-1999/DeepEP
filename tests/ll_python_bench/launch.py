@@ -11,8 +11,8 @@ import sys
 import sysconfig
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_VARIANTS = "base,wqe-prep,wqe-prefetch,input6,input-ready"
-CLEAN_VARIANTS = ("base", "ready-snapshot", "wqe-prep", "wqe-prefetch", "input6", "input-ready", "mte-pack",
+DEFAULT_VARIANTS = "base,wqe-prefetch,input6,input-pair,input-pipe"
+CLEAN_VARIANTS = ("base", "ready-snapshot", "wqe-prep", "wqe-prefetch", "input6", "input-ready", "input-pair", "input-pipe", "mte-pack",
                   "card-all", "card-row", "server-all", "server-row")
 
 

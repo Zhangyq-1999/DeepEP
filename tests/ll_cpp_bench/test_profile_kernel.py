@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
 @pytest.mark.parametrize("profile", [False, True])
 @pytest.mark.parametrize("small", [False, True])
 @pytest.mark.parametrize("returns", [False, True, "new", "simt", "poll", "local", "batch", "batch-pipeline",
-                                     "card-all", "card-row", "server-all", "server-row", "notify-simt", "notify-core", "ready-task", "ready-shared", "ready-fast", "ready-pipeline", "ready-snapshot", "stage-pair", "stage-prefetch", "stage-stream", "plan-compact", "ready-r32", "ready-r36", "wqe-prep", "mte-pack", "wqe-prefetch", "input6", "input-ready"])
+                                     "card-all", "card-row", "server-all", "server-row", "notify-simt", "notify-core", "ready-task", "ready-shared", "ready-fast", "ready-pipeline", "ready-snapshot", "stage-pair", "stage-prefetch", "stage-stream", "plan-compact", "ready-r32", "ready-r36", "wqe-prep", "mte-pack", "wqe-prefetch", "input6", "input-ready", "input-pair", "input-pipe"])
 def test_all_combine_profile_paths_compile(tmp_path, profile, small, returns):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
     if not zig:
@@ -45,9 +45,9 @@ int main() {}
         flags = ["-DDEEPEP_LL_RDMA=1", "-DDEEPEP_LL_PHYSICAL_RANKS_PER_HOST=4",
                  f'-DDEEPEP_LL_COMBINE_COALESCE={1 if returns.startswith("card-") else 2}',
                  f'-DDEEPEP_LL_COMBINE_COALESCE_ROWS={int(returns.endswith("-row"))}']
-    elif returns in ("ready-task", "ready-shared", "ready-fast", "ready-pipeline", "ready-snapshot", "stage-pair", "stage-prefetch", "stage-stream", "plan-compact", "ready-r32", "ready-r36", "wqe-prep", "mte-pack", "wqe-prefetch", "input6", "input-ready"):
+    elif returns in ("ready-task", "ready-shared", "ready-fast", "ready-pipeline", "ready-snapshot", "stage-pair", "stage-prefetch", "stage-stream", "plan-compact", "ready-r32", "ready-r36", "wqe-prep", "mte-pack", "wqe-prefetch", "input6", "input-ready", "input-pair", "input-pipe"):
         if small: pytest.skip("Ready modes are independent of small-batch")
-        flags = ["-DDEEPEP_LL_RDMA=1", f'-DDEEPEP_LL_COMBINE_READY={1 if returns == "ready-task" else 2 if returns == "ready-shared" else 4 if returns in ("ready-snapshot", "ready-r32", "ready-r36") else 5 if returns == "stage-pair" else 6 if returns == "stage-prefetch" else 7 if returns == "stage-stream" else 8 if returns == "plan-compact" else 9 if returns == "wqe-prep" else 10 if returns == "mte-pack" else 12 if returns == "input6" else 13 if returns == "input-ready" else 11 if returns == "wqe-prefetch" else 3}']
+        flags = ["-DDEEPEP_LL_RDMA=1", f'-DDEEPEP_LL_COMBINE_READY={1 if returns == "ready-task" else 2 if returns == "ready-shared" else 4 if returns in ("ready-snapshot", "ready-r32", "ready-r36") else 5 if returns == "stage-pair" else 6 if returns == "stage-prefetch" else 7 if returns == "stage-stream" else 8 if returns == "plan-compact" else 9 if returns == "wqe-prep" else 10 if returns == "mte-pack" else 12 if returns == "input6" else 14 if returns == "input-pair" else 15 if returns == "input-pipe" else 13 if returns == "input-ready" else 11 if returns == "wqe-prefetch" else 3}']
         if returns.startswith("ready-r"): flags.append(f"-DDEEPEP_LL_COMBINE_RECV_CORES={returns[-2:]}")
         if returns == "ready-pipeline": flags.append("-DDEEPEP_LL_COMBINE_DEFER_RETURN=1")
     elif returns in ("notify-simt", "notify-core"):

@@ -173,3 +173,55 @@ issued-used 表示被安全丢弃的读。还要联合观察 partial_get_wait_ti
 partial_end、rdma_first_put/last_put 与干净 Event mean/P50/min/max。
 若提前读几乎未触发或取消过多，不能仅凭输入槽增加判断有效。
 这是待测假设，不能保证减少 5 μs。
+
+## 2026-11-05：EP32 HCCL 结果与 M4 实验
+
+采集版本 c252b8e；run `ep32-py-20261105-183859-ca8c3686`。
+EP32/H3584/K8/E384/BF16/random seed0/capacity256，HCCL gate，10 warmup、
+100 clean samples。每轮取全 rank 最大值；无样本剔除。全部精度 PASS/error=0。
+下表为 **mean / P50 / min..max，μs**。此次没有对应细粒度打点，
+不能把旧 device-sync 的阶段数值当作本次 HCCL 的阶段耗时。
+
+|BS|base|wqe-prefetch|input6|input-ready|
+|---:|---|---|---|---|
+|32|60.28 / 59.55 / 56.47..70.45|58.61 / 58.01 / 55.11..68.39|57.67 / 57.11 / 53.45..67.84|59.09 / 58.79 / 56.51..72.41|
+|48|68.91 / 68.66 / 65.96..78.52|67.79 / 66.46 / 62.33..84.71|66.35 / 65.96 / 61.91..77.45|67.32 / 66.89 / 63.05..76.78|
+|64|78.81 / 78.56 / 75.49..92.45|75.54 / 74.74 / 70.96..85.13|73.79 / 73.46 / 68.53..83.40|76.20 / 75.56 / 72.23..93.85|
+|72|83.00 / 82.72 / 79.07..93.04|78.20 / 77.72 / 73.20..89.67|78.16 / 78.11 / 74.13..87.48|79.71 / 79.29 / 75.87..90.24|
+|256|195.85 / 195.58 / 190.24..203.11|181.08 / 181.33 / 177.59..184.96|183.37 / 183.05 / 178.89..191.19|183.58 / 183.33 / 179.33..190.88|
+
+`wqe-prep` 同轮 mean 为 58.65/66.92/75.71/79.22/187.80 μs，
+均慢于 input6。input6 的 BS32 后50轮 P50=56.95，接近全100轮57.11；
+丢弃前半段不能解释或实现所需的另5 μs改善。
+
+本轮保留 base、wqe-prefetch、input6，新增两个隔离实验；旧版本仍可选：
+
+- **input-pair / ready=14**：与 input6 相同的六输入槽和三块 FP32
+  工作区。相邻两项分别 Cast 到 cast_/product_，一次屏障后发出两个
+  独立 Muls，再按原序 Add。Muls 只作同址完整覆盖，不作部分重叠；
+  符合 [Ascend Muls 地址重叠约束](https://www.hiascend.com/doc_center/source/zh/canncommercial/800/apiref/ascendcopapi/atlasascendc_api_07_0055.html)。
+  n 项贡献的显式 PIPE_V 从 3n 降为 3n−2⌊n/2⌋，例如8项24→16，
+  这不是硬件执行时间或加速比例。原成员顺序、FP32乘法/加法、最终
+  BF16/FP16 Cast 均保留，不使用 FMA 或树状规约。奇数尾项单独处理。
+- **input-pipe / ready=15**：与 input6 相同的六输入槽；沿用 ready11
+  提交流水。只有下一条任务已就绪且输出槽多于一条时暂存待发包，
+  下一条的 MTE2 发起后等上一包 MTE3，然后发布 WQE。末任务、单输出
+  槽立即提交；M5 前排空待提交包；全128KiB GM stage及尾部 quiet 保留。
+  此版本不包含 input-pair 的计算变化，便于单独归因。
+
+两者均不改变 Notify/Dispatch/SHMEM、通信字节、包格式、QP 所有权和
+M5 规约。不增加 UB，相对 input6 的布局保持一致；覆盖 Group2/4/16、
+2/4主机，包含 EP64，不把远端 server 写死为唯一一个。
+
+schema19 的记录为272 words，旧字段位置不变。新增
+`partial_pair_groups` 和 `partial_vector_barriers`，分别计数 M4
+两项配对及显式 PIPE_V（含最终 Cast 后屏障），以 `vec=groups/barriers`
+紧凑回显并写入 CSV/Perfetto。它们是指令调用计数，不能作时间相加。
+结合 `partial_compute_issue_ticks`、local/get wait、M4 end、first/last Put、
+最终flag拖尾及干净 Event 判断；不因为屏障减少就预先宣称性能提升。
+
+默认仍为五个干净版及五个对应 C++ 打点版，Python 仅编译五个干净版，
+同一进程初始化一次并顺序测试。两机都需重编，避免混用旧profile stride。
+CPU 测试检查实际 Aggregate 的 BF16/FP16 逐位结果、奇数尾、1–6输入槽、
+环形复用、Vector RAW/WAR/WAW屏障，以及延迟MTE/NIC与M5复用生命周期。
+设备编译、正确性和时延仍需目标 CANN/NPU 实测。
