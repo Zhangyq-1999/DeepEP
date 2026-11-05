@@ -63,6 +63,18 @@ Extra MTE commands or Scalar preparation may cost more than they save; hardware
 benefit is unverified. Neither experiment reduces the number of network bytes
 or WQEs.
 
+The first EP8 run at `f9eec20` did not improve clean latency over
+`ready-snapshot`. It also exposed a shared retirement regression: TransferBatch
+scanned every peer bit, even with no outstanding requests or an empty mask word.
+For the printed BS32/48/64 P50-representative receive cores,
+`FlushDone - PipeDone - RdmaQuietTicks` was 2555--2748 ticks for the experiments
+versus 516--598 ticks for `ready-snapshot`.
+Retirement now restores the original empty-batch return and empty-word skip.
+This preserves every nonempty peer's quiet and GM lifetime, including EP64
+peers in the second mask word. The isolated timing evidence identifies avoidable
+bookkeeping, not a measured clean speedup after the fix; rerun clean variants
+before judging the preparation or packing experiment.
+
 CPU checks execute the production adapters under delayed DMA and NIC reads,
 including partial tails, queue wrap/capacity fallback, 4/16 ranks per host,
 two/four hosts and stage recycling. SDK stubs validate call/order/address

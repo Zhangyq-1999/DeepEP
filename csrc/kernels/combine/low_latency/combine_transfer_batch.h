@@ -22,8 +22,11 @@ class TransferBatch {
 #endif
     __aicore__ inline void Retire(AscendC::LocalTensor<uint8_t> scratch)
     {
+        if (!count_) return;
         for (uint32_t word = 0U; word < kWords; ++word) {
-            for (uint32_t bit = 0U; bit < 32U; ++bit) if (peers_[word] & (1U << bit)) {
+            const uint32_t mask = peers_[word];
+            if (!mask) continue;
+            for (uint32_t bit = 0U; bit < 32U; ++bit) if (mask & (1U << bit)) {
                 const uint32_t peer = word * 32U + bit;
                 const uint64_t begin = profile_.DetailClock();
                 LlTransport::Quiet(peer, scratch);
