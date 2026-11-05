@@ -317,8 +317,8 @@ def test_default_suite_fits_one_paste_and_keeps_each_case(reporter, tmp_path):
     names = re.findall(r'"([a-z0-9_]+)"',
                        (HERE / "profile.hpp").read_text().split("names[] = {", 1)[1].split("};", 1)[0])
     fields = ["iteration", "device", "role", "profile_build"] + names
-    variants = ("base", "ready-snapshot", "stage-stream", "plan-compact", "ref-profile",
-                "ready-snapshot-profile", "stage-stream-profile", "plan-compact-profile")
+    variants = ("base", "ready-snapshot", "wqe-prep", "mte-pack", "ref-profile",
+                "ready-snapshot-profile", "wqe-prep-profile", "mte-pack-profile")
     defaults = (32, 48, 64, 72, 256)
     for phase, variant in enumerate(variants):
         directory = tmp_path / f"{phase}-{variant}"
@@ -363,7 +363,11 @@ def test_default_suite_fits_one_paste_and_keeps_each_case(reporter, tmp_path):
                                    route_snapshot_bytes=41728 if phase > 4 else 0,
                                    route_snapshot_capacity=181888 if phase > 4 else 0, route_snapshot_fallbacks=0,
                                    route_first_hop_rows=256, route_filter_rows=1024 if phase == 7 else 8192,
-                                   route_compact_ticks=123456 if phase == 7 else 0)
+                                   route_compact_ticks=123456 if phase == 7 else 0,
+                                   wqe_prepare_ticks=12345 if phase == 6 else 0,
+                                   wqe_prepared_packets=15 if phase == 6 else 0,
+                                   wqe_fallback_packets=1 if phase == 6 else 0,
+                                   mte_pack_packets=16 if phase == 7 else 0)
                         records.append(row)
             if profile:
                 for source in range(8):

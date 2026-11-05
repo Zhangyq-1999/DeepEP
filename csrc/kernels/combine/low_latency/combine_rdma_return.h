@@ -2,6 +2,9 @@
 #include "../../dispatch/low_latency/device/ll_dispatch_rdma_batch.h"
 #include "combine_return_schedule.h"
 #include "combine_ready_layout.h"
+#if DEEPEP_LL_COMBINE_READY == 9 || DEEPEP_LL_COMBINE_READY == 10
+#include "combine_transfer_batch.h"
+#endif
 #if DEEPEP_LL_COMBINE_READY == 5
 #include "combine_pair_staging.h"
 #endif
@@ -13,6 +16,8 @@ namespace CombineDedup {
 using ReturnBatch = CoalescedReturn;
 #elif DEEPEP_LL_COMBINE_READY == 5
 using ReturnBatch = PairStagingBatch;
+#elif DEEPEP_LL_COMBINE_READY == 9 || DEEPEP_LL_COMBINE_READY == 10
+using ReturnBatch = TransferBatch;
 #else
 using ReturnBatch = LlTransport::DispatchRdmaBatch;
 #endif

@@ -12,7 +12,7 @@ while (($#)); do
     case "$1" in
         --help|-h)
             echo 'build.sh --shmem-root SDK [--cann-home SDK] [--mpi-home DIR] [--build-dir DIR]'
-            echo '         [--ready 0|1|2|3|4|5|6|7|8] (original / task dependencies / shared rank-ready / cached tasks / route snapshot / paired staging / prefetch submission / eager-first stream / compact FIRST_HOP plan)'
+            echo '         [--ready 0..10] (0 original; 4 snapshot; 8 compact plan; 9 WQE preparation; 10 MTE packing)'
             echo '         [--notify 0|1|2] (MTE rank / SIMT rank / SIMT per-core)'
             echo '         [--coalesce 0|1|2] [--coalesce-rows 0|1] (off/card/server; whole bucket/one hidden)'
             echo '         [--variant base|opt|ops-shmem-base|auto] [--profile ON|OFF] [--small-batch ON|OFF] [--early-reduce ON|OFF] [--recv-cores 0|8..36] [--jobs N]'
@@ -39,7 +39,7 @@ while (($#)); do
         *) echo "Unknown build option: $1" >&2; exit 2;;
     esac
 done
-[[ $ready =~ ^[012345678]$ ]] || { echo 'ready must be an integer in [0,8]' >&2; exit 2; }
+[[ $ready =~ ^([0-9]|10)$ ]] || { echo 'ready must be an integer in [0,10]' >&2; exit 2; }
 if [[ $ready != 0 && ( $notify != 0 || $coalesce != 0 || $small == ON || $simt_meta == ON ) ]]; then
     echo 'Test ready modes separately from notify, coalescing, small-batch and SIMT metadata' >&2; exit 2
 fi

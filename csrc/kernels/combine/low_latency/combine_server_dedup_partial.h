@@ -101,6 +101,9 @@ public:
         planScratchBytes_ = EpCombineRouteSnapshotBytes(layout);
 #endif
         low_ = Allocate<uint16_t>(blocks_ * 480U);
+#if DEEPEP_LL_COMBINE_READY == 9
+        rdmaBatch_->SetPartialScratch(Allocate<uint8_t>(128U));
+#endif
         inputs_ = scratch[layout.inputOffset].ReinterpretCast<uint16_t>();
         outputs_ = scratch[layout.outputOffset];
         expert_.SetGlobalBuffer(reinterpret_cast<__gm__ uint16_t*>(expert));
@@ -643,8 +646,16 @@ private:
         auto output = outputs_[lane * packetBytes_];
         auto dst = output.ReinterpretCast<int32_t>();
         auto src = low_.ReinterpretCast<int32_t>();
+#if DEEPEP_LL_COMBINE_READY == 10
+        // Local return keeps the original packed UB path. Remote return packs
+        // directly into its private GM slot with strided MTE3 writes below.
+        if (!LlTransport::RemoteWrite(args_, source)) {
+#endif
         Copy(dst, src, uint64_t(64U), uint8_t(blocks_), {1U, 1U, 16U, 15U});
         Copy(dst[64U], src[64U], uint64_t(56U), uint8_t(blocks_), {1U, 1U, 16U, 15U});
+#if DEEPEP_LL_COMBINE_READY == 10
+        }
+#endif
 #if DEEPEP_LL_COMBINE_READY == 7
         profile_.Elapsed(CombineProfile::PartialPackTicks, packStart);
         // Current inputs/accumulators/packet use different UB from the pending
@@ -676,7 +687,10 @@ private:
             (uint64_t(token) * k_ + topk) * packetBytes_;
 #endif
         const uint64_t submitStart = profile_.DetailClock();
-#if DEEPEP_LL_COMBINE_READY == 5
+#if DEEPEP_LL_COMBINE_READY == 10
+        if (LlTransport::RemoteWrite(args_, source)) rdmaBatch_->EnqueueLinear(source, offset, low_, output, h_ * 2U);
+        else SendReturnPacket(*rdmaBatch_, args_, source, offset, output, packetBytes_, false);
+#elif DEEPEP_LL_COMBINE_READY == 5
         // Only M4 combines local staging waits. The ready scheduler closes the
         // pair at every runnable-batch boundary, including single-lane fallback.
         if (LlTransport::RemoteWrite(args_, source)) rdmaBatch_->Enqueue(source, offset, output, defer);

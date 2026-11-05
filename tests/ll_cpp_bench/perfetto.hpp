@@ -27,7 +27,7 @@ inline TraceRow trace_row(const uint64_t* raw, uint32_t device, bool receive)
     r.receive = receive;
     for (uint32_t w = 0; w < Count; ++w) {
         r.present[w] = w < StageRows ? bool(raw[Valid] & (uint64_t(1) << w)) :
-            (raw[Level] >= 2 || w < kDetailBegin || w > kDetailEnd);
+            (raw[Level] >= 2 || !IsDetailWord(w));
         if (r.present[w]) r.values[w] = w && w < StageRows ? profile_interval(raw, Entry, Word(w)) : raw[w];
     }
     return r;

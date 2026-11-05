@@ -260,6 +260,10 @@ inline void profile_header(std::ostream& out)
         "complete",
         "valid",
         "level",
+        "wqe_prepare_ticks",
+        "wqe_prepared_packets",
+        "wqe_fallback_packets",
+        "mte_pack_packets",
     };
     static_assert(sizeof(names) / sizeof(names[0]) == CombineProfile::Count, "profile CSV fields");
     for (uint32_t w = 0; w < CombineProfile::Count; ++w) out << (w ? "," : "") << names[w];
@@ -296,7 +300,7 @@ inline void profile_rows(std::ostream& out, const std::vector<uint64_t>& data, u
             if (w < StageRows) {
                 if (row[Valid] & (uint64_t(1) << w))
                     out << (w == Entry ? row[w] : profile_interval(row, Entry, Word(w)));
-            } else if (level >= 2 || w < kDetailBegin || w > kDetailEnd) {
+            } else if (level >= 2 || !IsDetailWord(w)) {
                 out << row[w];
             }
         }

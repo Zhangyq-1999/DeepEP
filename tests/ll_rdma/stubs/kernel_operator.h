@@ -130,7 +130,11 @@ template<class T> void DataCopyPad(GlobalTensor<T> d, LocalTensor<T> s, DataCopy
 #ifdef DEEPEP_TEST_METADATA_COPY
         if(observeStore)observeStore(dst,src,c.bytes);
 #endif
+#ifdef DEEPEP_TEST_DEFERRED_MTE3
+        deferredMte3.push_back({dst,src,c.bytes,++issuedMte3});
+#else
         std::memcpy(dst,src,c.bytes);
+#endif
     }
 }
 template<class T> void DataCopyPad(LocalTensor<T> d, GlobalTensor<T> s, DataCopyExtParams c, DataCopyPadExtParams<T>) {

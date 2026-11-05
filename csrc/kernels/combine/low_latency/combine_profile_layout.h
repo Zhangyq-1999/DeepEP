@@ -2,8 +2,8 @@
 #include <cstdint>
 
 namespace CombineProfile {
-// One 2048-byte record per AIV. Schema 13 adds routing scan work and
-// snapshot capacity/fallback counters. Detailed counters require level 2.
+// One 2048-byte record per AIV. Schema 17 appends transfer counters in spare
+// words without shifting the older fields. Detailed counters require level 2.
 enum Word : uint32_t {
     Entry,
     ProfileInitEnd,
@@ -254,11 +254,20 @@ enum Word : uint32_t {
     Complete,
     Valid,
     Level,
+    WqePrepareTicks,
+    WqePreparedPackets,
+    WqeFallbackPackets,
+    MtePackPackets,
     Count
 };
 constexpr uint32_t kWords = 256U;
-constexpr uint64_t kSchema = 16U;
+constexpr uint64_t kSchema = 17U;
 constexpr Word kDetailBegin = InitPrefixTicks;
 constexpr Word kDetailEnd = RouteCompactTicks;
+constexpr bool IsDetailWord(uint32_t word)
+{
+    return (word >= kDetailBegin && word <= kDetailEnd) ||
+           (word >= WqePrepareTicks && word <= MtePackPackets);
+}
 static_assert(Count <= kWords && StageRows <= 64U, "profile record bounds");
 }  // namespace CombineProfile

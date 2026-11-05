@@ -16,7 +16,7 @@ def test_stream_packet_lifetime_and_eager_head(tmp_path, physical, profile):
         pytest.skip("Set DEEPEP_TEST_ZIG for the asynchronous transport model")
     text = (ROOT / "csrc/kernels/combine/low_latency/combine_server_dedup_partial.h").read_text(encoding="utf-8")
     start = text.index("    __aicore__ inline void Send(uint32_t lane,")
-    end = text.index("\n#if DEEPEP_LL_COMBINE_READY == 1", start)
+    end = text.index("\n#if DEEPEP_LL_COMBINE_READY == 1 ||", start)
     source = r'''
 #include <cassert>
 #include <algorithm>

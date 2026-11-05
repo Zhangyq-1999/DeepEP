@@ -119,7 +119,7 @@ void compact_record(const Record& r)
     }
     std::cout << (r.receive ? " R" : " S") << " r/c=" << r[Rank] << '/' << r[Core]
               << " body=" << r[FlushDone] << " rows=" << r[StageRows] << '/' << r[DirectRows] << '/' << r[PartialRows]
-              << " final=" << r[FinalTokens] << '/' << r[Contributions] << " local/get=" << r[PartialLocalContrib]
+              << " final=" << r[FinalTokens] << '/' << r[Contributions] << " lg=" << r[PartialLocalContrib]
               << '/' << r[PartialGetContrib] << '\n';
     std::cout << "  e=";
     if (r.receive)
@@ -159,6 +159,9 @@ void compact_record(const Record& r)
     if (r[EarlyIssueTicks] || r[MetadataBatches] || r[PollPauseCalls])
         std::cout << "  extra early/meta/pause_calls/pause_ticks=" << r[EarlyIssueTicks] << '/' << r[MetadataBatches]
                   << '/' << r[PollPauseCalls] << '/' << r[PollPauseTicks] << '\n';
+    if (r.receive && (r[WqePreparedPackets] || r[WqeFallbackPackets] || r[MtePackPackets]))
+        std::cout << "  xfer=" << r[WqePrepareTicks] << '/'
+                  << r[WqePreparedPackets] << '/' << r[WqeFallbackPackets] << '/' << r[MtePackPackets] << '\n';
     if (r[ReadyPollCalls]) {
         std::cout << "  g=" << r[ReadyPollMisses] << '/' << r[ReadyPollCalls]
                   << '/' << r[ReadyPollMaxTicks] << '/' << r[ReadyInspectTicks] << ' ';
@@ -273,6 +276,7 @@ void suite_report(const fs::path& root)
                  "e(R)=init/stage_drained/core_notify/ready_begin/ready_observed/ready_end/partial_end/put_first/put_last/final_first/final_last/store/drain/pipe\n"
                  "top4 cumulative ticks: s.=stage_, d.=direct_, m4.=partial_, m5.=final_, g.=ready_; overlapping costs are not additive.\n"
                  "rdma=n/deferred/gap/stage_issue/stage_wait/put/quiet; stage=wait_calls/pairs/prefetch_calls; stream=packed_posts/eager/ticks\n"
+                 "lg=local/get; xfer=prepare_ticks/prepared/fallback/mte_pack\n"
                  "probe=miss/calls/miss_ticks/flags/confirmed; N=r/c local_wait/publish miss/calls/max_probe missing_core/count stores inspect\n"
                  "P=own-entry rank/core:first_put/last_put/partial_end/packets\n"
                  "g=miss/calls/max_probe/inspect missing_rank/core/count; 4294967295=all\n"

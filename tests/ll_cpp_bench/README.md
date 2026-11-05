@@ -35,16 +35,18 @@ bash tests/ll_cpp_bench/build_all.sh
 | --- | --- | --- |
 | `base` | 冻结的上游原版 | 关闭 |
 | `ready-snapshot` | 机内 ready 依赖调度；空闲 payload UB 一次读入路由 | 关闭 |
-| `ready-r32` | snapshot + 24 个发送核、32 个接收核（56 AIV） | 关闭 |
-| `ready-r36` | snapshot + 20 个发送核、36 个接收核（56 AIV） | 关闭 |
+| `wqe-prep` | snapshot + M4 暂存搬运期间在独立 UB 构造 WQE | 关闭 |
+| `mte-pack` | snapshot + M4 规约结果经 MTE 直接按包布局写 GM | 关闭 |
 | `ref-profile` | 实验开关全部关闭 | 开启 |
 | `ready-snapshot-profile` | 与 ready-snapshot 相同 | 开启 |
-| `ready-r32-profile` | 与 ready-r32 相同 | 开启 |
-| `ready-r36-profile` | 与 ready-r36 相同 | 开启 |
+| `wqe-prep-profile` | 与 wqe-prep 相同 | 开启 |
+| `mte-pack-profile` | 与 mte-pack 相同 | 开启 |
 
-优化和验收以 **BS32、48、64** 为主，BS72 作邻近对照，BS256 只检查回退。最新 EP8 干净版实测中，ready-snapshot 的这三个 BS 的 P50 分别为 54.78、59.99、67.06 μs；stage-stream 在小 BS 上尚无稳定收益，plan-compact 的对应 P50 均高于 snapshot。两者保留为可选实验，不再默认编译运行。
+优化和验收以 **BS32、48、64** 为主，BS72 作邻近对照，BS256 只检查回退。上一轮 EP8 干净版 ready-snapshot 的三个 BS 的 P50 分别为 57.11、63.56、70.19 μs，增加接收核没有持续改善这三个场景。ready-r32、ready-r36、stage-stream、plan-compact 保留为可选实验，不再默认编译运行。
 
-本轮默认只比较核数配比。ready-snapshot 保留 28/28；ready-r32、ready-r36 分别使用 24/32、20/36，不叠加其他实验。BS32 的每核最终归约 token 数上限由 2 降为 1，BS64 由 3 降为 2；BS48 三种配比的上限都是 2，因此仍需核对实际任务分布和 M4 汇总回传到 M5 最终归约的串行路径。增加接收核会减少发送核，收益须由干净版 mean/P50 和最小最大值确认，打点用于解释瓶颈，不能替代性能验收。这两个配比尚待目标设备验证。
+本轮两个实验均保留 snapshot 的 28/28 核配比，只改 M4 跨机回传的单包准备过程。`wqe-prep` 申请独立 128 B UB，在 payload MTE3 执行期间构造描述符，数据完成后才写入 SQ、发布 doorbell；队列接近满时，等 payload 完成后回到 SDK put，由 SDK 处理容量与 CQ。`mte-pack` 省去规约结果到 packet UB 的两条 Vector Copy，改用分段 MTE 将连续 payload 和原 32 B flag 写入同一个 GM packet。它没有增加 UB，也没有减少 RDMA 包数。两个方案不叠加，DIRECT、本机回传、归约算术顺序、GM 暂存退休及算子末尾 quiet 保留。详见 [TRANSFER_AB.md](TRANSFER_AB.md)。尚无 CANN/NPU 编译及性能验证。
+
+打点 schema 17 的 `xfer prepare_ticks/prepared/fallback/mte_pack` 给出 WQE 构造累计 ticks、成功预构造包数、队列容量回退包数、直接 MTE 打包数。`rdma_stage_wait_ticks` 是预构造后剩余等待，`rdma_put_ticks` 是之后的 SQ 发布与 doorbell（回退包包含完整 SDK put）。CSV 和 Perfetto 的 `profiled body` 参数也包含这些计数；累计 ticks 不作为独立流水块，也不能直接等同于网卡或网络耗时。
 
 plan-compact 用 `build.sh --variant opt --ready 8` 单独构建。沿用 snapshot 的数据加载、任务所属核、server 遍历、ready 协议和回传流程；先稳定压缩 FIRST_HOP 的原行号及源 rank，后续各 server 只过滤压缩表。临时表复用已失效的路由三元组区域，UB 大小、payload lane 数和 GM 暂存不增加。零 FIRST_HOP 跳过 server 筛选；快照放不进 UB 时继续走原扫描回退。Notify、SHMEM、WQE 和数学归约顺序保持原样。
 

@@ -8,8 +8,8 @@ import subprocess
 import pytest
 
 HERE = Path(__file__).resolve().parent
-PROFILES = ("ref-profile", "ready-snapshot-profile", "ready-r32-profile", "ready-r36-profile")
-CLEAN = ("base", "ready-snapshot", "ready-r32", "ready-r36")
+PROFILES = ("ref-profile", "ready-snapshot-profile", "wqe-prep-profile", "mte-pack-profile")
+CLEAN = ("base", "ready-snapshot", "wqe-prep", "mte-pack")
 
 
 @pytest.fixture
@@ -89,7 +89,7 @@ def test_build_all_isolated_matrix_and_failure_stop(harness):
         assert call["--simt-meta"] == ("ON" if name.startswith("prepare") else "OFF")
         assert call["--prefetch-return"] == ("ON" if name.startswith("batch-pipeline") else "OFF")
         assert call["--simt-flag"] == "OFF"
-        assert call["--ready"] == ("4" if name.startswith(("ready-snapshot", "ready-r32", "ready-r36")) else "0")
+        assert call["--ready"] == ("9" if name.startswith("wqe-prep") else "10" if name.startswith("mte-pack") else "4" if name.startswith("ready-snapshot") else "0")
         assert call["--notify"] == ("1" if name.startswith("notify-simt") else "2" if name.startswith("notify-core") else "0")
         assert call["--local-first"] == ("ON" if name.startswith("batch") else "OFF")
         assert call["--batch-final"] == ("ON" if name.startswith("batch") else "OFF")
@@ -194,7 +194,7 @@ def test_four_host_commands_and_detection(harness):
     run, env = harness
     builds = call_options(run("build_all.sh", "--ranks-per-host", "16").stdout)
     assert len(builds) == 8 and all(call["--ranks-per-host"] == "16" for call in builds)
-    assert [call["--ready"] for call in builds] == ["0", "4", "4", "4", "0", "4", "4", "4"]
+    assert [call["--ready"] for call in builds] == ["0", "4", "9", "10", "0", "4", "9", "10"]
     hosts = "90.90.93.84,90.90.93.184,90.90.93.85,90.90.93.185"
     result = run("run_all.sh", "--ep", "64", "--ranks-per-host", "16", "--hosts", hosts,
                  "--tokens", "32,72,128,256", "--master-port", "30071")

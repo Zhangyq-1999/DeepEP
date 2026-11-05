@@ -8,11 +8,11 @@ namespace CombineDedup {
 // Host build identity: modes 0..3 retain their original two-bit encoding.
 // Modes 4..7 use the unused notify=3 tag; ready modes cannot enable notify.
 // This keeps the upper 16 bits available for the existing poll-nop value.
-// Mode 8 additionally uses the coalesce-rows bit with coalesce disabled:
+// Modes 8..11 additionally use the coalesce-rows bit with coalesce disabled:
 // that combination is forbidden for coalescing, and ready excludes coalesce.
 constexpr uint32_t CombineReadyOptions(uint32_t mode)
 {
-    if (mode == 8U) return (3U << 12U) | (1U << 11U);
+    if (mode >= 8U) return (3U << 12U) | (1U << 11U) | ((mode - 8U) << 14U);
     return mode >= 4U ? ((3U << 12U) | ((mode - 4U) << 14U)) : (mode << 14U);
 }
 // Relative to Combine's 1 MiB control base. Start at 1.5 MiB absolute:
