@@ -237,6 +237,9 @@ enum Word : uint32_t {
     RouteSnapshotBytes,
     RouteSnapshotCapacity,
     RouteSnapshotFallbacks,
+    RdmaStageWaitCalls,
+    RdmaStagePairGroups,
+    PartialPrefetchSubmitCalls,
     CoalesceWorker,
     Rank,
     Core,
@@ -249,8 +252,8 @@ enum Word : uint32_t {
     Count
 };
 constexpr uint32_t kWords = 256U;
-constexpr uint64_t kSchema = 13U;
+constexpr uint64_t kSchema = 14U;
 constexpr Word kDetailBegin = InitPrefixTicks;
-constexpr Word kDetailEnd = RouteSnapshotFallbacks;
+constexpr Word kDetailEnd = PartialPrefetchSubmitCalls;
 static_assert(Count <= kWords && StageRows <= 64U, "profile record bounds");
 }  // namespace CombineProfile

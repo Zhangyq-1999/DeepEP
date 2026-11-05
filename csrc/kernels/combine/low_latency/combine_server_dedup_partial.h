@@ -21,7 +21,7 @@
 #ifdef DEEPEP_LL_COMBINE_SIMT_META
 #include "combine_simt.h"
 #endif
-#if defined(DEEPEP_LL_COMBINE_SMALL_BATCH) || DEEPEP_LL_COMBINE_READY == 4
+#if defined(DEEPEP_LL_COMBINE_SMALL_BATCH) || DEEPEP_LL_COMBINE_READY >= 4
 #include "combine_partial_plan.h"
 #endif
 
@@ -38,7 +38,7 @@ public:
     __aicore__ inline void SetProfile(CombineProfile::DeviceProfile* p)
     {
         profile_.Bind(p);
-#if defined(DEEPEP_LL_COMBINE_SMALL_BATCH) || DEEPEP_LL_COMBINE_READY == 4
+#if defined(DEEPEP_LL_COMBINE_SMALL_BATCH) || DEEPEP_LL_COMBINE_READY >= 4
         plan_.SetProfile(p);
 #endif
     }
@@ -93,7 +93,7 @@ public:
 #ifdef DEEPEP_LL_COMBINE_SMALL_BATCH
         planScratch_ = scratch;
         planScratchBytes_ = layout.phaseOffset;
-#elif DEEPEP_LL_COMBINE_READY == 4
+#elif DEEPEP_LL_COMBINE_READY >= 4
         // M1/M2 have retired before Init; M4 has not initialized its payload
         // lanes yet. Borrow the complete idle payload arena for planning only.
         // Resident control and the owned-row/dependency/cache area stay intact.
@@ -123,7 +123,7 @@ public:
 #endif
     __aicore__ inline uint32_t Process()
     {
-#if DEEPEP_LL_COMBINE_READY == 4
+#if DEEPEP_LL_COMBINE_READY >= 4
         // Must precede output-flag initialization: the snapshot aliases those
         // future output slots. No payload DMA has started on this receive core.
         profile_.Mark(CombineProfile::PlanBegin);
@@ -301,12 +301,12 @@ private:
 
     __aicore__ inline uint32_t ProcessReadyTasks(uint32_t servers, uint32_t ownServer)
     {
-#if DEEPEP_LL_COMBINE_READY != 4
+#if DEEPEP_LL_COMBINE_READY < 4
         profile_.Mark(CombineProfile::PlanBegin);
 #endif
         const uint64_t start = profile_.DetailClock();
         uint32_t owner = 0U, count = 0U;
-#if DEEPEP_LL_COMBINE_READY == 4
+#if DEEPEP_LL_COMBINE_READY >= 4
         if (planned_) count = plan_.End(servers - 1U);
         else
 #endif
@@ -347,6 +347,8 @@ private:
         profile_.Elapsed(CombineProfile::ReadyPlanTicks, start);
         profile_.Mark(CombineProfile::PlanEnd);
         uint32_t completed = 0U, blockedMask = 0xffffffffU;
+        const bool deferReady = CombineDeferReturn(outputLanes_) ||
+            ((DEEPEP_LL_COMBINE_READY == 5 || DEEPEP_LL_COMBINE_READY == 6) && outputLanes_ > 1U);
         while (completed < count) {
             const uint32_t observed = ready_->Poll();
             profile_.Add(CombineProfile::ReadyTaskRounds);
@@ -394,7 +396,7 @@ private:
                 profile_.Elapsed(CombineProfile::ReadyPipelineIssueTicks, issueStart);
 #endif
                 Send(completed % outputLanes_, source, token, topk,
-                     CombineDeferReturn(outputLanes_) && index + 1U < runnable);
+                     deferReady && index + 1U < runnable);
                 readyDeps_.SetValue(task, int32_t(kReadyTaskDone));
                 ++completed;
                 if (!ready_->All()) {
@@ -575,12 +577,15 @@ private:
     {
         const uint32_t preload = contributions < inputLanes_ ? contributions : inputLanes_;
         for (uint32_t member = 0; member < preload; ++member) Load(row, source, member);
-#ifdef DEEPEP_LL_COMBINE_PREFETCH_RETURN
+#if defined(DEEPEP_LL_COMBINE_PREFETCH_RETURN) || DEEPEP_LL_COMBINE_READY == 6
         // Let current MTE2 input reads overlap the previous packet's MTE3 wait
         // and Put submission. The old output lane is still owned by the batch.
-        const uint64_t issueStart = profile_.DetailClock();
-        rdmaBatch_->SubmitPending();
-        profile_.Elapsed(CombineProfile::EarlyIssueTicks, issueStart);
+        if (rdmaBatch_->HasStaged()) {
+            const uint64_t issueStart = profile_.DetailClock();
+            rdmaBatch_->SubmitPending();
+            profile_.Elapsed(CombineProfile::EarlyIssueTicks, issueStart);
+            profile_.Add(CombineProfile::PartialPrefetchSubmitCalls);
+        }
 #endif
         const auto weights = table3Ub_.ReinterpretCast<float>();
         for (uint32_t member = 0; member < contributions; ++member) {
@@ -636,7 +641,14 @@ private:
         const uint64_t offset = window_ + COMBINE_DEDUP_EP_SERVER_DEDUP_SHARED_DATA_OFFSET +
             (uint64_t(token) * k_ + topk) * packetBytes_;
         const uint64_t submitStart = profile_.DetailClock();
+#if DEEPEP_LL_COMBINE_READY == 5
+        // Only M4 combines local staging waits. The ready scheduler closes the
+        // pair at every runnable-batch boundary, including single-lane fallback.
+        if (LlTransport::RemoteWrite(args_, source)) rdmaBatch_->Enqueue(source, offset, output, defer);
+        else SendReturnPacket(*rdmaBatch_, args_, source, offset, output, packetBytes_, false);
+#else
         SendReturnPacket(*rdmaBatch_, args_, source, offset, output, packetBytes_, defer);
+#endif
         profile_.SampleMax(CombineProfile::PartialSubmitTicks, CombineProfile::PartialSubmitMaxTicks,
                            CombineProfile::PartialSubmitMaxPeer, CombineProfile::PartialSubmitMaxToken, submitStart,
                            source, token);
@@ -678,7 +690,7 @@ private:
     LocalTensor<uint32_t> table3Cache_;
     uint32_t cacheBegin_ = 0U, cacheEnd_ = 0U;
 #endif
-#if defined(DEEPEP_LL_COMBINE_SMALL_BATCH) || DEEPEP_LL_COMBINE_READY == 4
+#if defined(DEEPEP_LL_COMBINE_SMALL_BATCH) || DEEPEP_LL_COMBINE_READY >= 4
     PartialTaskPlan<Group> plan_;
     LocalTensor<uint8_t> planScratch_;
     uint32_t planScratchBytes_ = 0U;

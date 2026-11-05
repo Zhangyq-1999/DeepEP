@@ -8,7 +8,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
-@pytest.mark.parametrize("mode", [1, 2, 3, 4])
+@pytest.mark.parametrize("mode", [1, 2, 3, 4, 5, 6])
 def test_ready_lifecycle_and_vector_selection(tmp_path, mode):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
     if not zig:
@@ -23,7 +23,7 @@ def test_ready_lifecycle_and_vector_selection(tmp_path, mode):
     subprocess.run([str(exe)], check=True, timeout=30)
 
 
-@pytest.mark.parametrize("mode,pipeline", [(1, False), (3, False), (3, True), (4, False)])
+@pytest.mark.parametrize("mode,pipeline", [(1, False), (3, False), (3, True), (4, False), (5, False), (6, False)])
 def test_production_dependency_scheduler(tmp_path, mode, pipeline):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
     if not zig:
@@ -63,7 +63,8 @@ template<uint32_t Group> struct Scheduler {
     struct Batch {
         bool pending=false;uint32_t lane=0,posted=0;
         void Init(DispatchDedup::CommArgs*,uint32_t){}
-        void SubmitPending(){if(pending){++posted;pending=false;}}
+        uint32_t staged=0;
+        void SubmitPending(){if(pending){posted+=staged;staged=0;pending=false;}}
     } batch;
     Batch* rdmaBatch_=&batch;
     Ready* ready_=&ready;
@@ -89,7 +90,7 @@ template<uint32_t Group> struct Scheduler {
     LocalTensor<uint32_t> readyTable3_;
     uint32_t readyTable3Stride_=0;
     bool readyCached_=false;
-#if DEEPEP_LL_COMBINE_READY == 4
+#if DEEPEP_LL_COMBINE_READY >= 4
     PartialTaskPlan<Group> plan_;
     bool planned_=false;
     std::vector<int32_t> types;
@@ -101,7 +102,7 @@ template<uint32_t Group> struct Scheduler {
     explicit Scheduler(std::vector<Task> tasks,uint32_t world=2*Group,uint32_t rank=0,uint32_t topk=8):k_(topk),input(std::move(tasks)) {
         args.rank=rank;args.rankSize=world;args.reserved0=Group;args.reservedConfig[0]=LlRdma::kBackend;
         dtype_=DispatchDedup::DISPATCH_DEDUP_DATA_TYPE_FP16;
-#if DEEPEP_LL_COMBINE_READY == 4
+#if DEEPEP_LL_COMBINE_READY >= 4
         tokens_=input.size();types.resize(tokens_,2);types_.SetGlobalBuffer(types.data());
         const auto layout=EpCombineM45Layout(tokens_,72,3584,k_,recvCores_);
         assert(layout.outputLanes==8U);
@@ -128,7 +129,7 @@ template<uint32_t Group> struct Scheduler {
         return append;
     }
     template<class T>void Aggregate(uint32_t row,uint32_t source,uint32_t members) {
-#if DEEPEP_LL_COMBINE_READY == 4
+#if DEEPEP_LL_COMBINE_READY >= 4
         // The route snapshot aliases the output ring. Process must initialize
         // all data-with-flag tails AFTER planning, including untouched lanes.
         for(uint32_t lane=0;lane<outputLanes_;++lane)for(uint32_t block=0;block<blocks_;++block)
@@ -140,20 +141,28 @@ template<uint32_t Group> struct Scheduler {
         assert(!(input[row].mask & ~ready.mask)); // No unready stage read.
         for(uint32_t previous:sent) assert(previous!=row);
         if(batch.pending) {assert(batch.lane!=sent.size()%outputLanes_);++overlaps;}
+#if DEEPEP_LL_COMBINE_READY == 6
+        batch.SubmitPending(); // Production Aggregate submits after input preload.
+#endif
         ++aggregated;
     }
     void Send(uint32_t lane,uint32_t source,uint32_t token,uint32_t topk,bool defer) {
         assert(lane==sent.size()%outputLanes_ && source==input[token].source && topk==token%k_);
-        assert(!batch.pending); // Pending Put must precede the next output pack.
+#if DEEPEP_LL_COMBINE_READY != 5
+        assert(!batch.pending); // Ordinary batch has one unposted packet.
+#endif
         sent.push_back(token);
         if(LlTransport::RemoteWrite(args_,source)) {
-            batch.pending=true;batch.lane=lane;
+            batch.pending=true;batch.lane=lane;++batch.staged;
+#if DEEPEP_LL_COMBINE_READY == 5
+            if(batch.staged==2)batch.SubmitPending();
+#endif
             if(!defer)batch.SubmitPending();
-        }
+        } else batch.SubmitPending();
     }
-''' + load + method + ('\n' + process if mode == 4 else '') + r'''
+''' + load + method + ('\n' + process if mode >= 4 else '') + r'''
     uint32_t Run(uint32_t servers,uint32_t own) {
-#if DEEPEP_LL_COMBINE_READY == 4
+#if DEEPEP_LL_COMBINE_READY >= 4
         cores=2;core=1; // One receiver owns every FIRST_HOP in this fixture.
         for(uint32_t lane=0;lane<outputLanes_;++lane)SetFlag<HardEvent::MTE3_V>(lane);
         const auto result=Process();
@@ -178,7 +187,7 @@ template<uint32_t Group>void Check() {
     Scheduler<Group> invalid({{0U,Group}});
     bool trapped=false;try{invalid.Run(2,0);}catch(const std::runtime_error&){trapped=true;}
     assert(trapped);
-#if DEEPEP_LL_COMBINE_READY == 4
+#if DEEPEP_LL_COMBINE_READY >= 4
     // Trap aborts the real kernel; discard the fixture's seeded payload events.
     for(auto& direction:events)for(auto& live:direction)live=false;
 #endif
@@ -207,7 +216,7 @@ void FourHosts() {
 }
 
 void CacheAndPipeline() {
-#if DEEPEP_LL_COMBINE_READY == 4
+#if DEEPEP_LL_COMBINE_READY >= 4
     Scheduler<16> fallback({{2U,16U},{2U,32U},{2U,48U}},64,0);
     fallback.planScratchBytes_=0;
     assert(fallback.Run(4,0)==3U && !fallback.planned_);
@@ -226,7 +235,7 @@ void CacheAndPipeline() {
 #if DEEPEP_LL_COMBINE_READY >= 3
         assert(filterCalls-before==3U); // empty remote+local, then ready remote
         assert(t.loads==(count<=EpCombineReadyCacheCapacity(k)?0U:count*2U));
-#ifdef DEEPEP_LL_COMBINE_DEFER_RETURN
+#if defined(DEEPEP_LL_COMBINE_DEFER_RETURN) || DEEPEP_LL_COMBINE_READY == 6
         assert(t.overlaps==(lanes>1U?count-1U:0U));
 #endif
 #else

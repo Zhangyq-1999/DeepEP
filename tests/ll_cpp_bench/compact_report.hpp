@@ -127,10 +127,15 @@ void compact_record(const Record& r)
     std::cout << '\n';
     // Always expose staging/Put/CQ and the moved submission cost. A top-N list
     // alone can hide them when other waits become longer.
-    if (r[RdmaPackets] || r[RdmaQuietTicks])
+    if (r[RdmaPackets] || r[RdmaQuietTicks]) {
         std::cout << "  rdma=" << r[RdmaPackets] << '/' << r[RdmaDeferredPackets]
                   << '/' << r[RdmaDeferGapTicks] << '/' << r[RdmaStageIssueTicks] << '/' << r[RdmaStageWaitTicks]
-                  << '/' << r[RdmaPutTicks] << '/' << r[RdmaQuietTicks] << '\n';
+                  << '/' << r[RdmaPutTicks] << '/' << r[RdmaQuietTicks];
+        if (r.receive && r.present[RdmaStageWaitCalls])
+            std::cout << " stage=" << r[RdmaStageWaitCalls] << '/' << r[RdmaStagePairGroups]
+                      << '/' << r[PartialPrefetchSubmitCalls];
+        std::cout << '\n';
+    }
     if (r.receive) {
         std::cout << "  probe=" << r[ProbeMisses] << '/' << r[ProbeCalls]
                   << '/' << r[ProbeMissTicks] << '/' << r[ProbeFlagBlocks] << '/' << r[ProbeConfirmedSlots];
@@ -254,7 +259,7 @@ void suite_report(const fs::path& root)
                  "e(S)=init/stage/core_notify/notify/direct_first/direct_last/direct_end/pipe\n"
                  "e(R)=init/stage_drained/core_notify/ready_begin/ready_observed/ready_end/partial_end/put_first/put_last/final_first/final_last/store/drain/pipe\n"
                  "top4 cumulative ticks: s.=stage_, d.=direct_, m4.=partial_, m5.=final_, g.=ready_; overlapping costs are not additive.\n"
-                 "rdma=n/deferred/gap/stage_issue/stage_wait/put/quiet\n"
+                 "rdma=n/deferred/gap/stage_issue/stage_wait/put/quiet; stage=wait_calls/pairs/prefetch_calls\n"
                  "probe=miss/calls/miss_ticks/flags/confirmed; N=r/c local_wait/publish miss/calls/max_probe missing_core/count stores inspect\n"
                  "P=own-entry rank/core:first_put/last_put/partial_end/packets\n"
                  "g=miss/calls/max_probe/inspect missing_rank/core/count; 4294967295=all\n"

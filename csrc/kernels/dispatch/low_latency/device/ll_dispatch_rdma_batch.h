@@ -123,6 +123,7 @@ public:
 #endif
         WaitFlag<HardEvent::MTE3_S>(7U);
 #ifdef DEEPEP_LL_COMBINE_PROFILE
+        combineProfile_.Add(CombineProfile::RdmaStageWaitCalls);
         combineProfile_.SampleMax(CombineProfile::RdmaStageWaitTicks, CombineProfile::RdmaStageWaitMaxTicks,
                                   CombineProfile::RdmaStageWaitMaxPeer, CombineProfile::RdmaStageWaitMaxPeer,
                                   stageWait, pendingPeer_, pendingPeer_);

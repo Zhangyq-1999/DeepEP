@@ -6,11 +6,11 @@
 
 namespace CombineDedup {
 // Host build identity: modes 0..3 retain their original two-bit encoding.
-// Mode 4 uses the unused notify=3 tag; ready modes cannot enable notify.
+// Modes 4..6 use the unused notify=3 tag; ready modes cannot enable notify.
 // This keeps the upper 16 bits available for the existing poll-nop value.
 constexpr uint32_t CombineReadyOptions(uint32_t mode)
 {
-    return mode == 4U ? (3U << 12U) : (mode << 14U);
+    return mode >= 4U ? ((3U << 12U) | ((mode - 4U) << 14U)) : (mode << 14U);
 }
 // Relative to Combine's 1 MiB control base. Start at 1.5 MiB absolute:
 // Dispatch's persistent count TX occupies 1280 KiB + up to 40 KiB in each bank.
