@@ -97,6 +97,53 @@ def test_shell_syntax(bash):
         subprocess.run([bash, "-n", str(HERE / script)], check=True, timeout=10)
 
 
+@pytest.mark.parametrize("version,stream,exit_code,large,ok", [
+    ("3.2.1", "stdout", 0, False, True),
+    ("3.2.1", "stderr", 0, False, True),
+    ("4.1.3", "stdout", 0, True, True),
+    ("4.1.3", "stderr", 0, False, True),
+    ("4.1.3", "stdout", 127, False, False),
+    ("3.2.10", "stdout", 0, False, False),
+    ("4.1.30", "stdout", 0, False, False),
+    ("5.0.0", "stdout", 0, False, False),
+])
+def test_mpi_version_and_proxy_defaults(bash, tmp_path, version, stream, exit_code, large, ok):
+    # Execute the actual guard under pipefail, including a banner bigger than
+    # a pipe buffer and stderr-only vendor builds. No real MPI/NPU is launched.
+    mpi = tmp_path / "misnamed mpich-3.2.1"
+    (mpi / "bin").mkdir(parents=True)
+    proxy = mpi / "bin/mpiexec"
+    proxy.write_text("#!/usr/bin/env bash\n" +
+                     ('exec 1>&2\n' if stream == "stderr" else '') +
+                     f"printf 'HYDRA build details:\\n    Version: {version}\\n'\n" +
+                     ("printf '%262144s\\n' 'configure options'\n" if large else '') +
+                     f"exit {exit_code}\n", newline="\n")
+    proxy.chmod(0o755)
+    text = (HERE / "launch.sh").read_text(encoding="utf-8")
+    begin = text.index("check_mpi_version() {")
+    function = text[begin:text.index("\n}\n", begin) + 3]
+    script = '''set -euo pipefail
+mpi=$1 node_rank=1
+proxy_extra=()
+fail() { echo "ERROR: $*" >&2; exit 2; }
+''' + function + '\ncheck_mpi_version\nprintf "ARG=%s\\n" "${proxy_extra[@]}"\n'
+    result = subprocess.run([bash, "-c", script, "_", mpi.as_posix()],
+                            capture_output=True, text=True, timeout=10)
+    assert (result.returncode == 0) == ok, result.stdout + result.stderr
+    if ok:
+        assert f"node=1 MPI={version}" in result.stdout
+        args = [s[4:] for s in result.stdout.splitlines() if s.startswith("ARG=") and s != "ARG="]
+        assert args == (["--pmi-port", "0", "--gpus-per-proc", "-2", "--gpu-subdevs-per-proc", "-2"]
+                        if version == "4.1.3" else [])
+    else:
+        assert str(mpi.as_posix()) in result.stderr
+        assert "ARG=" not in result.stdout
+        if exit_code:
+            assert f"exit={exit_code}" in result.stderr
+        else:
+            assert f"Version: {version}" in result.stderr and "--mpi-home" in result.stderr
+
+
 @pytest.mark.parametrize("soft,hard,expected,ok", [
     ("1024", "1048576", "65536", True),
     ("131072", "1048576", "131072", True),
@@ -313,8 +360,9 @@ def test_hydra_command_launcher_only_prints(bash, tmp_path):
     assert not marker.exists()
 
 
+@pytest.mark.parametrize("version", ["3.2.1", "4.1.3"])
 @pytest.mark.parametrize("nodes,failure", [(2, 0), (2, 1), (2, 2), (4, 0), (4, 1), (4, 2), (4, 3)])
-def test_multi_node_script_sequence_with_fake_hydra(bash, tmp_path, nodes, failure):
+def test_multi_node_script_sequence_with_fake_hydra(bash, tmp_path, nodes, failure, version):
     """Exercise independent node scripts; this is not an MPI runtime test."""
     root = tmp_path / "project"
     script = root / "tests/ll_cpp_bench/launch.sh"
@@ -342,7 +390,7 @@ def test_multi_node_script_sequence_with_fake_hydra(bash, tmp_path, nodes, failu
     write(helpers / "timeout", 'shift 3\nexec "$@"\n')
     write(script.with_name("summarize.sh"), 'echo "fixture global summary"\n')
     write(mpi / "bin/mpiexec", r'''
-if [[ ${1:-} == -version ]]; then echo '    Version: 3.2.1'; exit 0; fi
+if [[ ${1:-} == -version ]]; then echo "    Version: $FAKE_VERSION"; exit 0; fi
 [[ $HYDRA_LAUNCHER_AUTOFORK == 0 ]]
 port=${MPIEXEC_PORT_RANGE%:*}
 while (($#)); do
@@ -355,7 +403,9 @@ mkdir -p "$out"
 touch "$FAKE_SHARED/controller-$port"
 for ((node=0;node<FAKE_NODES;++node)); do
     if [[ ${FAKE_FAIL:-0} == 3 && $node == $((FAKE_NODES-1)) ]]; then continue; fi
-    bash "$launcher_exec" -x "node$node" '"/fixture/hydra_pmi_proxy"' --control-port "node0:$port" --proxy-id "$node"
+    extra=()
+    if [[ $FAKE_VERSION == 4.1.3 ]]; then extra=(--pmi-port 0 --gpus-per-proc -2 --gpu-subdevs-per-proc -2); fi
+    bash "$launcher_exec" -x "node$node" '"/fixture/hydra_pmi_proxy"' --control-port "node0:$port" "${extra[@]}" --proxy-id "$node"
 done
 if [[ ${FAKE_FAIL:-0} == 2 ]]; then echo 'fixture controller abort'; exit 134; fi
 for ((i=0;i<200;i++)); do
@@ -378,10 +428,17 @@ done
 touch "$FAKE_SHARED/done-$port"
 ''')
     write(mpi / "bin/hydra_pmi_proxy", r'''
+pmi=unset gpu=unset subgpu=unset
 while (($#)); do
-    case $1 in --control-port) port=${2##*:};; --proxy-id) node=$2;; esac
+    case $1 in --control-port) port=${2##*:};; --proxy-id) node=$2;;
+        --pmi-port) pmi=$2;; --gpus-per-proc) gpu=$2;; --gpu-subdevs-per-proc) subgpu=$2;; esac
     shift 2
 done
+if [[ $FAKE_VERSION == 4.1.3 ]]; then
+    [[ $pmi == 0 && $gpu == -2 && $subgpu == -2 ]]
+else
+    [[ $pmi == unset && $gpu == unset && $subgpu == unset ]]
+fi
 for ((i=0;i<200;i++)); do
     [[ -f "$FAKE_SHARED/controller-$port" ]] && break
     sleep 0.02
@@ -395,7 +452,8 @@ for ((i=0;i<200;i++)); do
 done
 exit 1
 ''')
-    env = dict(os.environ, FAKE_SHARED=shared.as_posix(), FAKE_FAIL=str(failure), FAKE_NODES=str(nodes))
+    env = dict(os.environ, FAKE_SHARED=shared.as_posix(), FAKE_FAIL=str(failure), FAKE_NODES=str(nodes),
+               FAKE_VERSION=version)
     # Git Bash accepts Windows drive paths as arguments, but PATH uses /c/... .
     helper_path = subprocess.check_output([bash, "-c", 'cygpath -u "$1"' if os.name == "nt" else 'printf "%s" "$1"',
                                           "_", helpers.as_posix()], text=True).strip()

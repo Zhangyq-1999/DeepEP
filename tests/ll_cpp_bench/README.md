@@ -7,7 +7,7 @@
 参与测试的机器需要相同的源码、编译选项和 SDK：
 
 - Ascend950、CANN 9.2.0 或 9.3.0，以及 C++17 编译器和 CMake 3.20 以上版本。
-- `/usr/local/mpich-3.2.1`。用例与 SHMEM 的 MPI 插件需使用这套 MPI。
+- MPICH 3.2.1 或 4.1.3，默认安装目录 `/usr/local/mpich-3.2.1`。脚本读取实际版本，不按目录名推断；所有节点的 MPI 版本需一致，用例与 SHMEM 的 MPI 插件需使用这套 MPI。
 - 当前分支配套的 HNS_1825 SHMEM SDK。`SHMEM_ROOT` 指向包含 `include`、`lib` 和 `deepep-sdk.json` 的安装目录，`lib` 下需有 `aclshmem_bootstrap_mpi.so`。
 
 可以复用此前编译 LL 算子时生成的 SHMEM SDK。这个 SDK 独立于 Conda。没有现成 SDK 时，下面的 Shell/CMake 脚本会编译仓库锁定的 SHMEM 子模块，并登记 SDK 信息。
@@ -285,7 +285,7 @@ EP2 使用新增的 G2 Plain16 特化，支持 BF16 和 FP16；EP4、EP8、EP16 
 
 ## 双机 32 卡
 
-**两台机器各执行一次 `launch.sh`，共同组成一个 32-rank MPI 作业。** 脚本封装 MPICH 3.2.1 的 Hydra 启动流程，自动启动本机代理和 16 个 rank。运行时无需 SSH，也无需复制代理命令。
+**两台机器各执行一次 `launch.sh`，共同组成一个 32-rank MPI 作业。** 脚本封装 MPICH 3.2.1/4.1.3 的 Hydra 启动流程，自动启动本机代理和 16 个 rank。运行时无需 SSH，也无需复制代理命令。
 
 两台机器先加载前文的 CANN、MPI 和 SHMEM 环境。两边使用相同的仓库绝对路径、编译结果、`--hosts`、`--master-port`、`--variants` 和 `--run-id`。双机继续使用共同指定的结果目录，每轮需在两边填写相同的新 `--run-id`。下面的 `HOST0`、`HOST1` 替换成实际 IP。
 
@@ -319,6 +319,12 @@ bash tests/ll_cpp_bench/launch.sh \
 `run.sh` 保留为单个 MPI 作业的底层启动入口。常规单机与双机测试使用上面的 `launch.sh` 即可。
 
 MPICH 3.2.1 的内置 `manual` 模式在关闭 autofork 后，可能在打印 `HYDRA_LAUNCH_END` 后报 `free(): invalid pointer`。当前脚本通过 `-launcher-exec` 调用仓库中的 `hydra_proxy_command.sh`，由它打印代理命令，再由每台机器的启动脚本运行本机代理。这样可以保留手动会合方式，系统 MPI 和 kernel 构建继续复用。该辅助脚本只打印命令，不建立 SSH 连接。
+
+部分机器将 MPICH 4.1.3 安装在名称为 `mpich-3.2.1` 的目录下。启动时会打印实际 `MPI=版本 path=路径`；版本查询同时读取 stdout/stderr，先完整收集输出再解析，避免 `pipefail` 与提前结束的 `grep -q` 组合误报。查询失败时输出路径、退出码和原始报错；未知版本不会静默套用旧参数。
+
+4.1.3 的手动代理增加 `--pmi-port 0 --gpus-per-proc -2 --gpu-subdevs-per-proc -2`，匹配 [Hydra 4.1.3 controller 的默认值](https://github.com/pmodels/mpich/blob/v4.1.3/src/pm/hydra/mpiexec/get_parameters.c)及其[代理参数生成](https://github.com/pmodels/mpich/blob/v4.1.3/src/pm/hydra/mpiexec/pmiserv_utils.c)。这些字段在代理初始状态中为 unset，不能直接省略；设备选择仍由用例完成。3.2.1 不传新增参数。仅更新启动脚本无需重编算子；若实际更换 MPI 安装，则需重新核对用例与 SHMEM MPI 插件的链接依赖。
+
+双机/四机回归使用模拟 Hydra 检查参数、会合、单次初始化及失败退出，不能替代目标机器上的真实 MPI/NPU 验证。
 
 所有版本的运行日志保存在 `node-N/suite.log`，第一台另有 `node-0/suite.log.controller`。如果 controller 异常退出，脚本会同时打印这两份日志。优先查看 controller 的首个错误；随后出现的 `Connection refused` 可能只是 controller 退出后的结果。
 

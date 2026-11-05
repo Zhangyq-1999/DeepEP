@@ -6,7 +6,35 @@ mpi=${MPI_HOME:-/usr/local/mpich-3.2.1}
 ep=16 ranks_per_host=16 node_rank=0 hosts=localhost master= port=29671 variants=base run_id=combine
 job_timeout=3600 join_timeout=300 dry=0
 bench_args=()
+proxy_extra=()
 fail() { echo "ERROR: $*" >&2; exit 2; }
+check_mpi_version() {
+    local version status
+    # Capture both streams before matching. grep -q in a pipe can close its
+    # input early, making a valid Hydra banner fail under pipefail/SIGPIPE.
+    if version=$("$mpi/bin/mpiexec" -version 2>&1); then
+        :
+    else
+        status=$?
+        printf '%s\n' "$version" >&2
+        fail "Cannot query MPI version: $mpi/bin/mpiexec (exit=$status); check its runtime libraries"
+    fi
+    mpi_version=$(awk '/^[[:space:]]*Version:/ {sub(/\r$/, "", $2); print $2}' <<< "$version")
+    proxy_extra=()
+    case "$mpi_version" in
+        3.2.1) ;;
+        4.1.3)
+            # Match mpiexec's resolved defaults in Hydra 4.1.3. A manually
+            # started proxy otherwise retains UNSET=-1: that enables PMI_PORT
+            # and incorrectly enters the GPU-affinity allocation path.
+            # AUTO=-2 leaves accelerator selection to the benchmark.
+            proxy_extra=(--pmi-port 0 --gpus-per-proc -2 --gpu-subdevs-per-proc -2);;
+        *)
+            printf 'Selected MPI: %s\n%s\n' "$mpi/bin/mpiexec" "$version" >&2
+            fail 'Per-node startup supports MPICH 3.2.1 or 4.1.3; select a matching installation with --mpi-home DIR (MPI_HOME overrides the default)';;
+    esac
+    printf 'node=%s MPI=%s path=%s\n' "$node_rank" "$mpi_version" "$mpi/bin/mpiexec"
+}
 prepare_nofile() {
     # Each node starts its own proxy; its children inherit this process limit.
     # Leave the hard limit and any already-higher soft limit unchanged.
@@ -30,7 +58,7 @@ launch.sh --ep 2|4|8|16|32|64 [--ranks-per-host 4|16] [--node-rank N] [--hosts H
           [--master-addr IP] [--master-port PORT] [--variants NAME[,NAME...]]
           [--run-id NAME] [--mpi-home DIR] [--job-timeout SECONDS]
           [--join-timeout SECONDS] [--dry-run] -- [benchmark options]
-Each host runs this script once. Cross-host EP uses one MPICH 3.2.1 MPI world,
+Each host runs this script once. Cross-host EP uses one MPICH 3.2.1 or 4.1.3 MPI world,
 without SSH or manually copying proxy commands. Benchmark arguments come
 from node 0. All nodes use the same checkout path, hosts, ports, variants
 and run-id. One MPI/ACL/SHMEM session runs all selected variants.
@@ -86,11 +114,11 @@ export LD_LIBRARY_PATH="$mpi/lib:$mpi/lib64:${SHMEM_ROOT:+$SHMEM_ROOT/lib:}${LD_
 result_root="$root/results/ll-cpp/$run_id"
 if ((!dry)); then
     prepare_nofile
-    [[ -x "$mpi/bin/mpiexec" ]] || fail 'MPI executable unavailable'
+    [[ -x "$mpi/bin/mpiexec" ]] || fail "MPI executable unavailable: $mpi/bin/mpiexec"
     if ((ep>ranks_per_host)); then
-        [[ -x "$mpi/bin/hydra_pmi_proxy" ]] || fail 'Hydra proxy unavailable'
+        [[ -x "$mpi/bin/hydra_pmi_proxy" ]] || fail "Hydra proxy unavailable: $mpi/bin/hydra_pmi_proxy"
         [[ -x "$root/tests/ll_cpp_bench/hydra_proxy_command.sh" ]] || fail 'Update the checkout; executable hydra_proxy_command.sh is required'
-        "$mpi/bin/mpiexec" -version | grep -Eq 'Version:[[:space:]]+3\.2\.1([[:space:]]|$)' || fail 'Per-node startup requires MPICH 3.2.1'
+        check_mpi_version
     fi
     command -v setsid >/dev/null || fail 'setsid is required'
     command -v timeout >/dev/null || fail 'GNU timeout is required'
@@ -192,7 +220,7 @@ else
     cmd=(env -u HYDI_CONTROL_FD timeout --signal=PIPE --kill-after=5 "$job_timeout"
          "$mpi/bin/hydra_pmi_proxy" --control-port "$master:$phase_port" --rmk user
          --launcher ssh --demux poll --pgid 0 --retries "$(((join_timeout+9)/10))"
-         --usize "$ep" --proxy-id "$node_rank")
+         --usize "$ep" "${proxy_extra[@]}" --proxy-id "$node_rank")
     if ((dry)); then print_cmd "${cmd[@]}"; exit 0; fi
     echo "Joining $master:$phase_port; log=$log"
     setsid "${cmd[@]}" >"$log" 2>&1 & proxy=$!
