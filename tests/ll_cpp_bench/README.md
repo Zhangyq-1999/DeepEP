@@ -35,22 +35,24 @@ bash tests/ll_cpp_bench/build_all.sh
 | --- | --- | --- |
 | `base` | 冻结的上游原版 | 关闭 |
 | `ready-snapshot` | 机内 ready 依赖调度；空闲 payload UB 一次读入路由 | 关闭 |
-| `stage-stream` | snapshot + 每批首包立即回传，后续包准备与前包暂存重叠 | 关闭 |
-| `plan-compact` | snapshot + 先 Vector 压缩 FIRST_HOP 行，再按 server 筛选 | 关闭 |
+| `ready-r32` | snapshot + 24 个发送核、32 个接收核（56 AIV） | 关闭 |
+| `ready-r36` | snapshot + 20 个发送核、36 个接收核（56 AIV） | 关闭 |
 | `ref-profile` | 实验开关全部关闭 | 开启 |
 | `ready-snapshot-profile` | 与 ready-snapshot 相同 | 开启 |
-| `stage-stream-profile` | 与 stage-stream 相同 | 开启 |
-| `plan-compact-profile` | 与 plan-compact 相同 | 开启 |
+| `ready-r32-profile` | 与 ready-r32 相同 | 开启 |
+| `ready-r36-profile` | 与 ready-r36 相同 | 开启 |
 
-这轮 EP8 实测中，ready-snapshot 的 BS32 P50 为 55.08 μs，stage-stream 为 59.02 μs；BS256 则分别为 170.42、167.23 μs。保留两者作对照，不将 stage-stream 作为所有 BS 的统一最优版。新 plan-compact 尚待 NPU 精度和性能验证。
+优化和验收以 **BS32、48、64** 为主，BS72 作邻近对照，BS256 只检查回退。最新 EP8 干净版实测中，ready-snapshot 的这三个 BS 的 P50 分别为 54.78、59.99、67.06 μs；stage-stream 在小 BS 上尚无稳定收益，plan-compact 的对应 P50 均高于 snapshot。两者保留为可选实验，不再默认编译运行。
+
+本轮默认只比较核数配比。ready-snapshot 保留 28/28；ready-r32、ready-r36 分别使用 24/32、20/36，不叠加其他实验。BS32 的每核最终归约 token 数上限由 2 降为 1，BS64 由 3 降为 2；BS48 三种配比的上限都是 2，因此仍需核对实际任务分布和 M4 汇总回传到 M5 最终归约的串行路径。增加接收核会减少发送核，收益须由干净版 mean/P50 和最小最大值确认，打点用于解释瓶颈，不能替代性能验收。这两个配比尚待目标设备验证。
 
 plan-compact 用 `build.sh --variant opt --ready 8` 单独构建。沿用 snapshot 的数据加载、任务所属核、server 遍历、ready 协议和回传流程；先稳定压缩 FIRST_HOP 的原行号及源 rank，后续各 server 只过滤压缩表。临时表复用已失效的路由三元组区域，UB 大小、payload lane 数和 GM 暂存不增加。零 FIRST_HOP 跳过 server 筛选；快照放不进 UB 时继续走原扫描回退。Notify、SHMEM、WQE 和数学归约顺序保持原样。
 
-默认保留 28/28 核配比。可选 `ready-r32`、`ready-r36` 及各自 `-profile` 以 snapshot 为对照，只将 56 AIV 下的配比改成 24/32、20/36；不同时启用压缩建表，便于判断增加接收核是否抵消了发送端并行度下降。它们默认不编译，需要时两台使用同一组 `--variants`：
+若要复测前一轮多包流水和压缩建表，两台使用同一组可选版本：
 
 ```bash
-bash tests/ll_cpp_bench/build_all.sh --variants ready-snapshot,ready-r32,ready-r36,ready-snapshot-profile,ready-r32-profile,ready-r36-profile
-bash tests/ll_cpp_bench/run_all.sh --variants ready-snapshot,ready-r32,ready-r36,ready-snapshot-profile,ready-r32-profile,ready-r36-profile
+bash tests/ll_cpp_bench/build_all.sh --variants ready-snapshot,stage-stream,plan-compact,ready-snapshot-profile,stage-stream-profile,plan-compact-profile
+bash tests/ll_cpp_bench/run_all.sh --variants ready-snapshot,stage-stream,plan-compact,ready-snapshot-profile,stage-stream-profile,plan-compact-profile
 ```
 
 打点 schema 16 增加 `route_first_hop_rows`、`route_filter_rows`、`route_compact_ticks`。回显的 `compact=a/b/c` 分别对应有效 FIRST_HOP 行数、所有 server 筛选输入行数之和、压缩准备段的打点 ticks。原 snapshot 的筛选量为 server 数 × 完整行数，新版为 server 数 × FIRST_HOP 行数。压缩计时是本核发出 Vector 指令及屏障的区间，整体建表耗时看 `plan_select_ticks`；不把累计耗时伪装成独立流水段。CSV 与 Perfetto 的 `profiled body` 参数包含这些字段。

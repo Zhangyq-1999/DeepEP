@@ -12,16 +12,17 @@ while (($#)); do
             cat <<'USAGE'
 build_all.sh [--variants NAME[,NAME...]] [--ranks-per-host 4|16] [--jobs N] [--dry-run]
              [--cann-home DIR] [--mpi-home DIR] [--shmem-root DIR]
-Defaults: base/ready-snapshot/stage-stream/plan-compact, plus matching diagnostics.
-base is the frozen original; ready-snapshot is the previous measured comparison.
+Defaults: base/ready-snapshot/ready-r32/ready-r36, plus matching diagnostics.
+Target BS32/48/64; BS72 is a neighboring case and BS256 checks regressions.
+base is the frozen original; ready-snapshot is the measured small-batch comparison.
+ready-r32/ready-r36 retain snapshot's algorithm with 32/36 receive cores.
 ready-fast skips unchanged empty selections and reuses resident metadata caches.
 ready-pipeline adds M4-only staging overlap with the next already-ready task.
 ready-snapshot loads routing once in the idle payload arena before M4 starts.
 stage-prefetch posts after next input reads; stage-pair shares one wait for two M4 copies.
 stage-stream sends each ready batch's first packet immediately, then overlaps full packet preparation.
 plan-compact adds stable Vector FIRST_HOP compaction to ready-snapshot before server filtering.
-Optional ready-r32/ready-r36 (and -profile): ready-snapshot with 32/36 receive cores.
-Previously measured experiments remain opt-in.
+stage-stream, plan-compact and other previously measured experiments remain opt-in.
 remote: cross-server returns first. notify-simt: remote plus SIMT rank notification.
 notify-core: remote plus direct producer-core notification; Vector readiness checks.
 card: coalesce returns to the same destination rank; server: relay via the same local slot.
