@@ -111,6 +111,8 @@ def test_dependency_work_is_not_rendered_as_blocking_wait(reporter, tmp_path):
             row.update(ready_begin=5, ready_observed=90, ready_end=95,
                        ready_first_task=8, ready_tasks_done=40, ready_task_rounds=3,
                        ready_tasks_before_all=2, ready_remote_before_all=1,
+                       ready_filter_skips=17, ready_cached_tasks=12,
+                       ready_metadata_reloads=0, ready_pipeline_issue_ticks=9,
                        ready_retire_begin=85, ready_retire_end=95,
                        partial_begin=5, partial_end=40, final_begin=40)
     write_csv(path, fields, rows)
@@ -122,6 +124,9 @@ def test_dependency_work_is_not_rendered_as_blocking_wait(reporter, tmp_path):
     assert spans['dependency-driven partial work']['dur'] == pytest.approx(.032)
     assert spans['ready retirement']['dur'] == pytest.approx(.010)
     assert spans['profiled body']['args']['ready_remote_before_all'] == 1
+    args = spans['profiled body']['args']
+    assert args['ready_filter_skips'] == 17 and args['ready_cached_tasks'] == 12
+    assert args['ready_metadata_reloads'] == 0 and args['ready_pipeline_issue_ticks'] == 9
 
 
 def test_automatic_global_trace_gather(tmp_path):

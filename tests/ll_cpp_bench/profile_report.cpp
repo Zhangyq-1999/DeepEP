@@ -198,6 +198,8 @@ void detail(std::ostream& out, const Record& r)
         out << "    ready: first/all/done=" << r[ReadyFirstTask] << '/' << r[ReadyObserved] << '/' << r[ReadyTasksDone]
             << " before_all_observed/tasks/remote=" << r[ReadyTasksBeforeAll] << '/' << r[ReadyRemoteBeforeAll]
             << " setup/plan/filter/snapshot=" << r[ReadySetupTicks] << '/' << r[ReadyPlanTicks] << '/' << r[ReadyFilterTicks] << '/' << r[ReadySnapshotTicks]
+            << " filter_skips/cached_tasks/metadata_reloads/pipeline_issue_ticks=" << r[ReadyFilterSkips] << '/'
+            << r[ReadyCachedTasks] << '/' << r[ReadyMetadataReloads] << '/' << r[ReadyPipelineIssueTicks]
             << " ack_wait/consumed_wait=" << r[ReadyAckWaitTicks] << '/' << r[ReadyConsumedWaitTicks]
             << (r[ReadyTaskRounds] ? " (group_ready_window includes useful work)\n" : "\n");
     if (r.receive && r[LocalContributions] + r[RemoteContributions]) {

@@ -12,8 +12,11 @@ while (($#)); do
             cat <<'USAGE'
 build_all.sh [--variants NAME[,NAME...]] [--ranks-per-host 4|16] [--jobs N] [--dry-run]
              [--cann-home DIR] [--mpi-home DIR] [--shmem-root DIR]
-Defaults: base/ready-task/ready-shared, plus matching diagnostic builds.
-ready-task: Vector task dependency checks; ready-shared: one ready record per destination rank.
+Defaults: base/ready-task/ready-fast/ready-pipeline, plus matching diagnostics.
+base is the frozen original; ready-task retains the measured best implementation.
+ready-fast skips unchanged empty selections and reuses resident metadata caches.
+ready-pipeline adds M4-only staging overlap with the next already-ready task.
+ready-shared remains opt-in.
 remote: cross-server returns first. notify-simt: remote plus SIMT rank notification.
 notify-core: remote plus direct producer-core notification; Vector readiness checks.
 card: coalesce returns to the same destination rank; server: relay via the same local slot.
@@ -53,7 +56,7 @@ IFS=, read -r -a names <<< "$variants"
 # Validate the complete selection before starting any build.
 for name in "${names[@]}"; do
     case "$name" in
-        ready-task|ready-shared|ready-task-profile|ready-shared-profile|notify-simt|notify-core|notify-simt-profile|notify-core-profile|card-all|card-row|server-all|server-row|card-all-profile|card-row-profile|server-all-profile|server-row-profile|batch|batch-profile|batch-pipeline|batch-pipeline-profile|local-first|local-first-profile|poll800|poll800-profile|meta|meta-profile|prefetch|prefetch-profile|prepare|flag|prepare-flag|prepare-profile|flag-profile|prepare-flag-profile|issue|probe|issue-probe|issue-profile|probe-profile|issue-probe-profile|base|remote|pipeline|return|ops-shmem-base|ref-profile|opt-profile|r36-profile|early-profile|remote-profile|pipeline-profile|return-profile) ;;
+        ready-fast|ready-pipeline|ready-fast-profile|ready-pipeline-profile|ready-task|ready-shared|ready-task-profile|ready-shared-profile|notify-simt|notify-core|notify-simt-profile|notify-core-profile|card-all|card-row|server-all|server-row|card-all-profile|card-row-profile|server-all-profile|server-row-profile|batch|batch-profile|batch-pipeline|batch-pipeline-profile|local-first|local-first-profile|poll800|poll800-profile|meta|meta-profile|prefetch|prefetch-profile|prepare|flag|prepare-flag|prepare-profile|flag-profile|prepare-flag-profile|issue|probe|issue-probe|issue-profile|probe-profile|issue-probe-profile|base|remote|pipeline|return|ops-shmem-base|ref-profile|opt-profile|r36-profile|early-profile|remote-profile|pipeline-profile|return-profile) ;;
         *) fail "Unknown experiment: $name (see --help)";;
     esac
 done
@@ -64,6 +67,8 @@ for name in "${names[@]}"; do
     if [[ $name == *-profile ]]; then profile=ON; fi
     case "$name" in
         ready-task|ready-task-profile) ready=1;;
+        ready-fast|ready-fast-profile) ready=3;;
+        ready-pipeline|ready-pipeline-profile) ready=3; defer=ON;;
         ready-shared|ready-shared-profile) ready=2;;
         notify-simt|notify-simt-profile) notify=1; remote=ON;;
         notify-core|notify-core-profile) notify=2; remote=ON;;

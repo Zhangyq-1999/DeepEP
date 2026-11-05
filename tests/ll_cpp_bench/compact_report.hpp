@@ -127,6 +127,8 @@ void compact_record(const Record& r)
                   << " rounds/stalls=" << r[ReadyTaskRounds] << '/' << r[ReadyTaskStalls]
                   << " before_all_observed/tasks/remote=" << r[ReadyTasksBeforeAll] << '/' << r[ReadyRemoteBeforeAll]
                   << " setup/plan/filter/snapshot=" << r[ReadySetupTicks] << '/' << r[ReadyPlanTicks] << '/' << r[ReadyFilterTicks] << '/' << r[ReadySnapshotTicks]
+                  << " skip/cache/reload/issue=" << r[ReadyFilterSkips] << '/' << r[ReadyCachedTasks]
+                  << '/' << r[ReadyMetadataReloads] << '/' << r[ReadyPipelineIssueTicks]
                   << " retire=" << (r[ReadyRetireEnd]-r[ReadyRetireBegin])
                   << " ack_wait/consumed_wait=" << r[ReadyAckWaitTicks] << '/' << r[ReadyConsumedWaitTicks] << '\n';
     if (r.receive && r[BatchGroupCalls] + r[BatchWholeTokens])

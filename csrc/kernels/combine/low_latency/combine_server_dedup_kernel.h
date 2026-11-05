@@ -162,7 +162,7 @@ public:
                 }
 #endif
 
-#if !defined(DEEPEP_LL_COMBINE_SMALL_BATCH) && DEEPEP_LL_COMBINE_READY != 1
+#if !defined(DEEPEP_LL_COMBINE_SMALL_BATCH) && DEEPEP_LL_COMBINE_READY != 1 && DEEPEP_LL_COMBINE_READY != 3
                 WaitServerReady();
 #endif
 
@@ -177,7 +177,7 @@ public:
 
                 DrainSharedOutputs(retiredOutputs);
                 profile_.Mark(CombineProfile::DrainEnd);
-#if DEEPEP_LL_COMBINE_READY == 1
+#if DEEPEP_LL_COMBINE_READY == 1 || DEEPEP_LL_COMBINE_READY == 3
                 groupReady_.Retire();
 #elif DEEPEP_LL_COMBINE_READY == 2
                 groupReady_.Release();
@@ -553,7 +553,11 @@ private:
                 profile_.MarkOnce(CombineProfile::DirectFirstSubmit);
                 const uint64_t submitStart = profile_.DetailClock();
                 SendReturnPacket(returnBatch_, args_, source, offset, output, resultStride_,
+#if DEEPEP_LL_COMBINE_READY == 3
+                                 false); // Isolate M4 staging; DIRECT stays identical to ready-task.
+#else
                                  CombineDeferReturn(activeLanes) && task + directCores < count);
+#endif
                 profile_.SampleMax(CombineProfile::DirectSubmitTicks, CombineProfile::DirectSubmitMaxTicks,
                                    CombineProfile::DirectSubmitMaxPeer, CombineProfile::DirectSubmitMaxToken,
                                    submitStart, source, token);
@@ -602,7 +606,7 @@ private:
         WaitServerReady();
 #endif
         profile_.Mark(CombineProfile::PartialRunBegin);
-#if DEEPEP_LL_COMBINE_READY == 1
+#if DEEPEP_LL_COMBINE_READY == 1 || DEEPEP_LL_COMBINE_READY == 3
         partial.SetReady(&groupReady_);
 #endif
         partialTasks_ = partial.Process();

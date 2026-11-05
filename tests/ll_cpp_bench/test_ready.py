@@ -8,7 +8,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
-@pytest.mark.parametrize("mode", [1, 2])
+@pytest.mark.parametrize("mode", [1, 2, 3])
 def test_ready_lifecycle_and_vector_selection(tmp_path, mode):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
     if not zig:
@@ -23,14 +23,17 @@ def test_ready_lifecycle_and_vector_selection(tmp_path, mode):
     subprocess.run([str(exe)], check=True, timeout=30)
 
 
-def test_production_dependency_scheduler(tmp_path):
+@pytest.mark.parametrize("mode,pipeline", [(1, False), (3, False), (3, True)])
+def test_production_dependency_scheduler(tmp_path, mode, pipeline):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
     if not zig:
         pytest.skip("Set DEEPEP_TEST_ZIG for the production scheduler check")
     text = (ROOT / "csrc/kernels/combine/low_latency/combine_server_dedup_partial.h").read_text(encoding="utf-8")
-    start = text.index("    __aicore__ inline uint32_t ProcessReadyTasks(")
-    end = text.index("\n#endif", start)
+    start = text.rindex("#if", 0, text.index("    __aicore__ inline uint32_t ProcessReadyTasks("))
+    end = text.index("    template <class T>\n    __aicore__ inline LocalTensor<T> Allocate", start)
     method = text[start:end]
+    load = text[text.index("    __aicore__ inline void LoadTask(uint32_t row)"):text.index("#ifdef DEEPEP_LL_COMBINE_SIMT_META", text.index("    __aicore__ inline void LoadTask(uint32_t row)"))]
+    load = load.replace("        // Route", "        ++loads;\n        // Route")
     cpp, exe = tmp_path / "scheduler.cpp", tmp_path / "scheduler.exe"
     cpp.write_text(r'''
 #define main ReadyProtocolChecks
@@ -41,53 +44,87 @@ def test_production_dependency_scheduler(tmp_path):
 #include "kernels/dispatch/low_latency/common/dispatch_dedup_types.h"
 struct half{};
 struct bfloat16_t{};
+
+unsigned filterCalls=0;
+uint32_t CountSelect(LocalTensor<int32_t> d,LocalTensor<int32_t> w,LocalTensor<int32_t> t,
+                     LocalTensor<uint8_t> m,uint32_t n,uint32_t missing,bool remote) {
+    ++filterCalls;return SelectReadyCombineTasks(d,w,t,m,n,missing,remote);
+}
+#define SelectReadyCombineTasks CountSelect
 template<uint32_t Group> struct Scheduler {
     struct Task {uint32_t mask,source;};
     struct Ready {
-        uint32_t round=0,mask=0;
-        uint32_t Poll() {mask=round++ ? (1U<<Group)-1U : 1U;return mask;}
+        uint32_t round=0,mask=0,delay=1;
+        uint32_t Poll() {mask=round++ >= delay ? (1U<<Group)-1U : 1U;return mask;}
         bool All(){return mask==((1U<<Group)-1U);}
     } ready;
+    struct Batch {
+        bool pending=false;uint32_t lane=0,posted=0;
+        void SubmitPending(){if(pending){++posted;pending=false;}}
+    } batch;
+    Batch* rdmaBatch_=&batch;
     Ready* ready_=&ready;
     CombineProfile::View profile_;
     DispatchDedup::CommArgs args{};
     DispatchDedup::CommArgs* args_=&args;
-    uint32_t k_=8,localExperts_=1,outputLanes_=3,dtype_=0;
-    uint32_t current=0,aggregated=0;
+    uint32_t k_=8,localExperts_=1,outputLanes_=3,dtype_=0,loads=0,overlaps=0;
+    uint32_t aggregated=0;
     std::vector<Task> input;
     std::vector<uint32_t> sent;
-    std::array<int32_t,128> rows{},deps{},work{},selected{},table2{};
-    std::array<uint32_t,16> table3{};
+    std::vector<int32_t> gm2;
+    std::vector<uint32_t> gm3;
+    std::array<int32_t,128> rows{},deps{},work{},selected{};
+    std::array<int32_t,96+8> table2{};
+    std::array<uint32_t,2048+8> table3{};
     alignas(8) std::array<uint8_t,32> mask{};
     LocalTensor<int32_t> rows_{rows.data()},readyDeps_{deps.data()},readyWork_{work.data()},readyTasks_{selected.data()},table2Ub_{table2.data()};
     LocalTensor<uint32_t> table3Ub_{table3.data()};
     LocalTensor<uint8_t> readyMask_{mask.data()};
-    explicit Scheduler(std::vector<Task> tasks,uint32_t world=2*Group,uint32_t rank=0):input(std::move(tasks)) {
+    GlobalTensor<int32_t> table2_;
+    GlobalTensor<uint32_t> table3_;
+    LocalTensor<int32_t> readyTable2_;
+    LocalTensor<uint32_t> readyTable3_;
+    uint32_t readyTable3Stride_=0;
+    bool readyCached_=false;
+    explicit Scheduler(std::vector<Task> tasks,uint32_t world=2*Group,uint32_t rank=0,uint32_t topk=8):k_(topk),input(std::move(tasks)) {
         args.rank=rank;args.rankSize=world;args.reserved0=Group;args.reservedConfig[0]=LlRdma::kBackend;
         dtype_=DispatchDedup::DISPATCH_DEDUP_DATA_TYPE_FP16;
+        gm2.resize(input.size()*3U);gm3.resize(input.size()*k_*2U);
+        table2_.SetGlobalBuffer(gm2.data());table3_.SetGlobalBuffer(gm3.data());
+        std::fill(table2.begin(),table2.end(),-123);std::fill(table3.begin(),table3.end(),0xcafebabeU);
+        for(uint32_t row=0;row<input.size();++row) {
+            gm2[row*3U]=input[row].source;gm2[row*3U+1U]=row;gm2[row*3U+2U]=row%k_;
+            uint32_t n=0;
+            for(uint32_t local=0;local<Group;++local) if(input[row].mask&(1U<<local))
+                gm3[row*k_*2U+2U*(++n)]=(args.rank/Group*Group+local)|((row%32U)<<16U);
+            gm3[row*k_*2U]=n;
+            for(uint32_t member=0;member<=n;++member) gm3[row*k_*2U+member*2U+1U]=0x3f000000U+row*32U+member;
+        }
     }
     template<HardEvent E>void Sync(){SetFlag<E>(7);WaitFlag<E>(7);}
     uint32_t SelectServer(uint32_t server,uint32_t&,bool,uint32_t append) {
         for(uint32_t row=0;row<input.size();++row) if(input[row].source/Group==server) rows[append++]=row;
         return append;
     }
-    void LoadTask(uint32_t row) {
-        current=row;table2[0]=input[row].source;table2[1]=row;table2[2]=0;
-        uint32_t n=0;
-        for(uint32_t rank=0;rank<Group;++rank) if(input[row].mask&(1U<<rank)) table3[2U*(++n)]=args.rank/Group*Group+rank;
-        table3[0]=n;
-    }
     template<class T>void Aggregate(uint32_t row,uint32_t source,uint32_t members) {
-        assert(row==current && source==input[row].source && members==table3[0]+1U);
-        assert(!(input[row].mask & ~ready.mask)); // No unready remote stage read.
+        assert(source==input[row].source && members==table3Ub_.GetValue(0U)+1U);
+        assert(!std::memcmp(table2Ub_.p,gm2.data()+row*3U,12U));
+        assert(!std::memcmp(table3Ub_.p,gm3.data()+row*k_*2U,k_*8U));
+        assert(!(input[row].mask & ~ready.mask)); // No unready stage read.
         for(uint32_t previous:sent) assert(previous!=row);
+        if(batch.pending) {assert(batch.lane!=sent.size()%outputLanes_);++overlaps;}
         ++aggregated;
     }
     void Send(uint32_t lane,uint32_t source,uint32_t token,uint32_t topk,bool defer) {
-        assert(lane==sent.size()%outputLanes_ && source==input[current].source && token==current && topk==0 && !defer);
-        sent.push_back(current);
+        assert(lane==sent.size()%outputLanes_ && source==input[token].source && topk==token%k_);
+        assert(!batch.pending); // Pending Put must precede the next output pack.
+        sent.push_back(token);
+        if(LlTransport::RemoteWrite(args_,source)) {
+            batch.pending=true;batch.lane=lane;
+            if(!defer)batch.SubmitPending();
+        }
     }
-''' + method + r'''
+''' + load + method + r'''
 };
 template<uint32_t Group>void Check() {
     // The first remote task depends on the delayed rank. A ready local task
@@ -124,9 +161,38 @@ void FourHosts() {
         NoLiveEvents();
     }
 }
-int main(){Check<2>();Check<4>();Check<16>();FourHosts();}
+
+void CacheAndPipeline() {
+    for(uint32_t k:{2U,3U,8U,32U}) for(uint32_t count:{1U,8U,12U,13U,65U}) for(uint32_t lanes:{1U,2U,8U}) {
+        std::vector<Scheduler<16>::Task> tasks;
+        for(uint32_t i=0;i<count;++i) tasks.push_back({2U,((i%3U)+1U)*16U+15U});
+        Scheduler<16> t(tasks,64,0,k);t.outputLanes_=lanes;t.ready.delay=5;
+        const auto before=filterCalls;
+        assert(t.ProcessReadyTasks(4,0)==count);
+        assert(t.aggregated==count && !t.batch.pending && t.batch.posted==count);
+#if DEEPEP_LL_COMBINE_READY == 3
+        assert(filterCalls-before==3U); // empty remote+local, then ready remote
+        assert(t.loads==(count<=EpCombineReadyCacheCapacity(k)?0U:count*2U));
+#ifdef DEEPEP_LL_COMBINE_DEFER_RETURN
+        assert(t.overlaps==(lanes>1U?count-1U:0U));
+#endif
+#else
+        assert(filterCalls-before==11U && t.loads==count*2U);
+#endif
+        // Check immediately beyond the actual reserved caches, including K
+        // values whose per-row padded stride differs from their GM stride.
+        const uint32_t table2End=EpCombineAlign(kEpServerDedupCombineM4TableRows*12U,32U)/4U;
+        const uint32_t table3End=EpCombineAlign(kEpServerDedupCombineM4TableRows*k*8U,32U)/4U;
+        for(uint32_t i=table2End;i<t.table2.size();++i)assert(t.table2[i]==-123);
+        for(uint32_t i=table3End;i<t.table3.size();++i)assert(t.table3[i]==0xcafebabeU);
+        NoLiveEvents();
+    }
+}
+int main(){Check<2>();Check<4>();Check<16>();FourHosts();CacheAndPipeline();}
+
 ''', encoding="utf-8")
-    subprocess.run([zig, "c++", "-std=c++17", "-O1", "-UNDEBUG", "-DDEEPEP_LL_COMBINE_READY=1",
+    subprocess.run([zig, "c++", "-std=c++17", "-O1", "-UNDEBUG", f"-DDEEPEP_LL_COMBINE_READY={mode}",
+                    *(["-DDEEPEP_LL_COMBINE_DEFER_RETURN=1"] if pipeline else []),
                     "-I" + str(ROOT / "tests/ll_cpp_bench"), "-I" + str(ROOT / "tests/ll_rdma/metadata_stubs"),
                     "-I" + str(ROOT / "csrc"), str(cpp), "-o", str(exe)], check=True, timeout=180)
     subprocess.run([str(exe)], check=True, timeout=30)

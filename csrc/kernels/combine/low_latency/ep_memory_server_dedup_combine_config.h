@@ -148,6 +148,15 @@ COMBINE_DEDUP_EP_COMBINE_CONSTEXPR uint32_t EpCombineReadyTaskBytes(uint32_t tok
 {
     return EpCombineAlign(((tokens+recvCores-1U)/recvCores)*4U,256U);
 }
+// Both caches already exist in M4. Table2 needs a padded 32B row;
+// table3 needs an aligned K*8B row. Do not consume payload lane space.
+COMBINE_DEDUP_EP_COMBINE_CONSTEXPR uint32_t EpCombineReadyCacheCapacity(uint32_t k)
+{
+    if (k == 0U) return 0U;
+    const uint32_t table2 = (kEpServerDedupCombineM4TableRows * 12U) / 32U;
+    const uint32_t table3 = EpCombineAlign(kEpServerDedupCombineM4TableRows * k * 8U, 32U) / EpCombineAlign(k * 8U, 32U);
+    return table2 < table3 ? table2 : table3;
+}
 // M5 input events use IDs 0..6; MTE2_V(7) is reserved for probe.
 COMBINE_DEDUP_EP_COMBINE_CONSTEXPR uint32_t EpCombineM5TokenCount(uint32_t bs, uint32_t recvCores = DispatchDedup::kLlDefaultPlanCoreNum / 2U)
 {
@@ -196,7 +205,7 @@ COMBINE_DEDUP_EP_COMBINE_CONSTEXPR EpCombineM45WorkspaceLayout EpCombineM45Layou
         return result;
     const uint64_t owned = EpCombineM5TokenCount(bs, recvCores);
     const uint64_t partial = EpCombineM4TaskBytes(tokens, recvCores) +
-#if DEEPEP_LL_COMBINE_READY == 1
+#if DEEPEP_LL_COMBINE_READY == 1 || DEEPEP_LL_COMBINE_READY == 3
                              3U * EpCombineReadyTaskBytes(tokens,recvCores) +
                              EpCombineAlign((EpCombineReadyTaskBytes(tokens,recvCores)/4U+7U)/8U,32U) +
 #endif
