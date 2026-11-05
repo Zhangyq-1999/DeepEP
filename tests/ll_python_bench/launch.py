@@ -1,6 +1,8 @@
 """One torchrun agent per host; defaults match the current cross-host EP8 case."""
 import argparse
 import datetime
+import ipaddress
+import json
 import os
 from pathlib import Path
 import secrets
@@ -38,7 +40,7 @@ def parser():
     p.add_argument("--dtype", choices=("bf16", "fp16"), default="bf16")
     p.add_argument("--route", choices=("random", "hotspot"), default="random")
     p.add_argument("--gate-delay-ms", type=float, default=0, help="Untimed rank-0 delay to check gate behavior")
-    p.add_argument("--ifname", help="Optional GLOO_SOCKET_IFNAME and HCCL_SOCKET_IFNAME")
+    p.add_argument("--ifname", help="Override Gloo/HCCL interfaces; otherwise Gloo uses this node's --hosts IP")
     p.add_argument("--dry-run", action="store_true")
     return p
 
@@ -114,6 +116,48 @@ def worker_environment(a, node_dir):
     return env
 
 
+def configure_gloo_network(a, node, hosts, env):
+    """Select a routable local interface before torchrun imports Torch.
+
+    MASTER_ADDR only selects the rendezvous store; it does not select Gloo's
+    full-mesh transport address. Hostname lookup can otherwise select 127.0.0.1.
+    Keep explicit interface settings and HCCL's independent default intact.
+    """
+    chosen = (a.ifname or env.get("GLOO_SOCKET_IFNAME", "")).strip()
+    source = "--ifname" if a.ifname else "environment"
+    if chosen:
+        names = chosen.split(",")
+        available = {name for _, name in socket.if_nameindex()}
+        if len(set(names)) != len(names) or any(not n or n not in available for n in names):
+            raise ValueError(f"Invalid GLOO_SOCKET_IFNAME={chosen}; local interfaces: {','.join(sorted(available))}")
+        if len(hosts) > 1 and "lo" in names:
+            raise ValueError("Multi-host Gloo cannot use lo; unset GLOO_SOCKET_IFNAME for automatic selection or pass --ifname")
+    elif len(hosts) > 1:
+        source = f"host:{hosts[node]}"
+        try:
+            candidates = {entry[4][0] for entry in socket.getaddrinfo(hosts[node], None, socket.AF_INET, socket.SOCK_STREAM)}
+            candidates = {ip for ip in candidates if not ipaddress.ip_address(ip).is_loopback
+                          and not ipaddress.ip_address(ip).is_unspecified}
+            if not candidates:
+                raise ValueError(f"--hosts entry {hosts[node]} has no non-loopback IPv4 address")
+            interfaces = json.loads(subprocess.check_output(["ip", "-j", "-4", "address", "show"], text=True, timeout=5))
+        except (OSError, subprocess.SubprocessError, ValueError) as exc:
+            raise ValueError(f"Cannot select Gloo interface for {hosts[node]}: {exc}; set --ifname to this node's network interface") from exc
+        matches = {item["ifname"] for item in interfaces
+                   if "UP" in item.get("flags", []) and "LOOPBACK" not in item.get("flags", [])
+                   and any(addr.get("local") in candidates for addr in item.get("addr_info", []))}
+        if len(matches) != 1:
+            raise ValueError(f"Expected one UP local interface for --hosts[{node}]={hosts[node]}, found {sorted(matches)}; "
+                             "check --node-rank/--hosts or set --ifname")
+        chosen = matches.pop()
+    else:
+        source = "single-host"
+    if chosen:
+        env["GLOO_SOCKET_IFNAME"] = chosen
+    return (f"Network: node={node} host={hosts[node]} GLOO_SOCKET_IFNAME={chosen or 'auto'} "
+            f"source={source} HCCL_SOCKET_IFNAME={env.get('HCCL_SOCKET_IFNAME') or 'auto'}")
+
+
 def main():
     a = parser().parse_args()
     node, hosts, run_id, out, build, cmd = plan(a)
@@ -149,10 +193,13 @@ def main():
     soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
     if soft < 65536: resource.setrlimit(resource.RLIMIT_NOFILE,(min(65536,hard) if hard>=0 else 65536,hard))
     node_dir = out / f"node-{node}"
-    node_dir.mkdir(parents=True,exist_ok=False)
     env = worker_environment(a,node_dir)
+    network = configure_gloo_network(a,node,hosts,env)
+    print(network,flush=True)
+    node_dir.mkdir(parents=True,exist_ok=False)
     # Console is also saved locally. torchrun fails the local worker group on first error.
     with (node_dir/"console.log").open("w") as log:
+        log.write(network+"\n"); log.flush()
         process = subprocess.Popen(cmd,cwd=ROOT,env=env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,bufsize=1)
         try:
             for line in process.stdout:

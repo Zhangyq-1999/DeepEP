@@ -156,7 +156,13 @@ bash tests/ll_python_bench/run_all.sh \
     --tokens 32,48,64,72,256 --warmup 10 --iters 100
 ```
 
-PyTorch 默认使用端口 30011，SHMEM 使用下一端口 30012。`--shmem-ip-port tcp://IP:PORT` 可单独指定 SHMEM 入口。多网卡环境可用 `--ifname eth0` 同时指定 Gloo 和 HCCL 的网络接口。
+PyTorch 默认使用端口 30011，SHMEM 使用下一端口 30012。`--shmem-ip-port tcp://IP:PORT` 可单独指定 SHMEM 入口。
+
+跨机启动时，Gloo 默认按 `--hosts` 中**本节点 IP** 查找本机已启用的网卡（使用 `ip -j -4 address show`），在启动 torchrun 前设置 `GLOO_SOCKET_IFNAME`。每台各自选择，不要求四台的网卡名称相同；回显和 `node-N/console.log` 开头记录 `Network: ... GLOO_SOCKET_IFNAME=... source=...`。IP 不属于本机或存在歧义时提前报错，不回退到 loopback。单机保留 PyTorch 默认选择。
+
+优先级为 `--ifname` > 已设置的 `GLOO_SOCKET_IFNAME` > 本节点 IP 自动选择。`--ifname eth0` 同时指定 Gloo/HCCL；仅需覆盖 Gloo 时可在各台分别 `export GLOO_SOCKET_IFNAME=本机网卡`。自动选择只设置 Gloo，HCCL 仍使用自身设置。多接口配置需各进程使用相同接口数量，见 [PyTorch 网络接口说明](https://docs.pytorch.org/docs/2.11/distributed.html#choosing-the-network-interface-to-use)。
+
+`MASTER_ADDR` 只指定会合服务，不能代替 Gloo 全互联的网卡选择。若日志在 `Gloo rendezvous` 报 `connectFullMesh ... remote=[127.0.0.1] ... Connection refused`，错误发生在 NPU/HCCL/SHMEM 初始化前。此前默认依赖主机名解析，换到主机名解析为 loopback 的环境会失败；更新脚本即可，无需重编 kernel。启动修复的本地测试覆盖两机/四机选网与环境传递，真实多机通信仍需目标环境验证。
 
 扩展到每机 16 卡时，两台机器先用 `--ranks-per-host 16` 重编。运行时也传 `--ranks-per-host 16`，默认自动选 0～15 卡；每机 4 rank 时默认选 12～15 卡。`--devices` 仍可覆盖，`--hosts` 支持 1、2 或 4 台机器；跨机参数需保持一致。
 

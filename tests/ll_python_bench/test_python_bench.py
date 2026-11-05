@@ -107,6 +107,94 @@ def test_worker_environment_disables_blocking_wait(tmp_path,monkeypatch):
     assert env["PYTHONFAULTHANDLER"]=="1"
 
 
+@pytest.mark.parametrize("nodes",[2,4])
+def test_gloo_auto_selects_each_hosts_entry(nodes,monkeypatch):
+    launch=module("launch")
+    hosts=["90.90.93."+v for v in ("87","86","83","81")][:nodes]
+    args=launch.parser().parse_args([])
+    for node,host in enumerate(hosts):
+        # The machine name resolves to loopback; selection must use --hosts.
+        monkeypatch.setattr(launch.socket,"getaddrinfo",lambda name,*a:[(0,0,0,"",(name,0))])
+        interfaces=[dict(ifname="lo",flags=["UP","LOOPBACK"],addr_info=[dict(local="127.0.0.1")]),
+                    dict(ifname="wrong",flags=["UP"],addr_info=[dict(local="192.168.1.1")]),
+                    dict(ifname=f"eth{node}",flags=["UP"],addr_info=[dict(local=host)])]
+        def ip_command(cmd,**kwargs):
+            assert cmd==["ip","-j","-4","address","show"] and kwargs["timeout"]==5
+            return json.dumps(interfaces)
+        monkeypatch.setattr(launch.subprocess,"check_output",ip_command)
+        env={"HCCL_SOCKET_IFNAME":"hccl-control"}
+        line=launch.configure_gloo_network(args,node,hosts,env)
+        assert env==dict(GLOO_SOCKET_IFNAME=f"eth{node}",HCCL_SOCKET_IFNAME="hccl-control")
+        assert f"host={host}" in line and f"source=host:{host}" in line
+
+
+@pytest.mark.parametrize("mode",["loopback","missing","ambiguous","down","no-ip"])
+def test_gloo_auto_selection_fails_before_launch(mode,monkeypatch):
+    launch=module("launch")
+    args=launch.parser().parse_args([])
+    host="90.90.93.83"
+    monkeypatch.setattr(launch.socket,"getaddrinfo",lambda *a:[(0,0,0,"",("127.0.0.1" if mode=="loopback" else host,0))])
+    def ip_command(*a,**kw):
+        if mode=="no-ip": raise FileNotFoundError("ip unavailable")
+        return [dict(ifname=name,flags=[] if mode=="down" else ["UP"],addr_info=[dict(local=host)])
+                for name in ([] if mode=="missing" else ["eth0","eth1"] if mode=="ambiguous" else ["eth0"])]
+    monkeypatch.setattr(launch.subprocess,"check_output",lambda *a,**kw:json.dumps(ip_command()))
+    env={}
+    with pytest.raises(ValueError,match="--ifname"):
+        launch.configure_gloo_network(args,1,["90.90.93.87",host],env)
+    assert "GLOO_SOCKET_IFNAME" not in env
+
+
+@pytest.mark.parametrize("explicit,inherited,ok",[(None,"eth1",True),("eth0","eth1",True),
+                                                (None,"eth0,eth1",True),(None,"lo",False),
+                                                ("absent",None,False),(None,"eth0,",False)])
+def test_gloo_explicit_interface_precedence(tmp_path,monkeypatch,explicit,inherited,ok):
+    launch=module("launch")
+    monkeypatch.delenv("GLOO_SOCKET_IFNAME",raising=False)
+    monkeypatch.delenv("HCCL_SOCKET_IFNAME",raising=False)
+    if inherited: monkeypatch.setenv("GLOO_SOCKET_IFNAME",inherited)
+    monkeypatch.setattr(launch.socket,"if_nameindex",lambda:[(1,"lo"),(2,"eth0"),(3,"eth1")])
+    def forbidden(*a,**kw): raise AssertionError("Explicit interface does not need ip/DNS discovery")
+    monkeypatch.setattr(launch.subprocess,"check_output",forbidden)
+    args=launch.parser().parse_args(["--ifname",explicit] if explicit else [])
+    env=launch.worker_environment(args,tmp_path)
+    if not ok:
+        with pytest.raises(ValueError,match="GLOO_SOCKET_IFNAME"):
+            launch.configure_gloo_network(args,0,["a","b"],env)
+        return
+    launch.configure_gloo_network(args,0,["a","b"],env)
+    assert env["GLOO_SOCKET_IFNAME"]==(explicit or inherited)
+    assert env.get("HCCL_SOCKET_IFNAME")==explicit
+
+
+def test_gloo_single_host_keeps_default(monkeypatch):
+    launch=module("launch")
+    def forbidden(*a,**kw): raise AssertionError("Single-host default does not require network discovery")
+    monkeypatch.setattr(launch.subprocess,"check_output",forbidden)
+    env={}
+    line=launch.configure_gloo_network(launch.parser().parse_args([]),0,["localhost"],env)
+    assert env=={} and "GLOO_SOCKET_IFNAME=auto" in line
+
+
+def test_launch_passes_and_logs_selected_network(tmp_path,monkeypatch,capsys):
+    launch=module("launch")
+    monkeypatch.setattr(launch,"ROOT",tmp_path)
+    monkeypatch.setattr(sys,"argv",["launch.py","network-run","--node-rank","2","--hosts","87,86,83,81", "--check-hccl"])
+    monkeypatch.delenv("GLOO_SOCKET_IFNAME",raising=False)
+    monkeypatch.setitem(sys.modules,"resource",SimpleNamespace(RLIMIT_NOFILE=0,getrlimit=lambda _: (65536,65536)))
+    monkeypatch.setattr(launch.socket,"getaddrinfo",lambda *a:[(0,0,0,"",("90.90.93.83",0))])
+    monkeypatch.setattr(launch.subprocess,"check_output",lambda *a,**kw:json.dumps([
+        dict(ifname="eth2",flags=["UP"],addr_info=[dict(local="90.90.93.83")])]))
+    def start(cmd,**kwargs):
+        assert kwargs["env"]["GLOO_SOCKET_IFNAME"]=="eth2"
+        assert "--node_rank=2" in cmd and "--nnodes=4" in cmd
+        return SimpleNamespace(stdout=["probe completed\n"],wait=lambda:0)
+    monkeypatch.setattr(launch.subprocess,"Popen",start)
+    assert launch.main()==0
+    line=(tmp_path/"results/ll-python/network-run/node-2/console.log").read_text().splitlines()[0]
+    assert "GLOO_SOCKET_IFNAME=eth2" in line and line in capsys.readouterr().out
+
+
 def test_hccl_probe_never_loads_native_or_shmem(tmp_path,monkeypatch,capsys):
     run=module("run")
     calls=[]
