@@ -20,9 +20,10 @@ def function_body(source, marker):
     return source[start:cursor]
 
 
+@pytest.mark.parametrize("workspace", ["compute", "payload"])
 @pytest.mark.parametrize("receive_cores", [0, 8, 16, 24, 32, 36])
 @pytest.mark.parametrize("remote_first", [False, True])
-def test_production_plan_matches_original_scan(tmp_path, receive_cores, remote_first):
+def test_production_plan_matches_original_scan(tmp_path, receive_cores, remote_first, workspace):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
     if not zig:
         pytest.skip("Set DEEPEP_TEST_ZIG for the C++ CPU check")
@@ -70,7 +71,9 @@ template<uint32_t Group>void Check(uint32_t world,uint32_t rank,uint32_t c,uint3
  }
  const auto layout=EpCombineM45Layout(n,72,h,k,recv);
  assert(layout.inputLanes && layout.outputLanes);
- const uint32_t bytes=layout.phaseOffset,ownedBytes=EpCombineM4TaskBytes(n,recv);
+ const uint32_t bytes=PAYLOAD_SNAPSHOT?EpCombineRouteSnapshotBytes(layout):layout.phaseOffset;
+ const uint32_t ownedBytes=EpCombineM4TaskBytes(n,recv);
+ assert(!PAYLOAD_SNAPSHOT || bytes+kEpServerDedupCombineResidentUbBytes+layout.inputOffset==kEpServerDedupCombineRecvUbBytes);
  for(uint32_t worker=0;worker<recv;++worker){
   core=c-recv+worker;
   std::vector<uint64_t> arena((bytes+ownedBytes+64)/8,0x5b5b5b5b5b5b5b5bULL);
@@ -142,7 +145,7 @@ int main(){
   const auto ub=EpCombineM45Layout(10000,bs,3584,8,EpCombineRecvCoreCount(56));
   assert(ub.inputLanes && ub.totalBytes<=kEpServerDedupCombineRecvUbBytes);
  }
- for(uint32_t c:{16,32,56,64,72})for(uint32_t n:{0,1,7,63,64,65,255,256,257,576,577,1024,10000})
+ for(uint32_t c:{16,32,56,64,72})for(uint32_t n:{0,1,7,63,64,65,255,256,257,576,577,1024,2048,2112,4096,8192,10000})
   for(uint32_t pattern=0;pattern<4;++pattern){
    Check<4>(16,pattern*4,c,n,3584,8,pattern);
    Check<2>(2,pattern%2,c,n,3584,8,pattern);
@@ -150,7 +153,7 @@ int main(){
    Check<4>(8,pattern,c,n,3584,8,pattern);
    Check<16>(128,pattern*31,c,n,7168,16,pattern);
   }
- for(uint32_t world:{32,64,256})for(uint32_t n:{0,1,65,576})
+ for(uint32_t world:{32,64,256})for(uint32_t n:{0,1,65,576,4096})
   Check<16>(world,world-1,56,n,3584,6,0);
  for(uint32_t h:{256,512,7168})for(uint32_t n:{1,7,65,576})Check<4>(16,15,32,n,h,8,0);
  BadRank();
@@ -160,7 +163,7 @@ int main(){
     cpp = tmp_path / "partial-plan.cpp"
     cpp.write_text(source, encoding="utf-8")
     exe = tmp_path / "partial-plan.exe"
-    subprocess.run([zig, "c++", "-std=c++17", "-O1", "-UNDEBUG", f"-DDEEPEP_LL_COMBINE_RECV_CORES={receive_cores}",
+    subprocess.run([zig, "c++", "-std=c++17", "-O1", "-UNDEBUG", f"-DPAYLOAD_SNAPSHOT={int(workspace == 'payload')}", f"-DDEEPEP_LL_COMBINE_RECV_CORES={receive_cores}",
                     *(["-DDEEPEP_LL_COMBINE_REMOTE_FIRST=1"] if remote_first else []), "-I" + str(tmp_path),
                     "-I" + str(ROOT / "csrc"), str(cpp), "-o", str(exe)], check=True, timeout=180)
     result = subprocess.run([str(exe)], check=True, capture_output=True, text=True, timeout=90)

@@ -29,7 +29,7 @@ Benchmark options (with or without a preceding --):
          --kernel-timeout SECONDS (default 10; bounded stream wait)
          --profile-frequency-hz HZ (default 1000000000; 0 disables Perfetto export)
 Defaults: EP8, four ranks/host, devices 12,13,14,15 on each host; hosts 90.90.93.84,90.90.93.184, port 29671.
-          base/ready-task/ready-fast/ready-pipeline, with matching diagnostics; BS 32,48,64,72,256; H3584/K8/E384/BF16.
+          base/ready-task/ready-fast/ready-snapshot, with matching diagnostics; BS 32,48,64,72,256; H3584/K8/E384/BF16.
           Warmup 10; clean samples 100; diagnostic samples 10, level 2.
 Rebuild with the same --ranks-per-host value. Use 16 for EP16/32/64 on one/two/four hosts.
 All selected variants share one MPI/ACL/SHMEM initialization.

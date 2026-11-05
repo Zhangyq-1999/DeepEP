@@ -196,6 +196,15 @@ struct EpCombineM45WorkspaceLayout {
     uint32_t inputLanes = 0U, outputLanes = 0U, finalOutputLanes = 0U;
     uint32_t totalBytes = 0U;
 };
+// Available only BEFORE M4 initializes or issues payload lanes, after M1/M2
+// retirement. Planning finishes before the same bytes become inputs/outputs.
+// No change to layout, lane counts or the M4 -> M5 live-output handoff.
+COMBINE_DEDUP_EP_COMBINE_CONSTEXPR uint32_t EpCombineRouteSnapshotBytes(const EpCombineM45WorkspaceLayout& layout)
+{
+    const uint32_t begin = kEpServerDedupCombineResidentUbBytes + layout.inputOffset;
+    return layout.inputLanes && layout.outputLanes && begin < kEpServerDedupCombineRecvUbBytes
+        ? kEpServerDedupCombineRecvUbBytes - begin : 0U;
+}
 COMBINE_DEDUP_EP_COMBINE_CONSTEXPR EpCombineM45WorkspaceLayout EpCombineM45Layout(uint32_t tokens, uint32_t bs,
                                                                                   uint32_t h, uint32_t k, uint32_t recvCores = DispatchDedup::kLlDefaultPlanCoreNum / 2U)
 {
@@ -205,7 +214,7 @@ COMBINE_DEDUP_EP_COMBINE_CONSTEXPR EpCombineM45WorkspaceLayout EpCombineM45Layou
         return result;
     const uint64_t owned = EpCombineM5TokenCount(bs, recvCores);
     const uint64_t partial = EpCombineM4TaskBytes(tokens, recvCores) +
-#if DEEPEP_LL_COMBINE_READY == 1 || DEEPEP_LL_COMBINE_READY == 3
+#if DEEPEP_LL_COMBINE_READY == 1 || DEEPEP_LL_COMBINE_READY >= 3
                              3U * EpCombineReadyTaskBytes(tokens,recvCores) +
                              EpCombineAlign((EpCombineReadyTaskBytes(tokens,recvCores)/4U+7U)/8U,32U) +
 #endif

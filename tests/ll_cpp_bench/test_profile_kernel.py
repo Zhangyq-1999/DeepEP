@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
 @pytest.mark.parametrize("profile", [False, True])
 @pytest.mark.parametrize("small", [False, True])
 @pytest.mark.parametrize("returns", [False, True, "new", "simt", "poll", "local", "batch", "batch-pipeline",
-                                     "card-all", "card-row", "server-all", "server-row", "notify-simt", "notify-core", "ready-task", "ready-shared", "ready-fast", "ready-pipeline"])
+                                     "card-all", "card-row", "server-all", "server-row", "notify-simt", "notify-core", "ready-task", "ready-shared", "ready-fast", "ready-pipeline", "ready-snapshot"])
 def test_all_combine_profile_paths_compile(tmp_path, profile, small, returns):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
     if not zig:
@@ -45,9 +45,9 @@ int main() {}
         flags = ["-DDEEPEP_LL_RDMA=1", "-DDEEPEP_LL_PHYSICAL_RANKS_PER_HOST=4",
                  f'-DDEEPEP_LL_COMBINE_COALESCE={1 if returns.startswith("card-") else 2}',
                  f'-DDEEPEP_LL_COMBINE_COALESCE_ROWS={int(returns.endswith("-row"))}']
-    elif returns in ("ready-task", "ready-shared", "ready-fast", "ready-pipeline"):
+    elif returns in ("ready-task", "ready-shared", "ready-fast", "ready-pipeline", "ready-snapshot"):
         if small: pytest.skip("Ready modes are independent of small-batch")
-        flags = ["-DDEEPEP_LL_RDMA=1", f'-DDEEPEP_LL_COMBINE_READY={1 if returns == "ready-task" else 2 if returns == "ready-shared" else 3}']
+        flags = ["-DDEEPEP_LL_RDMA=1", f'-DDEEPEP_LL_COMBINE_READY={1 if returns == "ready-task" else 2 if returns == "ready-shared" else 4 if returns == "ready-snapshot" else 3}']
         if returns == "ready-pipeline": flags.append("-DDEEPEP_LL_COMBINE_DEFER_RETURN=1")
     elif returns in ("notify-simt", "notify-core"):
         flags += [f'-DDEEPEP_LL_COMBINE_NOTIFY={1 if returns == "notify-simt" else 2}',

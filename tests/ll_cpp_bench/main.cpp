@@ -280,7 +280,7 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
                           (DEEPEP_BENCH_EARLY_ISSUE << 2) | (DEEPEP_BENCH_PROGRESS_PROBE << 3) | (DEEPEP_BENCH_SIMT_META << 4) |
                           (DEEPEP_BENCH_SIMT_FLAG << 5) | (DEEPEP_BENCH_PREFETCH_RETURN << 6) | (DEEPEP_BENCH_LOCAL_FIRST << 7) |
                           (DEEPEP_BENCH_BATCH_FINAL << 8) | (DEEPEP_BENCH_COALESCE << 9) |
-                          (DEEPEP_BENCH_COALESCE_ROWS << 11) | (DEEPEP_BENCH_NOTIFY << 12) | (DEEPEP_BENCH_READY << 14) | (uint32_t(DEEPEP_BENCH_POLL_NOP) << 16U)))
+                          (DEEPEP_BENCH_COALESCE_ROWS << 11) | (DEEPEP_BENCH_NOTIFY << 12) | CombineDedup::CombineReadyOptions(DEEPEP_BENCH_READY) | (uint32_t(DEEPEP_BENCH_POLL_NOP) << 16U)))
         throw std::runtime_error("Mismatched Host/device return options");
     if (!profileBuild) o.profile = 0;
     if (profileBuild && o.profile) o.iterations = o.profileIterations;

@@ -6,7 +6,7 @@
 
 #include "kernel_operator.h"
 #include "combine_ready.h"
-#if DEEPEP_LL_COMBINE_READY == 1 || DEEPEP_LL_COMBINE_READY == 3
+#if DEEPEP_LL_COMBINE_READY == 1 || DEEPEP_LL_COMBINE_READY >= 3
 #include "combine_ready_select.h"
 #endif
 #include "combine_profile_device.h"
@@ -21,7 +21,7 @@
 #ifdef DEEPEP_LL_COMBINE_SIMT_META
 #include "combine_simt.h"
 #endif
-#ifdef DEEPEP_LL_COMBINE_SMALL_BATCH
+#if defined(DEEPEP_LL_COMBINE_SMALL_BATCH) || DEEPEP_LL_COMBINE_READY == 4
 #include "combine_partial_plan.h"
 #endif
 
@@ -38,7 +38,7 @@ public:
     __aicore__ inline void SetProfile(CombineProfile::DeviceProfile* p)
     {
         profile_.Bind(p);
-#ifdef DEEPEP_LL_COMBINE_SMALL_BATCH
+#if defined(DEEPEP_LL_COMBINE_SMALL_BATCH) || DEEPEP_LL_COMBINE_READY == 4
         plan_.SetProfile(p);
 #endif
     }
@@ -72,7 +72,7 @@ public:
             return;
         }
         rows_ = Allocate<int32_t>(EpCombineM4TaskBytes(tokens, recvCores_));
-#if DEEPEP_LL_COMBINE_READY == 1 || DEEPEP_LL_COMBINE_READY == 3
+#if DEEPEP_LL_COMBINE_READY == 1 || DEEPEP_LL_COMBINE_READY >= 3
         const uint32_t bytes=EpCombineReadyTaskBytes(tokens,recvCores_);
         readyDeps_=Allocate<int32_t>(bytes);
         readyWork_=Allocate<int32_t>(bytes);
@@ -93,6 +93,12 @@ public:
 #ifdef DEEPEP_LL_COMBINE_SMALL_BATCH
         planScratch_ = scratch;
         planScratchBytes_ = layout.phaseOffset;
+#elif DEEPEP_LL_COMBINE_READY == 4
+        // M1/M2 have retired before Init; M4 has not initialized its payload
+        // lanes yet. Borrow the complete idle payload arena for planning only.
+        // Resident control and the owned-row/dependency/cache area stay intact.
+        planScratch_ = scratch[layout.inputOffset];
+        planScratchBytes_ = EpCombineRouteSnapshotBytes(layout);
 #endif
         low_ = Allocate<uint16_t>(blocks_ * 480U);
         inputs_ = scratch[layout.inputOffset].ReinterpretCast<uint16_t>();
@@ -112,11 +118,27 @@ public:
     }
 #endif
 
-#if DEEPEP_LL_COMBINE_READY == 1 || DEEPEP_LL_COMBINE_READY == 3
+#if DEEPEP_LL_COMBINE_READY == 1 || DEEPEP_LL_COMBINE_READY >= 3
     __aicore__ inline void SetReady(CombineGroupReady<Group>* ready) { ready_=ready; }
 #endif
     __aicore__ inline uint32_t Process()
     {
+#if DEEPEP_LL_COMBINE_READY == 4
+        // Must precede output-flag initialization: the snapshot aliases those
+        // future output slots. No payload DMA has started on this receive core.
+        profile_.Mark(CombineProfile::PlanBegin);
+        const uint64_t planStart = profile_.DetailClock();
+        profile_.Set(CombineProfile::RouteSnapshotCapacity, planScratchBytes_);
+        planned_ = plan_.Prepare(planScratch_, planScratchBytes_, rows_, types_, table2_, tokens_,
+                                uint32_t(args_->rankSize), uint32_t(args_->rank),
+                                GetBlockIdx() - (GetBlockNum() - recvCores_), recvCores_);
+        if (!planned_) profile_.Add(CombineProfile::RouteSnapshotFallbacks);
+        // Hand Vector scratch back to MTE2 before any input lane can overwrite
+        // it. Preserve the caller's seeded MTE3_V output events.
+        SetFlag<HardEvent::V_MTE2>(7U);
+        WaitFlag<HardEvent::V_MTE2>(7U);
+        profile_.Elapsed(CombineProfile::ReadyPlanTicks, planStart);
+#endif
         if (LlTransport::Rdma(args_)) rdmaBatch_->Init(args_, packetBytes_);
         for (uint32_t lane = 0; lane < inputLanes_; ++lane) SetFlag<HardEvent::V_MTE2>(lane);
         uint64_t flagMask[2] = {0xffU, 0U};
@@ -128,7 +150,7 @@ public:
         const uint32_t servers = uint32_t(args_->rankSize) / Group;
         const uint32_t ownServer = uint32_t(args_->rank) / Group;
         uint32_t owner = 0U, completed = 0U;
-#if DEEPEP_LL_COMBINE_READY == 1 || DEEPEP_LL_COMBINE_READY == 3
+#if DEEPEP_LL_COMBINE_READY == 1 || DEEPEP_LL_COMBINE_READY >= 3
         completed=ProcessReadyTasks(servers,ownServer);
 #else
         for (uint32_t step = 1U; step <= servers; ++step) {
@@ -266,7 +288,7 @@ private:
         profile_.Mark(CombineProfile::ReadyTasksDone);
         return completed;
     }
-#elif DEEPEP_LL_COMBINE_READY == 3
+#elif DEEPEP_LL_COMBINE_READY >= 3
     __aicore__ inline void LoadReadyMetadata(uint32_t task)
     {
         if (readyCached_) {
@@ -279,9 +301,15 @@ private:
 
     __aicore__ inline uint32_t ProcessReadyTasks(uint32_t servers, uint32_t ownServer)
     {
+#if DEEPEP_LL_COMBINE_READY != 4
         profile_.Mark(CombineProfile::PlanBegin);
+#endif
         const uint64_t start = profile_.DetailClock();
         uint32_t owner = 0U, count = 0U;
+#if DEEPEP_LL_COMBINE_READY == 4
+        if (planned_) count = plan_.End(servers - 1U);
+        else
+#endif
         for (uint32_t step = 0; step < servers; ++step)
             count = SelectServer(CombineReturnServer<Group>(servers, ownServer, step), owner, step == 0U, count);
         // Reuse the already reserved table caches AFTER all server scans.
@@ -419,6 +447,10 @@ private:
             SetFlag<HardEvent::MTE2_V>(7U);
             WaitFlag<HardEvent::MTE2_V>(7U);
             profile_.Elapsed(CombineProfile::PartialScanLoadTicks, loadStart);
+            profile_.Add(CombineProfile::RouteLoadBatches);
+            profile_.Add(CombineProfile::RouteLoadedRows, span);
+            profile_.Add(CombineProfile::RouteLoadBytes, uint64_t(span) * 16U);
+            profile_.Add(CombineProfile::RouteSelectPasses);
             const uint64_t selectStart = profile_.DetailClock();
 #ifdef DEEPEP_LL_COMBINE_SIMT_META
             // 256 B counts/bits and 32 B summary reuse the original scan space.
@@ -613,12 +645,12 @@ private:
         SetFlag<HardEvent::MTE3_V>(lane);
     }
 
-#if DEEPEP_LL_COMBINE_READY == 1 || DEEPEP_LL_COMBINE_READY == 3
+#if DEEPEP_LL_COMBINE_READY == 1 || DEEPEP_LL_COMBINE_READY >= 3
     CombineGroupReady<Group>* ready_=nullptr;
     LocalTensor<int32_t> readyDeps_,readyWork_,readyTasks_;
     LocalTensor<uint8_t> readyMask_;
 #endif
-#if DEEPEP_LL_COMBINE_READY == 3
+#if DEEPEP_LL_COMBINE_READY >= 3
     LocalTensor<int32_t> readyTable2_;
     LocalTensor<uint32_t> readyTable3_;
     uint32_t readyTable3Stride_ = 0U;
@@ -646,7 +678,7 @@ private:
     LocalTensor<uint32_t> table3Cache_;
     uint32_t cacheBegin_ = 0U, cacheEnd_ = 0U;
 #endif
-#ifdef DEEPEP_LL_COMBINE_SMALL_BATCH
+#if defined(DEEPEP_LL_COMBINE_SMALL_BATCH) || DEEPEP_LL_COMBINE_READY == 4
     PartialTaskPlan<Group> plan_;
     LocalTensor<uint8_t> planScratch_;
     uint32_t planScratchBytes_ = 0U;

@@ -114,7 +114,10 @@ def test_dependency_work_is_not_rendered_as_blocking_wait(reporter, tmp_path):
                        ready_filter_skips=17, ready_cached_tasks=12,
                        ready_metadata_reloads=0, ready_pipeline_issue_ticks=9,
                        ready_retire_begin=85, ready_retire_end=95,
-                       partial_begin=5, partial_end=40, final_begin=40)
+                       partial_begin=5, partial_end=40, final_begin=40, plan_begin=5, plan_end=7,
+                       route_load_batches=1, route_loaded_rows=2048, route_load_bytes=32768,
+                       route_select_passes=4, route_snapshot_bytes=41728,
+                       route_snapshot_capacity=181888, route_snapshot_fallbacks=0)
     write_csv(path, fields, rows)
     subprocess.run([str(reporter), '--perfetto', str(tmp_path)], check=True, capture_output=True)
     trace = read_trace(next((tmp_path/'perfetto-local').glob('*p50-*.json')))
@@ -127,6 +130,10 @@ def test_dependency_work_is_not_rendered_as_blocking_wait(reporter, tmp_path):
     args = spans['profiled body']['args']
     assert args['ready_filter_skips'] == 17 and args['ready_cached_tasks'] == 12
     assert args['ready_metadata_reloads'] == 0 and args['ready_pipeline_issue_ticks'] == 9
+    assert args['route_load_batches'] == 1 and args['route_load_bytes'] == 32768
+    assert args['route_snapshot_bytes'] == 41728 and args['route_snapshot_capacity'] == 181888
+    assert args['route_select_passes'] == 4 and args['route_snapshot_fallbacks'] == 0
+    assert spans['partial plan']['dur'] == pytest.approx(.002)
 
 
 def test_automatic_global_trace_gather(tmp_path):

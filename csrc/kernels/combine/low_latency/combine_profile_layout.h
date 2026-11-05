@@ -2,8 +2,8 @@
 #include <cstdint>
 
 namespace CombineProfile {
-// One 2048-byte record per AIV. Schema 12 adds cached-ready scheduling and
-// partial staging overlap counters. Detailed counters require level 2.
+// One 2048-byte record per AIV. Schema 13 adds routing scan work and
+// snapshot capacity/fallback counters. Detailed counters require level 2.
 enum Word : uint32_t {
     Entry,
     ProfileInitEnd,
@@ -230,6 +230,13 @@ enum Word : uint32_t {
     ReadyCachedTasks,
     ReadyMetadataReloads,
     ReadyPipelineIssueTicks,
+    RouteLoadBatches,
+    RouteLoadedRows,
+    RouteLoadBytes,
+    RouteSelectPasses,
+    RouteSnapshotBytes,
+    RouteSnapshotCapacity,
+    RouteSnapshotFallbacks,
     CoalesceWorker,
     Rank,
     Core,
@@ -242,8 +249,8 @@ enum Word : uint32_t {
     Count
 };
 constexpr uint32_t kWords = 256U;
-constexpr uint64_t kSchema = 12U;
+constexpr uint64_t kSchema = 13U;
 constexpr Word kDetailBegin = InitPrefixTicks;
-constexpr Word kDetailEnd = ReadyPipelineIssueTicks;
+constexpr Word kDetailEnd = RouteSnapshotFallbacks;
 static_assert(Count <= kWords && StageRows <= 64U, "profile record bounds");
 }  // namespace CombineProfile

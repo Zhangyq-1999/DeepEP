@@ -7,9 +7,9 @@
 #include "combine_return_schedule.h"
 
 namespace CombineDedup {
-// M4 has not started computing yet. Reuse its three FP32 vectors for a
-// read-only routing snapshot; owned rows live in the existing phase area.
-// No payload, in-flight output or resident control storage is borrowed.
+// M4 has not started computing yet. The caller lends either the idle FP32
+// vectors or the not-yet-initialized payload arena. Owned rows are separate;
+// no live payload, in-flight output or resident control storage is borrowed.
 template<uint32_t Group>
 class PartialTaskPlan {
 public:
@@ -30,6 +30,7 @@ public:
         const uint32_t groups = world / Group;
         const uint32_t rows = EpCombineAlign(tokens, 64U);
         if (groups > kMaxGroups || EpCombineM4ScanBytes(rows) > scratchBytes) return false;
+        profile_.Set(CombineProfile::RouteSnapshotBytes, EpCombineM4ScanBytes(rows));
         if (tokens == 0U) {
             for (uint32_t step = 0; step < groups; ++step) ends_[step] = 0U;
             return true;
@@ -47,6 +48,9 @@ public:
         SetFlag<HardEvent::MTE2_V>(7U);
         WaitFlag<HardEvent::MTE2_V>(7U);
         profile_.Elapsed(CombineProfile::PlanLoadTicks, loadStart);
+        profile_.Add(CombineProfile::RouteLoadBatches);
+        profile_.Add(CombineProfile::RouteLoadedRows, tokens);
+        profile_.Add(CombineProfile::RouteLoadBytes, uint64_t(tokens) * 16U);
         const uint64_t selectStart = profile_.DetailClock();
         Compares(typeMask, ranks, int32_t(2), CMPMODE::EQ, rows);
         CreateVecIndex(indices, int32_t(0), tokens);
@@ -73,6 +77,7 @@ public:
 
         uint32_t owner = 0U, count = 0U;
         for (uint32_t step = 0; step < groups; ++step) {
+            profile_.Add(CombineProfile::RouteSelectPasses);
             const uint32_t server = CombineReturnServer<Group>(groups, rank / Group, step);
             ServerDedupRankMask(mask, upper, ranks, int32_t(server * Group), int32_t((server + 1U) * Group), tokens);
             And(mask.ReinterpretCast<uint16_t>(), mask.ReinterpretCast<uint16_t>(),

@@ -161,6 +161,12 @@ void compact_record(const Record& r)
                   << ' ' << (r[ReadyRetireEnd]-r[ReadyRetireBegin]) << '\n';
     if (r[ReadyAckWaitTicks] || r[ReadyConsumedWaitTicks])
         std::cout << "  ack/consumed=" << r[ReadyAckWaitTicks] << '/' << r[ReadyConsumedWaitTicks] << '\n';
+    if (r.receive && (r[RouteLoadBatches] || r[RouteSnapshotCapacity])) {
+        std::cout << "  scan=" << r[RouteLoadBatches] << '/' << r[RouteLoadedRows] << '/' << r[RouteSelectPasses];
+        if (r[RouteSnapshotCapacity])
+            std::cout << " ub=" << r[RouteSnapshotBytes] << '/' << r[RouteSnapshotCapacity] << '/' << r[RouteSnapshotFallbacks];
+        std::cout << '\n';
+    }
     if (r.receive && r[BatchGroupCalls] + r[BatchWholeTokens])
         std::cout << "  batch group_checks/whole_tokens/route_ticks=" << r[BatchGroupCalls] << '/'
                   << r[BatchWholeTokens] << '/' << r[BatchRouteTicks] << '\n';
@@ -254,6 +260,7 @@ void suite_report(const fs::path& root)
                  "g=miss/calls/max_probe/inspect missing_rank/core/count; 4294967295=all\n"
                  "G=r/c window=W(wait)|O(observe, includes work) miss/calls/max_probe missing_rank/core/count inspect; omitted if same as R\n"
                  "q=first/all/done rounds/stalls/skips before_all/remote cached/reloads setup/plan/filter/snapshot/pipeline_issue retire\n"
+                 "scan=GM_batches/rows/Vector_group_passes (16B/row); ub=snapshot_bytes/capacity/fallbacks\n"
                  "T=last-miss; time=first/last/ready; src=slot:rank/core/path/type; D=direct P=partial.\n"
                  "Tfreq links=producer>receiver/path/type:sample_count\n";
     std::cout << std::fixed << std::setprecision(2);

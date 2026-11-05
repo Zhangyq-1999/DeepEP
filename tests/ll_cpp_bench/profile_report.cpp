@@ -202,6 +202,11 @@ void detail(std::ostream& out, const Record& r)
             << r[ReadyCachedTasks] << '/' << r[ReadyMetadataReloads] << '/' << r[ReadyPipelineIssueTicks]
             << " ack_wait/consumed_wait=" << r[ReadyAckWaitTicks] << '/' << r[ReadyConsumedWaitTicks]
             << (r[ReadyTaskRounds] ? " (group_ready_window includes useful work)\n" : "\n");
+    if (r.receive && (r[RouteLoadBatches] || r[RouteSnapshotCapacity]))
+        out << "    route: batches/rows/bytes/group_passes=" << r[RouteLoadBatches] << '/' << r[RouteLoadedRows]
+            << '/' << r[RouteLoadBytes] << '/' << r[RouteSelectPasses]
+            << " snapshot_bytes/capacity/fallbacks=" << r[RouteSnapshotBytes] << '/' << r[RouteSnapshotCapacity]
+            << '/' << r[RouteSnapshotFallbacks] << '\n';
     if (r.receive && r[LocalContributions] + r[RemoteContributions]) {
         out << "    final_local: contributions=" << r[LocalContributions]
             << " probes/misses=" << r[LocalProbeCalls] << '/' << r[LocalProbeMisses]

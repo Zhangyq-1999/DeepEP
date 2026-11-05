@@ -8,7 +8,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
-@pytest.mark.parametrize("mode", [1, 2, 3])
+@pytest.mark.parametrize("mode", [1, 2, 3, 4])
 def test_ready_lifecycle_and_vector_selection(tmp_path, mode):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
     if not zig:
@@ -23,7 +23,7 @@ def test_ready_lifecycle_and_vector_selection(tmp_path, mode):
     subprocess.run([str(exe)], check=True, timeout=30)
 
 
-@pytest.mark.parametrize("mode,pipeline", [(1, False), (3, False), (3, True)])
+@pytest.mark.parametrize("mode,pipeline", [(1, False), (3, False), (3, True), (4, False)])
 def test_production_dependency_scheduler(tmp_path, mode, pipeline):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
     if not zig:
@@ -32,6 +32,7 @@ def test_production_dependency_scheduler(tmp_path, mode, pipeline):
     start = text.rindex("#if", 0, text.index("    __aicore__ inline uint32_t ProcessReadyTasks("))
     end = text.index("    template <class T>\n    __aicore__ inline LocalTensor<T> Allocate", start)
     method = text[start:end]
+    process = text[text.index("    __aicore__ inline uint32_t Process()\n"):text.index("\nprivate:", text.index("    __aicore__ inline uint32_t Process()\n"))]
     load = text[text.index("    __aicore__ inline void LoadTask(uint32_t row)"):text.index("#ifdef DEEPEP_LL_COMBINE_SIMT_META", text.index("    __aicore__ inline void LoadTask(uint32_t row)"))]
     load = load.replace("        // Route", "        ++loads;\n        // Route")
     cpp, exe = tmp_path / "scheduler.cpp", tmp_path / "scheduler.exe"
@@ -41,6 +42,7 @@ def test_production_dependency_scheduler(tmp_path, mode, pipeline):
 #undef main
 #include "kernels/combine/low_latency/ep_memory_server_dedup_combine_config.h"
 #include "kernels/combine/low_latency/combine_return_schedule.h"
+#include "kernels/combine/low_latency/combine_partial_plan.h"
 #include "kernels/dispatch/low_latency/common/dispatch_dedup_types.h"
 struct half{};
 struct bfloat16_t{};
@@ -60,6 +62,7 @@ template<uint32_t Group> struct Scheduler {
     } ready;
     struct Batch {
         bool pending=false;uint32_t lane=0,posted=0;
+        void Init(DispatchDedup::CommArgs*,uint32_t){}
         void SubmitPending(){if(pending){++posted;pending=false;}}
     } batch;
     Batch* rdmaBatch_=&batch;
@@ -86,9 +89,27 @@ template<uint32_t Group> struct Scheduler {
     LocalTensor<uint32_t> readyTable3_;
     uint32_t readyTable3Stride_=0;
     bool readyCached_=false;
+#if DEEPEP_LL_COMBINE_READY == 4
+    PartialTaskPlan<Group> plan_;
+    bool planned_=false;
+    std::vector<int32_t> types;
+    GlobalTensor<int32_t> types_;
+    std::vector<uint64_t> arena;
+    LocalTensor<uint8_t> planScratch_,outputs_;
+    uint32_t planScratchBytes_=0,tokens_=0,recvCores_=1,inputLanes_=3,blocks_=15,packetBytes_=7680;
+#endif
     explicit Scheduler(std::vector<Task> tasks,uint32_t world=2*Group,uint32_t rank=0,uint32_t topk=8):k_(topk),input(std::move(tasks)) {
         args.rank=rank;args.rankSize=world;args.reserved0=Group;args.reservedConfig[0]=LlRdma::kBackend;
         dtype_=DispatchDedup::DISPATCH_DEDUP_DATA_TYPE_FP16;
+#if DEEPEP_LL_COMBINE_READY == 4
+        tokens_=input.size();types.resize(tokens_,2);types_.SetGlobalBuffer(types.data());
+        const auto layout=EpCombineM45Layout(tokens_,72,3584,k_,recvCores_);
+        assert(layout.outputLanes==8U);
+        arena.resize((kEpServerDedupCombineRecvUbBytes+64)/8,0x5b5b5b5b5b5b5b5bULL);
+        auto scratch=reinterpret_cast<uint8_t*>(arena.data())+kEpServerDedupCombineResidentUbBytes;
+        planScratch_={scratch+layout.inputOffset};planScratchBytes_=EpCombineRouteSnapshotBytes(layout);
+        outputs_={scratch+layout.outputOffset};
+#endif
         gm2.resize(input.size()*3U);gm3.resize(input.size()*k_*2U);
         table2_.SetGlobalBuffer(gm2.data());table3_.SetGlobalBuffer(gm3.data());
         std::fill(table2.begin(),table2.end(),-123);std::fill(table3.begin(),table3.end(),0xcafebabeU);
@@ -107,6 +128,12 @@ template<uint32_t Group> struct Scheduler {
         return append;
     }
     template<class T>void Aggregate(uint32_t row,uint32_t source,uint32_t members) {
+#if DEEPEP_LL_COMBINE_READY == 4
+        // The route snapshot aliases the output ring. Process must initialize
+        // all data-with-flag tails AFTER planning, including untouched lanes.
+        for(uint32_t lane=0;lane<outputLanes_;++lane)for(uint32_t block=0;block<blocks_;++block)
+            for(uint32_t j=0;j<8;++j)assert(outputs_[lane*packetBytes_+block*512U+480U].template ReinterpretCast<float>().GetValue(j)==1.f);
+#endif
         assert(source==input[row].source && members==table3Ub_.GetValue(0U)+1U);
         assert(!std::memcmp(table2Ub_.p,gm2.data()+row*3U,12U));
         assert(!std::memcmp(table3Ub_.p,gm3.data()+row*k_*2U,k_*8U));
@@ -124,20 +151,37 @@ template<uint32_t Group> struct Scheduler {
             if(!defer)batch.SubmitPending();
         }
     }
-''' + load + method + r'''
+''' + load + method + ('\n' + process if mode == 4 else '') + r'''
+    uint32_t Run(uint32_t servers,uint32_t own) {
+#if DEEPEP_LL_COMBINE_READY == 4
+        cores=2;core=1; // One receiver owns every FIRST_HOP in this fixture.
+        for(uint32_t lane=0;lane<outputLanes_;++lane)SetFlag<HardEvent::MTE3_V>(lane);
+        const auto result=Process();
+        for(uint32_t lane=0;lane<outputLanes_;++lane)WaitFlag<HardEvent::MTE3_V>(lane);
+        for(uint32_t i=kEpServerDedupCombineRecvUbBytes;i<arena.size()*8U;++i)
+            assert(reinterpret_cast<uint8_t*>(arena.data())[i]==0x5b);
+        return result;
+#else
+        return ProcessReadyTasks(servers,own);
+#endif
+    }
 };
 template<uint32_t Group>void Check() {
     // The first remote task depends on the delayed rank. A ready local task
     // must still run; when both become ready, the remote task goes first.
     Scheduler<Group> t({{2U,Group},{1U,0U},{2U,0U}});
-    assert(t.ProcessReadyTasks(2,0)==3U);
+    assert(t.Run(2,0)==3U);
     assert((t.sent==std::vector<uint32_t>{1U,0U,2U}));
     assert(t.aggregated==3U);
     Scheduler<Group> empty({});
-    assert(empty.ProcessReadyTasks(2,0)==0 && empty.ready.round==0);
+    assert(empty.Run(2,0)==0 && empty.ready.round==0);
     Scheduler<Group> invalid({{0U,Group}});
-    bool trapped=false;try{invalid.ProcessReadyTasks(2,0);}catch(const std::runtime_error&){trapped=true;}
+    bool trapped=false;try{invalid.Run(2,0);}catch(const std::runtime_error&){trapped=true;}
     assert(trapped);
+#if DEEPEP_LL_COMBINE_READY == 4
+    // Trap aborts the real kernel; discard the fixture's seeded payload events.
+    for(auto& direction:events)for(auto& live:direction)live=false;
+#endif
     NoLiveEvents();
 }
 void FourHosts() {
@@ -150,7 +194,7 @@ void FourHosts() {
         for(uint32_t server=0;server<4;++server) if(server!=own)
             tasks.push_back({0x8001U,server*16U+15U});
         Scheduler<16> t(tasks,64,rank);
-        assert(t.ProcessReadyTasks(4,own)==5U);
+        assert(t.Run(4,own)==5U);
         assert(t.sent.front()==0U && t.sent.back()==1U && t.aggregated==5U);
         uint32_t visited=0;
         for(uint32_t i=1;i<4;++i) {
@@ -163,14 +207,23 @@ void FourHosts() {
 }
 
 void CacheAndPipeline() {
+#if DEEPEP_LL_COMBINE_READY == 4
+    Scheduler<16> fallback({{2U,16U},{2U,32U},{2U,48U}},64,0);
+    fallback.planScratchBytes_=0;
+    assert(fallback.Run(4,0)==3U && !fallback.planned_);
+    Scheduler<16> snapshot({{2U,16U},{2U,32U},{2U,48U}},64,0);
+    assert(snapshot.Run(4,0)==3U && snapshot.planned_);
+    assert(fallback.sent==snapshot.sent);
+    NoLiveEvents();
+#endif
     for(uint32_t k:{2U,3U,8U,32U}) for(uint32_t count:{1U,8U,12U,13U,65U}) for(uint32_t lanes:{1U,2U,8U}) {
         std::vector<Scheduler<16>::Task> tasks;
         for(uint32_t i=0;i<count;++i) tasks.push_back({2U,((i%3U)+1U)*16U+15U});
         Scheduler<16> t(tasks,64,0,k);t.outputLanes_=lanes;t.ready.delay=5;
         const auto before=filterCalls;
-        assert(t.ProcessReadyTasks(4,0)==count);
+        assert(t.Run(4,0)==count);
         assert(t.aggregated==count && !t.batch.pending && t.batch.posted==count);
-#if DEEPEP_LL_COMBINE_READY == 3
+#if DEEPEP_LL_COMBINE_READY >= 3
         assert(filterCalls-before==3U); // empty remote+local, then ready remote
         assert(t.loads==(count<=EpCombineReadyCacheCapacity(k)?0U:count*2U));
 #ifdef DEEPEP_LL_COMBINE_DEFER_RETURN

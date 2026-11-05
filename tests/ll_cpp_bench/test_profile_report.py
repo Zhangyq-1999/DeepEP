@@ -317,8 +317,8 @@ def test_default_suite_fits_one_paste_and_keeps_each_case(reporter, tmp_path):
     names = re.findall(r'"([a-z0-9_]+)"',
                        (HERE / "profile.hpp").read_text().split("names[] = {", 1)[1].split("};", 1)[0])
     fields = ["iteration", "device", "role", "profile_build"] + names
-    variants = ("base", "ready-task", "ready-fast", "ready-pipeline", "ref-profile",
-                "ready-task-profile", "ready-fast-profile", "ready-pipeline-profile")
+    variants = ("base", "ready-task", "ready-fast", "ready-snapshot", "ref-profile",
+                "ready-task-profile", "ready-fast-profile", "ready-snapshot-profile")
     defaults = (32, 48, 64, 72, 256)
     for phase, variant in enumerate(variants):
         directory = tmp_path / f"{phase}-{variant}"
@@ -340,7 +340,7 @@ def test_default_suite_fits_one_paste_and_keeps_each_case(reporter, tmp_path):
                     for core, role in ((2, "send"), (30, "receive"), (31, "receive"), (48, "receive")):
                         row = {name: 123456 for name in names}
                         row.update(iteration=i, device=12 + rank % 4, role=role, profile_build=1,
-                                   rank=rank, core=core, tokens=bs, world=8, complete=1, schema=12,
+                                   rank=rank, core=core, tokens=bs, world=8, complete=1, schema=13,
                                    entry_tick=1 << 60, flush_done=250000 + core, coalesce_worker=0,
                                    stage_rows=14, direct_rows=37, partial_rows=10, final_tokens=10,
                                    contributions=47, rdma_packets=10, rdma_deferred_packets=9,
@@ -355,7 +355,11 @@ def test_default_suite_fits_one_paste_and_keeps_each_case(reporter, tmp_path):
                                    early_issue_ticks=0, metadata_batches=0, poll_pause_calls=0,
                                    local_contributions=0, remote_contributions=0,
                                    batch_group_calls=0, batch_whole_tokens=0,
-                                   ready_ack_wait_ticks=0, ready_consumed_wait_ticks=0)
+                                   ready_ack_wait_ticks=0, ready_consumed_wait_ticks=0,
+                                   route_load_batches=1 if phase == 7 else 16, route_loaded_rows=2048 if phase == 7 else 8192,
+                                   route_load_bytes=32768 if phase == 7 else 131072, route_select_passes=4 if phase == 7 else 16,
+                                   route_snapshot_bytes=41728 if phase == 7 else 0,
+                                   route_snapshot_capacity=181888 if phase == 7 else 0, route_snapshot_fallbacks=0)
                         records.append(row)
             if profile:
                 for source in range(8):
@@ -385,7 +389,7 @@ def test_default_suite_fits_one_paste_and_keeps_each_case(reporter, tmp_path):
         default_report += block
     # Leave room for the run ID and launch output in a 64 KiB clipboard paste.
     size = len((default_report + "LL_COMBINE END cases=5\n").encode("utf-8"))
-    assert size < 60 * 1024, f"Default report is {size} bytes"
+    assert size < 62 * 1024, f"Default report is {size} bytes"
     assert "LL_COMBINE END cases=8" in out
     assert "  e=" in out and "'-'=absent" in out
     assert "  q=" in out and "  rdma=" in out
