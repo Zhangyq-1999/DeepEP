@@ -12,13 +12,15 @@ while (($#)); do
             cat <<'USAGE'
 build_all.sh [--variants NAME[,NAME...]] [--ranks-per-host 4|16] [--jobs N] [--dry-run]
              [--cann-home DIR] [--mpi-home DIR] [--shmem-root DIR]
-Defaults: base/ready-snapshot/stage-stream, plus matching diagnostics.
+Defaults: base/ready-snapshot/stage-stream/plan-compact, plus matching diagnostics.
 base is the frozen original; ready-snapshot is the previous measured comparison.
 ready-fast skips unchanged empty selections and reuses resident metadata caches.
 ready-pipeline adds M4-only staging overlap with the next already-ready task.
 ready-snapshot loads routing once in the idle payload arena before M4 starts.
 stage-prefetch posts after next input reads; stage-pair shares one wait for two M4 copies.
 stage-stream sends each ready batch's first packet immediately, then overlaps full packet preparation.
+plan-compact adds stable Vector FIRST_HOP compaction to ready-snapshot before server filtering.
+Optional ready-r32/ready-r36 (and -profile): ready-snapshot with 32/36 receive cores.
 Previously measured experiments remain opt-in.
 remote: cross-server returns first. notify-simt: remote plus SIMT rank notification.
 notify-core: remote plus direct producer-core notification; Vector readiness checks.
@@ -59,6 +61,7 @@ IFS=, read -r -a names <<< "$variants"
 # Validate the complete selection before starting any build.
 for name in "${names[@]}"; do
     case "$name" in
+        plan-compact|plan-compact-profile|ready-r32|ready-r32-profile|ready-r36|ready-r36-profile) ;;
         stage-stream|stage-stream-profile|stage-prefetch|stage-prefetch-profile|stage-pair|stage-pair-profile|ready-snapshot|ready-snapshot-profile|ready-fast|ready-pipeline|ready-fast-profile|ready-pipeline-profile|ready-task|ready-shared|ready-task-profile|ready-shared-profile|notify-simt|notify-core|notify-simt-profile|notify-core-profile|card-all|card-row|server-all|server-row|card-all-profile|card-row-profile|server-all-profile|server-row-profile|batch|batch-profile|batch-pipeline|batch-pipeline-profile|local-first|local-first-profile|poll800|poll800-profile|meta|meta-profile|prefetch|prefetch-profile|prepare|flag|prepare-flag|prepare-profile|flag-profile|prepare-flag-profile|issue|probe|issue-probe|issue-profile|probe-profile|issue-probe-profile|base|remote|pipeline|return|ops-shmem-base|ref-profile|opt-profile|r36-profile|early-profile|remote-profile|pipeline-profile|return-profile) ;;
         *) fail "Unknown experiment: $name (see --help)";;
     esac
@@ -75,6 +78,9 @@ for name in "${names[@]}"; do
         stage-prefetch|stage-prefetch-profile) ready=6;;
         stage-pair|stage-pair-profile) ready=5;;
         stage-stream|stage-stream-profile) ready=7;;
+        plan-compact|plan-compact-profile) ready=8;;
+        ready-r32|ready-r32-profile) ready=4; recv=32;;
+        ready-r36|ready-r36-profile) ready=4; recv=36;;
         ready-pipeline|ready-pipeline-profile) ready=3; defer=ON;;
         ready-shared|ready-shared-profile) ready=2;;
         notify-simt|notify-simt-profile) notify=1; remote=ON;;

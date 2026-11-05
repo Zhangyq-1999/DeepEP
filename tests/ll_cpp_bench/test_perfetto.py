@@ -117,6 +117,7 @@ def test_dependency_work_is_not_rendered_as_blocking_wait(reporter, tmp_path):
                        partial_begin=5, partial_end=40, final_begin=40, plan_begin=5, plan_end=7,
                        route_load_batches=1, route_loaded_rows=2048, route_load_bytes=32768,
                        route_select_passes=4, route_snapshot_bytes=41728,
+                       route_first_hop_rows=256, route_filter_rows=1024, route_compact_ticks=19,
                        route_snapshot_capacity=181888, route_snapshot_fallbacks=0)
     write_csv(path, fields, rows)
     subprocess.run([str(reporter), '--perfetto', str(tmp_path)], check=True, capture_output=True)
@@ -133,6 +134,7 @@ def test_dependency_work_is_not_rendered_as_blocking_wait(reporter, tmp_path):
     assert args['route_load_batches'] == 1 and args['route_load_bytes'] == 32768
     assert args['route_snapshot_bytes'] == 41728 and args['route_snapshot_capacity'] == 181888
     assert args['route_select_passes'] == 4 and args['route_snapshot_fallbacks'] == 0
+    assert (args['route_first_hop_rows'], args['route_filter_rows'], args['route_compact_ticks']) == (256, 1024, 19)
     assert spans['partial plan']['dur'] == pytest.approx(.002)
 
 

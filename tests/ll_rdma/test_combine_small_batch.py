@@ -20,7 +20,7 @@ def function_body(source, marker):
     return source[start:cursor]
 
 
-@pytest.mark.parametrize("workspace", ["compute", "payload"])
+@pytest.mark.parametrize("workspace", ["compute", "payload", "compact"])
 @pytest.mark.parametrize("receive_cores", [0, 8, 16, 24, 32, 36])
 @pytest.mark.parametrize("remote_first", [False, True])
 def test_production_plan_matches_original_scan(tmp_path, receive_cores, remote_first, workspace):
@@ -163,7 +163,8 @@ int main(){
     cpp = tmp_path / "partial-plan.cpp"
     cpp.write_text(source, encoding="utf-8")
     exe = tmp_path / "partial-plan.exe"
-    subprocess.run([zig, "c++", "-std=c++17", "-O1", "-UNDEBUG", f"-DPAYLOAD_SNAPSHOT={int(workspace == 'payload')}", f"-DDEEPEP_LL_COMBINE_RECV_CORES={receive_cores}",
+    subprocess.run([zig, "c++", "-std=c++17", "-O1", "-UNDEBUG", f"-DPAYLOAD_SNAPSHOT={int(workspace != 'compute')}", f"-DDEEPEP_LL_COMBINE_RECV_CORES={receive_cores}",
+                    f"-DDEEPEP_LL_COMBINE_READY={8 if workspace == 'compact' else 0}",
                     *(["-DDEEPEP_LL_COMBINE_REMOTE_FIRST=1"] if remote_first else []), "-I" + str(tmp_path),
                     "-I" + str(ROOT / "csrc"), str(cpp), "-o", str(exe)], check=True, timeout=180)
     result = subprocess.run([str(exe)], check=True, capture_output=True, text=True, timeout=90)

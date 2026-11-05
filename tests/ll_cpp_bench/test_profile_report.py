@@ -180,8 +180,8 @@ def test_compact_global_comparison_preserves_outliers(reporter, tmp_path):
     assert "no samples removed" in out
     row = next(line for line in out.splitlines() if line.startswith("0-base"))
     assert "25.33" in row and "100.00" in row and "WIDE" in row  # retain the 100 us tail
-    assert "IQR 0-base n=1" in out and "5/1/100.00" in out
-    assert out.index("variant ") < out.index("IQR 0-base")
+    assert "IQR 0 n=1" in out and "5/1/100.00" in out
+    assert out.index("variant ") < out.index("IQR 0")
     # A local node's subset must not silently become a global statistic.
     path = tmp_path / "0-base/rank-max.csv"
     original = path.read_text()
@@ -219,8 +219,8 @@ def test_compact_diagnostics_select_same_global_iteration(reporter, tmp_path, co
         records.extend(workers)
     write_csv(directory / "diagnostic.csv", fields, records)
     out = subprocess.check_output([str(reporter), "--suite", str(tmp_path)], text=True)
-    assert "D 0-ref-profile p50 i=2 event_r=0 us=13.00" in out
-    assert "D 0-ref-profile worst i=1 event_r=1 us=30.00" in out
+    assert "D 0 p50 i=2 event_r=0 us=13.00" in out
+    assert "D 0 worst i=1 event_r=1 us=30.00" in out
     assert "S r/c=1/0" in out and "R r/c=1/1" in out
     if coalesce:
         assert out.count(" A r/c=") == 2
@@ -312,18 +312,18 @@ def test_local_first_fields_in_reports(reporter, tmp_path, batch_mode):
 
 
 def test_default_suite_fits_one_paste_and_keeps_each_case(reporter, tmp_path):
-    # Five BS, three clean and three profile variants, two real samples each.
+    # Five BS, four clean and four profile variants, two real samples each.
     # Exercise long counters and eight tail slots rather than mostly-zero rows.
     names = re.findall(r'"([a-z0-9_]+)"',
                        (HERE / "profile.hpp").read_text().split("names[] = {", 1)[1].split("};", 1)[0])
     fields = ["iteration", "device", "role", "profile_build"] + names
-    variants = ("base", "ready-snapshot", "stage-stream", "ref-profile",
-                "ready-snapshot-profile", "stage-stream-profile")
+    variants = ("base", "ready-snapshot", "stage-stream", "plan-compact", "ref-profile",
+                "ready-snapshot-profile", "stage-stream-profile", "plan-compact-profile")
     defaults = (32, 48, 64, 72, 256)
     for phase, variant in enumerate(variants):
         directory = tmp_path / f"{phase}-{variant}"
         directory.mkdir()
-        profile = phase >= 3
+        profile = phase >= 4
         samples = 10 if profile else 100
         configs, events, records, producers = [], [], [], []
         # Extra BS must not silently disappear when the report exceeds one paste.
@@ -340,7 +340,7 @@ def test_default_suite_fits_one_paste_and_keeps_each_case(reporter, tmp_path):
                     for core, role in ((2, "send"), (30, "receive"), (31, "receive"), (48, "receive")):
                         row = {name: 123456 for name in names}
                         row.update(iteration=i, device=12 + rank % 4, role=role, profile_build=1,
-                                   rank=rank, core=core, tokens=bs, world=8, complete=1, schema=15,
+                                   rank=rank, core=core, tokens=bs, world=8, complete=1, schema=16,
                                    entry_tick=1 << 60, flush_done=250000 + core, coalesce_worker=0,
                                    stage_rows=14, direct_rows=37, partial_rows=10, final_tokens=10,
                                    contributions=47, rdma_packets=10, rdma_deferred_packets=9,
@@ -350,18 +350,20 @@ def test_default_suite_fits_one_paste_and_keeps_each_case(reporter, tmp_path):
                                    notify_begin=10000, notify_local_ready=20000, notify_end=21000,
                                    tail_missing_mask=255, tail_token=7, tail_slot=0, tail_block=14,
                                    tail_missing_blocks=120, tail_observations=10,
-                                   ready_task_rounds=50 if phase > 3 else 0,
-                                   ready_snapshot_ticks=12000 if phase > 3 else 0,
-                                   partial_packed_submit_calls=9 if phase == 5 else 0,
-                                   partial_eager_packets=1 if phase == 5 else 0,
+                                   ready_task_rounds=50 if phase > 4 else 0,
+                                   ready_snapshot_ticks=12000 if phase > 4 else 0,
+                                   partial_packed_submit_calls=9 if phase == 6 else 0,
+                                   partial_eager_packets=1 if phase == 6 else 0,
                                    early_issue_ticks=0, metadata_batches=0, poll_pause_calls=0,
                                    local_contributions=0, remote_contributions=0,
                                    batch_group_calls=0, batch_whole_tokens=0,
                                    ready_ack_wait_ticks=0, ready_consumed_wait_ticks=0,
-                                   route_load_batches=1 if phase == 5 else 16, route_loaded_rows=2048 if phase == 5 else 8192,
-                                   route_load_bytes=32768 if phase == 5 else 131072, route_select_passes=4 if phase == 5 else 16,
-                                   route_snapshot_bytes=41728 if phase == 5 else 0,
-                                   route_snapshot_capacity=181888 if phase == 5 else 0, route_snapshot_fallbacks=0)
+                                   route_load_batches=1 if phase > 4 else 16, route_loaded_rows=2048 if phase > 4 else 8192,
+                                   route_load_bytes=32768 if phase > 4 else 131072, route_select_passes=4 if phase > 4 else 16,
+                                   route_snapshot_bytes=41728 if phase > 4 else 0,
+                                   route_snapshot_capacity=181888 if phase > 4 else 0, route_snapshot_fallbacks=0,
+                                   route_first_hop_rows=256, route_filter_rows=1024 if phase == 7 else 8192,
+                                   route_compact_ticks=123456 if phase == 7 else 0)
                         records.append(row)
             if profile:
                 for source in range(8):
@@ -380,13 +382,13 @@ def test_default_suite_fits_one_paste_and_keeps_each_case(reporter, tmp_path):
     default_report = header
     for bs in defaults:
         block = re.search(rf"\nBS={bs} .*?END BS={bs}\n", out, flags=re.S)[0]
-        assert block.index("variant ") < block.index("D 3-ref-profile")
+        assert block.index("variant ") < block.index("D 4 p50")
         for phase, variant in enumerate(variants):
             assert re.search(rf"^{phase}-{variant}\s+(clean|profile)\s+", block, re.M)
-            if phase >= 3:
-                assert f"D {phase}-{variant} p50 i=4 event_r=4" in block
-                assert f"D {phase}-{variant} worst i=9 event_r=1" in block
-                assert f"IQR {phase}-{variant} n=1" in block
+            if phase >= 4:
+                assert f"D {phase} p50 i=4 event_r=4" in block
+                assert f"D {phase} worst i=9 event_r=1" in block
+                assert f"IQR {phase} n=1" in block
         assert " G 4/30 W=" in block and " G 4/30 O=" in block
         default_report += block
     # Leave room for the run ID and launch output in a 64 KiB clipboard paste.
@@ -396,4 +398,5 @@ def test_default_suite_fits_one_paste_and_keeps_each_case(reporter, tmp_path):
     assert "  e=" in out and "'-'=absent" in out
     assert "  q=" in out and "  rdma=" in out and " stage=" in out
     assert " stream=9/1/123456" in out
+    assert " compact=256/1024/123456" in out
     assert not re.search(r"^E ", out, re.M)  # Raw samples remain in rank-max.csv.

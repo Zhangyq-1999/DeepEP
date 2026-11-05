@@ -7,6 +7,13 @@ struct SuiteResult {
     struct Producer { uint32_t rank, core, type, row; std::string path; };
     std::map<std::tuple<uint32_t, uint32_t, uint32_t>, Producer> producers;
 };
+std::string diagnostic_id(const std::string& variant)
+{
+    const auto dash = variant.find('-');
+    if (dash != std::string::npos && dash && variant.substr(0, dash).find_first_not_of("0123456789") == std::string::npos)
+        return variant.substr(0, dash);
+    return variant;
+}
 const Record* receive_tail(const SuiteResult& d, uint32_t i)
 {
     const Record* tail = nullptr;
@@ -55,7 +62,7 @@ void tail_stability(const SuiteResult& d)
     }
     std::vector<std::pair<Key, uint32_t>> sorted(count.begin(), count.end());
     std::stable_sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
-    std::cout << " Tfreq " << d.variant << " event-tail-missed=" << observed << '/' << d.events.size()
+    std::cout << " Tfreq " << diagnostic_id(d.variant) << " event-tail-missed=" << observed << '/' << d.events.size()
               << " links=";
     for (size_t j = 0; j < std::min<size_t>(4, sorted.size()); ++j) {
         const auto& [key, n] = sorted[j];
@@ -173,6 +180,8 @@ void compact_record(const Record& r)
         std::cout << "  scan=" << r[RouteLoadBatches] << '/' << r[RouteLoadedRows] << '/' << r[RouteSelectPasses];
         if (r[RouteSnapshotCapacity])
             std::cout << " ub=" << r[RouteSnapshotBytes] << '/' << r[RouteSnapshotCapacity] << '/' << r[RouteSnapshotFallbacks];
+        if (r[RouteFilterRows] || r[RouteCompactTicks])
+            std::cout << " compact=" << r[RouteFirstHopRows] << '/' << r[RouteFilterRows] << '/' << r[RouteCompactTicks];
         std::cout << '\n';
     }
     if (r.receive && r[BatchGroupCalls] + r[BatchWholeTokens])
@@ -257,7 +266,8 @@ void suite_report(const fs::path& root)
             cases[bs].push_back(std::move(d));
         }
     }
-    std::cout << "LL_COMBINE compact=v2 global rank-MAX; Event=us; profile=ticks/core-entry; no samples removed\n"
+    std::cout << "LL_COMBINE compact=v3 global rank-MAX; Event=us; profile=ticks/core-entry; no samples removed\n"
+                 "D/IQR/Tfreq use the phase number from the variant table.\n"
                  "IQR=candidates; WIDE=(max-min)/P50>20%; full samples/fields in CSV; '-'=absent.\n"
                  "e(S)=init/stage/core_notify/notify/direct_first/direct_last/direct_end/pipe\n"
                  "e(R)=init/stage_drained/core_notify/ready_begin/ready_observed/ready_end/partial_end/put_first/put_last/final_first/final_last/store/drain/pipe\n"
@@ -268,7 +278,7 @@ void suite_report(const fs::path& root)
                  "g=miss/calls/max_probe/inspect missing_rank/core/count; 4294967295=all\n"
                  "G=r/c window=W(wait)|O(observe, includes work) miss/calls/max_probe missing_rank/core/count inspect; omitted if same as R\n"
                  "q=first/all/done rounds/stalls/skips before_all/remote cached/reloads setup/plan/filter/snapshot/pipeline_issue retire\n"
-                 "scan=GM_batches/rows/Vector_group_passes (16B/row); ub=snapshot_bytes/capacity/fallbacks\n"
+                 "scan=GM_batches/rows/Vector_group_passes (16B/row); ub=snapshot_bytes/capacity/fallbacks; compact=FIRST_HOP/filter_rows/ticks\n"
                  "T=last-miss; time=first/last/ready; src=slot:rank/core/path/type; D=direct P=partial.\n"
                  "Tfreq links=producer>receiver/path/type:sample_count\n";
     std::cout << std::fixed << std::setprecision(2);
@@ -302,7 +312,7 @@ void suite_report(const fs::path& root)
             std::vector<std::pair<uint32_t, Event>> flagged;
             for (const auto& [i, e] : d.events) if (e.us > limit) flagged.push_back({i, e});
             if (!flagged.empty()) {
-                std::cout << "IQR " << d.variant << " n=" << flagged.size() << " limit=" << limit << " i/r/us=";
+                std::cout << "IQR " << diagnostic_id(d.variant) << " n=" << flagged.size() << " limit=" << limit << " i/r/us=";
                 for (size_t j = 0; j < std::min<size_t>(8, flagged.size()); ++j)
                     std::cout << (j ? "," : "") << flagged[j].first << '/' << flagged[j].second.rank << '/' << flagged[j].second.us;
                 std::cout << '\n';
@@ -318,7 +328,7 @@ void suite_report(const fs::path& root)
                 std::set<uint32_t> ranks;
                 for (const auto& r : records) ranks.insert(uint32_t(r[Rank]));
                 if (ranks.size() != integer(d.config.at("ep"))) throw std::runtime_error("Partial global diagnostics");
-                std::cout << "D " << d.variant << ' ' << (i == worst ? "worst" : "p50") << " i=" << i
+                std::cout << "D " << diagnostic_id(d.variant) << ' ' << (i == worst ? "worst" : "p50") << " i=" << i
                           << " event_r=" << event.rank << " us=" << event.us << '\n';
                 const Record* receiveRecord = nullptr;
                 for (bool receive : {false, true}) {

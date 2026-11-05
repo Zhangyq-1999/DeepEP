@@ -206,7 +206,9 @@ void detail(std::ostream& out, const Record& r)
         out << "    route: batches/rows/bytes/group_passes=" << r[RouteLoadBatches] << '/' << r[RouteLoadedRows]
             << '/' << r[RouteLoadBytes] << '/' << r[RouteSelectPasses]
             << " snapshot_bytes/capacity/fallbacks=" << r[RouteSnapshotBytes] << '/' << r[RouteSnapshotCapacity]
-            << '/' << r[RouteSnapshotFallbacks] << '\n';
+            << '/' << r[RouteSnapshotFallbacks]
+            << " first_hop_rows/filter_rows/compact_ticks=" << r[RouteFirstHopRows] << '/' << r[RouteFilterRows]
+            << '/' << r[RouteCompactTicks] << '\n';
     if (r.receive && r[LocalContributions] + r[RemoteContributions]) {
         out << "    final_local: contributions=" << r[LocalContributions]
             << " probes/misses=" << r[LocalProbeCalls] << '/' << r[LocalProbeMisses]

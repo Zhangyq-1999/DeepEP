@@ -75,16 +75,44 @@ public:
         WaitFlag<HardEvent::V_S>(7U);
         if (valid != typed) { Trap(); return false; }
 
+        profile_.Set(CombineProfile::RouteFirstHopRows, valid);
+        uint32_t filterRows = tokens;
+#if DEEPEP_LL_COMBINE_READY == 8
+        // The route triplets are dead after ranks have been gathered. Reuse
+        // their three padded columns as selected IDs / compact IDs / ranks.
+        // All Vector inputs/outputs are disjoint; ownedRows stays outside this
+        // borrowed arena. Stable compaction preserves the original row order.
+        filterRows = uint32_t(valid);
+        if (!filterRows) {
+            for (uint32_t step = 0; step < groups; ++step) ends_[step] = 0U;
+            profile_.Elapsed(CombineProfile::PlanSelectTicks, selectStart);
+            return true;
+        }
+        const uint64_t compactStart = profile_.DetailClock();
+        auto compactIds = table[rows];
+        auto compactRanks = table[2U * rows];
+        Muls(compactIds, table, int32_t(1), filterRows);
+        uint64_t compactCount = 0U;
+        GatherMask(compactRanks, ranks, mask.ReinterpretCast<uint32_t>(), true, tokens,
+                   {1U, 1U, 0U, 0U}, compactCount);
+        PipeBarrier<PIPE_V>();
+        indices = compactIds;
+        ranks = compactRanks;
+        profile_.Elapsed(CombineProfile::RouteCompactTicks, compactStart);
+#endif
         uint32_t owner = 0U, count = 0U;
         for (uint32_t step = 0; step < groups; ++step) {
             profile_.Add(CombineProfile::RouteSelectPasses);
+            profile_.Add(CombineProfile::RouteFilterRows, filterRows);
             const uint32_t server = CombineReturnServer<Group>(groups, rank / Group, step);
-            ServerDedupRankMask(mask, upper, ranks, int32_t(server * Group), int32_t((server + 1U) * Group), tokens);
+            ServerDedupRankMask(mask, upper, ranks, int32_t(server * Group), int32_t((server + 1U) * Group), filterRows);
+#if DEEPEP_LL_COMBINE_READY != 8
             And(mask.ReinterpretCast<uint16_t>(), mask.ReinterpretCast<uint16_t>(),
                 typeMask.ReinterpretCast<uint16_t>(), int32_t((tokens + 15U) / 16U));
             PipeBarrier<PIPE_V>();
+#endif
             uint64_t selected = 0U;
-            GatherMask(table, indices, mask.ReinterpretCast<uint32_t>(), true, tokens, {1U, 1U, 0U, 0U}, selected);
+            GatherMask(table, indices, mask.ReinterpretCast<uint32_t>(), true, filterRows, {1U, 1U, 0U, 0U}, selected);
             SetFlag<HardEvent::V_S>(7U);
             WaitFlag<HardEvent::V_S>(7U);
             const uint32_t first = ServerDedupFirstOwned(localCore, owner, recvCores);

@@ -108,7 +108,7 @@ def test_device_components_select_real_sources(tmp_path, cmake, entry_sync):
             "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON", f"-DDEEPEP_SOURCE_DIR={ROOT}",
             f"-DASCEND_HOME_PATH={cann}", f"-DSHMEM_ROOT={shmem}",
             f"-DDEEPEP_DEVICE_COMPONENT={component}", f"-DDEEPEP_DISPATCH_OBJECTS_FILE={objlist}",
-            "-DDEEPEP_LL_COMBINE_READY=3", "-DDEEPEP_LL_COMBINE_DEFER_RETURN=ON",
+            "-DDEEPEP_LL_COMBINE_READY=8", "-DDEEPEP_LL_COMBINE_DEFER_RETURN=ON",
             f"-DDEEPEP_LL_BENCH_ENTRY_SYNC={'ON' if entry_sync else 'OFF'}")
         commands = json.loads((build / "compile_commands.json").read_text())
         plain = [c for c in commands if "deepep_kernel_ll_plain.dir" in c["command"]]
@@ -117,7 +117,7 @@ def test_device_components_select_real_sources(tmp_path, cmake, entry_sync):
         assert sum(Path(c["file"]).name == "entry_sync.cpp" for c in plain) == added
         for command in plain:
             is_combine = "/combine/" in command["file"].replace("\\", "/")
-            assert ("DEEPEP_LL_COMBINE_READY=3" in command["command"]) == is_combine
+            assert ("DEEPEP_LL_COMBINE_READY=8" in command["command"]) == is_combine
             assert ("DEEPEP_LL_COMBINE_DEFER_RETURN=1" in command["command"]) == is_combine
         if component == "combine":
             assert all("/combine/" in c["file"].replace("\\", "/") for c in plain)

@@ -242,6 +242,9 @@ enum Word : uint32_t {
     PartialPrefetchSubmitCalls,
     PartialPackedSubmitCalls,
     PartialEagerPackets,
+    RouteFirstHopRows,
+    RouteFilterRows,
+    RouteCompactTicks,
     CoalesceWorker,
     Rank,
     Core,
@@ -254,8 +257,8 @@ enum Word : uint32_t {
     Count
 };
 constexpr uint32_t kWords = 256U;
-constexpr uint64_t kSchema = 15U;
+constexpr uint64_t kSchema = 16U;
 constexpr Word kDetailBegin = InitPrefixTicks;
-constexpr Word kDetailEnd = PartialEagerPackets;
+constexpr Word kDetailEnd = RouteCompactTicks;
 static_assert(Count <= kWords && StageRows <= 64U, "profile record bounds");
 }  // namespace CombineProfile

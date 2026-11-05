@@ -8,8 +8,8 @@ import subprocess
 import pytest
 
 HERE = Path(__file__).resolve().parent
-PROFILES = ("ref-profile", "ready-snapshot-profile", "stage-stream-profile")
-CLEAN = ("base", "ready-snapshot", "stage-stream")
+PROFILES = ("ref-profile", "ready-snapshot-profile", "stage-stream-profile", "plan-compact-profile")
+CLEAN = ("base", "ready-snapshot", "stage-stream", "plan-compact")
 
 
 @pytest.fixture
@@ -73,7 +73,7 @@ def call_options(output):
 def test_build_all_isolated_matrix_and_failure_stop(harness):
     run, env = harness
     calls = call_options(run("build_all.sh").stdout)
-    assert len(calls) == 6
+    assert len(calls) == 8
     for name, call in zip((*CLEAN, *PROFILES), calls):
         assert call["--build-dir"].endswith("/build/ll-cpp-" + name)
         assert call["--variant"] == ("base" if name == "base" else "opt")
@@ -89,7 +89,7 @@ def test_build_all_isolated_matrix_and_failure_stop(harness):
         assert call["--simt-meta"] == ("ON" if name.startswith("prepare") else "OFF")
         assert call["--prefetch-return"] == ("ON" if name.startswith("batch-pipeline") else "OFF")
         assert call["--simt-flag"] == "OFF"
-        assert call["--ready"] == ("1" if name.startswith("ready-task") else "2" if name.startswith("ready-shared") else "3" if name.startswith(("ready-fast", "ready-pipeline")) else "4" if name.startswith("ready-snapshot") else "6" if name.startswith("stage-prefetch") else "5" if name.startswith("stage-pair") else "7" if name.startswith("stage-stream") else "0")
+        assert call["--ready"] == ("1" if name.startswith("ready-task") else "2" if name.startswith("ready-shared") else "3" if name.startswith(("ready-fast", "ready-pipeline")) else "4" if name.startswith("ready-snapshot") else "6" if name.startswith("stage-prefetch") else "5" if name.startswith("stage-pair") else "7" if name.startswith("stage-stream") else "8" if name.startswith("plan-compact") else "0")
         assert call["--notify"] == ("1" if name.startswith("notify-simt") else "2" if name.startswith("notify-core") else "0")
         assert call["--local-first"] == ("ON" if name.startswith("batch") else "OFF")
         assert call["--batch-final"] == ("ON" if name.startswith("batch") else "OFF")
@@ -99,7 +99,7 @@ def test_build_all_isolated_matrix_and_failure_stop(harness):
         assert call["--shmem-root"].endswith("/third-party/shmem/install/shmem")
     env["FAIL_BUILD"] = "ref-profile"
     result = run("build_all.sh", ok=False)
-    assert result.returncode == 17 and len(call_options(result.stdout)) == 4
+    assert result.returncode == 17 and len(call_options(result.stdout)) == 5
     assert "CALL" not in run("build_all.sh", "--variants", "base,typo", ok=False).stdout
 
 
@@ -193,8 +193,8 @@ def test_host_detection_and_benchmark_overrides(harness):
 def test_four_host_commands_and_detection(harness):
     run, env = harness
     builds = call_options(run("build_all.sh", "--ranks-per-host", "16").stdout)
-    assert len(builds) == 6 and all(call["--ranks-per-host"] == "16" for call in builds)
-    assert [call["--ready"] for call in builds] == ["0", "4", "7", "0", "4", "7"]
+    assert len(builds) == 8 and all(call["--ranks-per-host"] == "16" for call in builds)
+    assert [call["--ready"] for call in builds] == ["0", "4", "7", "8", "0", "4", "7", "8"]
     hosts = "90.90.93.84,90.90.93.184,90.90.93.85,90.90.93.185"
     result = run("run_all.sh", "--ep", "64", "--ranks-per-host", "16", "--hosts", hosts,
                  "--tokens", "32,72,128,256", "--master-port", "30071")
@@ -236,3 +236,15 @@ def test_optional_ops_baseline(harness):
     assert call_options(run("run_all.sh", "--variants", "ops-shmem-base").stdout)[0]["--profile"] == "2"
     cmd, = call_options(run("run_all.sh", "--variants", "base,ops-shmem-base", "--profile", "0").stdout)
     assert cmd["--variants"] == "base,ops-shmem-base" and cmd["--profile"] == "0"
+
+
+def test_receive_core_experiments_keep_snapshot_algorithm(harness):
+    run, _ = harness
+    names = ("ready-r32", "ready-r36", "ready-r32-profile", "ready-r36-profile")
+    calls = call_options(run("build_all.sh", "--variants", ",".join(names), "--ranks-per-host", "16").stdout)
+    for name, call in zip(names, calls):
+        assert call["--ready"] == "4"
+        assert call["--recv-cores"] == ("32" if "r32" in name else "36")
+        assert call["--ranks-per-host"] == "16"
+        assert call["--profile"] == ("ON" if name.endswith("-profile") else "OFF")
+        assert call["--small-batch"] == call["--early-reduce"] == "OFF"
