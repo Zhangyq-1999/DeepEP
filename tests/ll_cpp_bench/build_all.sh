@@ -12,11 +12,12 @@ while (($#)); do
             cat <<'USAGE'
 build_all.sh [--variants NAME[,NAME...]] [--ranks-per-host 4|16] [--jobs N] [--dry-run]
              [--cann-home DIR] [--mpi-home DIR] [--shmem-root DIR]
-Defaults: base/ready-snapshot/wqe-prep/mte-pack, plus matching diagnostics.
+Defaults: base/ready-snapshot/wqe-prep/wqe-prefetch, plus matching diagnostics.
 Target BS32/48/64; BS72 is a neighboring case and BS256 checks regressions.
 base is the frozen original; ready-snapshot is the measured small-batch comparison.
 wqe-prep prepares a private UB WQE while M4 payload staging runs, then publishes it.
-mte-pack writes M4 payload/flags directly to GM with strided MTE, skipping Vector packing.
+wqe-prefetch overlaps the next ready task's input reads with the previous staged return.
+mte-pack (opt-in) writes M4 payload/flags directly to GM with strided MTE.
 Both retain snapshot's 28/28 core split; ready-r32/ready-r36 remain opt-in.
 ready-fast skips unchanged empty selections and reuses resident metadata caches.
 ready-pipeline adds M4-only staging overlap with the next already-ready task.
@@ -64,7 +65,7 @@ IFS=, read -r -a names <<< "$variants"
 # Validate the complete selection before starting any build.
 for name in "${names[@]}"; do
     case "$name" in
-        wqe-prep|wqe-prep-profile|mte-pack|mte-pack-profile|plan-compact|plan-compact-profile|ready-r32|ready-r32-profile|ready-r36|ready-r36-profile) ;;
+        wqe-prep|wqe-prep-profile|wqe-prefetch|wqe-prefetch-profile|mte-pack|mte-pack-profile|plan-compact|plan-compact-profile|ready-r32|ready-r32-profile|ready-r36|ready-r36-profile) ;;
         stage-stream|stage-stream-profile|stage-prefetch|stage-prefetch-profile|stage-pair|stage-pair-profile|ready-snapshot|ready-snapshot-profile|ready-fast|ready-pipeline|ready-fast-profile|ready-pipeline-profile|ready-task|ready-shared|ready-task-profile|ready-shared-profile|notify-simt|notify-core|notify-simt-profile|notify-core-profile|card-all|card-row|server-all|server-row|card-all-profile|card-row-profile|server-all-profile|server-row-profile|batch|batch-profile|batch-pipeline|batch-pipeline-profile|local-first|local-first-profile|poll800|poll800-profile|meta|meta-profile|prefetch|prefetch-profile|prepare|flag|prepare-flag|prepare-profile|flag-profile|prepare-flag-profile|issue|probe|issue-probe|issue-profile|probe-profile|issue-probe-profile|base|remote|pipeline|return|ops-shmem-base|ref-profile|opt-profile|r36-profile|early-profile|remote-profile|pipeline-profile|return-profile) ;;
         *) fail "Unknown experiment: $name (see --help)";;
     esac
@@ -83,6 +84,7 @@ for name in "${names[@]}"; do
         stage-stream|stage-stream-profile) ready=7;;
         plan-compact|plan-compact-profile) ready=8;;
         wqe-prep|wqe-prep-profile) ready=9;;
+        wqe-prefetch|wqe-prefetch-profile) ready=11;;
         mte-pack|mte-pack-profile) ready=10;;
         ready-r32|ready-r32-profile) ready=4; recv=32;;
         ready-r36|ready-r36-profile) ready=4; recv=36;;

@@ -20,9 +20,10 @@ def parser():
     p.add_argument("--node-rank", type=int)
     p.add_argument("--master-port", type=int, default=30011)
     p.add_argument("--shmem-ip-port", help="SHMEM TCP endpoint; default tcp://HOST0:30012")
-    p.add_argument("--devices", default="12,13,14,15")
+    p.add_argument("--devices", help="Default: 12..15 for four ranks, 0..15 for sixteen ranks")
     p.add_argument("--ranks-per-host", type=int, choices=(4, 16), default=4)
-    p.add_argument("--variant", choices=("base", "card-all", "card-row", "server-all", "server-row"), default="base")
+    p.add_argument("--variant", choices=("base", "ready-snapshot", "wqe-prep", "wqe-prefetch", "mte-pack",
+                                         "card-all", "card-row", "server-all", "server-row"), default="base")
     p.add_argument("--sync", choices=("device", "host", "both", "hccl"), default="device",
                    help="device=SHMEM barrier; both=Gloo vs SHMEM; hccl=explicit legacy HCCL comparison")
     p.add_argument("--tokens", default="32,48,64,72,256")
@@ -51,6 +52,8 @@ def local_node(hosts):
 
 def plan(a):
     hosts = a.hosts.split(",")
+    if a.devices is None:
+        a.devices = "12,13,14,15" if a.ranks_per_host == 4 else ",".join(map(str,range(16)))
     devices = [int(v) for v in a.devices.split(",")]
     if len(hosts) not in (1,2,4) or len(set(hosts)) != len(hosts):
         raise ValueError("Use one, two or four distinct hosts")
@@ -107,6 +110,7 @@ def main():
     if node == 0:
         custom = []
         defaults = vars(parser().parse_args([]))
+        defaults["devices"] = "12,13,14,15" if a.ranks_per_host == 4 else ",".join(map(str,range(16)))
         for key in ("hosts","master_port","shmem_ip_port","devices","ranks_per_host","variant","sync","tokens",
                     "hidden","topk","experts","capacity","dtype","route","seed","warmup","iters","timeout",
                     "kernel_timeout","gate_delay_ms","ifname"):

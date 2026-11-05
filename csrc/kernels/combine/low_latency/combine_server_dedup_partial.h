@@ -101,7 +101,7 @@ public:
         planScratchBytes_ = EpCombineRouteSnapshotBytes(layout);
 #endif
         low_ = Allocate<uint16_t>(blocks_ * 480U);
-#if DEEPEP_LL_COMBINE_READY == 9
+#if DEEPEP_LL_COMBINE_READY == 9 || DEEPEP_LL_COMBINE_READY == 11
         rdmaBatch_->SetPartialScratch(Allocate<uint8_t>(128U));
 #endif
         inputs_ = scratch[layout.inputOffset].ReinterpretCast<uint16_t>();
@@ -351,7 +351,8 @@ private:
         profile_.Mark(CombineProfile::PlanEnd);
         uint32_t completed = 0U, blockedMask = 0xffffffffU;
         const bool deferReady = CombineDeferReturn(outputLanes_) ||
-            ((DEEPEP_LL_COMBINE_READY == 5 || DEEPEP_LL_COMBINE_READY == 6) && outputLanes_ > 1U);
+            ((DEEPEP_LL_COMBINE_READY == 5 || DEEPEP_LL_COMBINE_READY == 6 ||
+              DEEPEP_LL_COMBINE_READY == 11) && outputLanes_ > 1U);
         while (completed < count) {
             const uint32_t observed = ready_->Poll();
             profile_.Add(CombineProfile::ReadyTaskRounds);
@@ -593,7 +594,7 @@ private:
     {
         const uint32_t preload = contributions < inputLanes_ ? contributions : inputLanes_;
         for (uint32_t member = 0; member < preload; ++member) Load(row, source, member);
-#if (defined(DEEPEP_LL_COMBINE_PREFETCH_RETURN) && DEEPEP_LL_COMBINE_READY != 7) || DEEPEP_LL_COMBINE_READY == 6
+#if (defined(DEEPEP_LL_COMBINE_PREFETCH_RETURN) && DEEPEP_LL_COMBINE_READY != 7) || DEEPEP_LL_COMBINE_READY == 6 || DEEPEP_LL_COMBINE_READY == 11
         // Let current MTE2 input reads overlap the previous packet's MTE3 wait
         // and Put submission. The old output lane is still owned by the batch.
         if (rdmaBatch_->HasStaged()) {

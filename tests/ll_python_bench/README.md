@@ -115,7 +115,32 @@ bash tests/ll_python_bench/build.sh --variant card-all
 bash tests/ll_python_bench/run_all.sh --variant card-all
 ```
 
-可选干净版本为 `base`、`card-all`、`card-row`、`server-all` 和 `server-row`。一次选择一个版本，所有 BS 共用一次初始化。
+可选干净版本还包括 `ready-snapshot`、`wqe-prep`、`wqe-prefetch`、`mte-pack`。一次选择一个版本，所有 BS 共用一次初始化。各版本独立安装，不会互相覆盖。
+
+当前四版对照可在两台机器上各用一条命令编译安装，默认仅编译干净版，Dispatch 复用已有构建：
+
+```bash
+bash tests/ll_python_bench/build_all.sh
+```
+
+默认安装 `base,ready-snapshot,wqe-prep,wqe-prefetch`，可用 `--variants` 缩减。`wqe-prefetch` 将下一条已就绪规约任务的输入读取，提前到上一包 GM 暂存等待之前；保留数据完成后才发布 WQE 的要求。详见 [实验记录](../ll_cpp_bench/TRANSFER_AB.md)。
+
+EP32 两台分别编译：
+
+```bash
+bash tests/ll_python_bench/build_all.sh --ranks-per-host 16
+```
+
+第一台选择一个版本启动，第二台复制它打印的命令。以下显式使用 HCCL all_reduce 作计时前同步，便于核对参考仓；该同步不计入 Combine Event：
+
+```bash
+bash tests/ll_python_bench/run_all.sh --ranks-per-host 16 --sync hccl
+bash tests/ll_python_bench/run_all.sh --ranks-per-host 16 --sync hccl --variant ready-snapshot
+bash tests/ll_python_bench/run_all.sh --ranks-per-host 16 --sync hccl --variant wqe-prep
+bash tests/ll_python_bench/run_all.sh --ranks-per-host 16 --sync hccl --variant wqe-prefetch
+```
+
+四条命令分四次测试，每次先启动第一台，再在第二台粘贴当次命令；等当次结束再开始下一版。每次有独立 RUN_ID。全都省略 `--sync hccl` 则统一用默认 SHMEM device 同步，不混用两种同步结果判断算子收益。默认 BS 仍为 `32,48,64,72,256`，可用 `--tokens` 修改。
 
 IP、端口、设备和 case 参数都可修改：
 
@@ -128,7 +153,7 @@ bash tests/ll_python_bench/run_all.sh \
 
 PyTorch 默认使用端口 30011，SHMEM 使用下一端口 30012。`--shmem-ip-port tcp://IP:PORT` 可单独指定 SHMEM 入口。多网卡环境可用 `--ifname eth0` 同时指定 Gloo 和 HCCL 的网络接口。
 
-扩展到每机 16 卡时，两台机器先用 `--ranks-per-host 16` 重编。运行时也传 `--ranks-per-host 16 --devices 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15`。`--hosts` 支持 1、2 或 4 台机器；跨机参数需保持一致。
+扩展到每机 16 卡时，两台机器先用 `--ranks-per-host 16` 重编。运行时也传 `--ranks-per-host 16`，默认自动选 0～15 卡；每机 4 rank 时默认选 12～15 卡。`--devices` 仍可覆盖，`--hosts` 支持 1、2 或 4 台机器；跨机参数需保持一致。
 
 ## 读取结果
 

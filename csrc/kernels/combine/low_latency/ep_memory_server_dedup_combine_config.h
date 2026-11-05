@@ -214,7 +214,7 @@ COMBINE_DEDUP_EP_COMBINE_CONSTEXPR EpCombineM45WorkspaceLayout EpCombineM45Layou
         return result;
     const uint64_t owned = EpCombineM5TokenCount(bs, recvCores);
     const uint64_t partial = EpCombineM4TaskBytes(tokens, recvCores) +
-#if DEEPEP_LL_COMBINE_READY == 9
+#if DEEPEP_LL_COMBINE_READY == 9 || DEEPEP_LL_COMBINE_READY == 11
                              128U + // private WQE/doorbell scratch; never aliases the live payload
 #endif
 #if DEEPEP_LL_COMBINE_READY == 1 || DEEPEP_LL_COMBINE_READY >= 3

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Shared defaults for the two convenience entry points. Source from Bash.
-# Prioritize BS32/48/64: retain both baselines and isolate receive-core balance.
-ll_bench_profiles=ref-profile,ready-snapshot-profile,wqe-prep-profile,mte-pack-profile
-ll_bench_variants=base,ready-snapshot,wqe-prep,mte-pack,$ll_bench_profiles
+# Prioritize BS32/48/64: retain both baselines and the measured WQE candidate.
+ll_bench_clean_variants=base,ready-snapshot,wqe-prep,wqe-prefetch
+ll_bench_profiles=ref-profile,ready-snapshot-profile,wqe-prep-profile,wqe-prefetch-profile
+ll_bench_variants=$ll_bench_clean_variants,$ll_bench_profiles
 ll_bench_cann=${ASCEND_HOME_PATH:-/usr/local/Ascend/cann-9.2.T101}
 ll_bench_mpi=${MPI_HOME:-/usr/local/mpich-3.2.1}
 ll_bench_shmem=${SHMEM_ROOT:-$root/third-party/shmem/install/shmem}

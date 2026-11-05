@@ -36,15 +36,15 @@ bash tests/ll_cpp_bench/build_all.sh
 | `base` | 冻结的上游原版 | 关闭 |
 | `ready-snapshot` | 机内 ready 依赖调度；空闲 payload UB 一次读入路由 | 关闭 |
 | `wqe-prep` | snapshot + M4 暂存搬运期间在独立 UB 构造 WQE | 关闭 |
-| `mte-pack` | snapshot + M4 规约结果经 MTE 直接按包布局写 GM | 关闭 |
+| `wqe-prefetch` | wqe-prep + 下一条已就绪任务的输入读取与上一包提交重叠 | 关闭 |
 | `ref-profile` | 实验开关全部关闭 | 开启 |
 | `ready-snapshot-profile` | 与 ready-snapshot 相同 | 开启 |
 | `wqe-prep-profile` | 与 wqe-prep 相同 | 开启 |
-| `mte-pack-profile` | 与 mte-pack 相同 | 开启 |
+| `wqe-prefetch-profile` | 与 wqe-prefetch 相同 | 开启 |
 
 优化和验收以 **BS32、48、64** 为主，BS72 作邻近对照，BS256 只检查回退。上一轮 EP8 干净版 ready-snapshot 的三个 BS 的 P50 分别为 57.11、63.56、70.19 μs，增加接收核没有持续改善这三个场景。ready-r32、ready-r36、stage-stream、plan-compact 保留为可选实验，不再默认编译运行。
 
-本轮两个实验均保留 snapshot 的 28/28 核配比，只改 M4 跨机回传的单包准备过程。`wqe-prep` 申请独立 128 B UB，在 payload MTE3 执行期间构造描述符，数据完成后才写入 SQ、发布 doorbell；队列接近满时，等 payload 完成后回到 SDK put，由 SDK 处理容量与 CQ。`mte-pack` 省去规约结果到 packet UB 的两条 Vector Copy，改用分段 MTE 将连续 payload 和原 32 B flag 写入同一个 GM packet。它没有增加 UB，也没有减少 RDMA 包数。两个方案不叠加，DIRECT、本机回传、归约算术顺序、GM 暂存退休及算子末尾 quiet 保留。详见 [TRANSFER_AB.md](TRANSFER_AB.md)。尚无 CANN/NPU 编译及性能验证。
+EP32 收尾修复后的实测中，`wqe-prep` 在 BS48/64 的均值比 snapshot 低约 2.20%/2.84%，BS32 基本持平，尚需重复验证。它在独立 128 B UB 提前构造 WQE，payload 完成后才发布 SQ/doorbell。新增 `wqe-prefetch` 在下一条任务已经就绪时，先发起其输入 MTE2，再等上一包 MTE3 并提交 WQE；不会等待下一条完整规约。末条任务和单输出 lane 仍立即提交，M5 前排空待提交包，最终 quiet 保留。新方案尚待 CANN/NPU 验证。`mte-pack` 收益不稳定，保留为可选项，不再默认编译。完整数据、生命周期与打点说明见 [TRANSFER_AB.md](TRANSFER_AB.md)。
 
 打点 schema 17 的 `xfer prepare_ticks/prepared/fallback/mte_pack` 给出 WQE 构造累计 ticks、成功预构造包数、队列容量回退包数、直接 MTE 打包数。`rdma_stage_wait_ticks` 是预构造后剩余等待，`rdma_put_ticks` 是之后的 SQ 发布与 doorbell（回退包包含完整 SDK put）。CSV 和 Perfetto 的 `profiled body` 参数也包含这些计数；累计 ticks 不作为独立流水块，也不能直接等同于网卡或网络耗时。
 

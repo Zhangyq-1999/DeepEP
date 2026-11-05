@@ -1,6 +1,6 @@
 # M4 transfer experiments
 
-Target: EP8 BS32/48/64, with BS72 and BS256 retained. Both experiments use
+Target: EP8/EP32 BS32/48/64, with BS72 and BS256 retained. Experiments use
 `ready-snapshot`'s route planning, dependency scheduler and 28/28 core split.
 The frozen `base` and existing Dispatch sources are unchanged.
 
@@ -51,17 +51,46 @@ peer at a capacity boundary, and the final flush after M5. M5 never overwrites
 the GM staging source. Two- and four-host topologies use the existing physical
 rank grouping; there is no assumption of exactly one remote host.
 
+## wqe-prefetch (ready=11)
+
+Start from wqe-prep. When another task in the SAME already-ready selection
+follows and there are at least two output lanes, keep the current payload's
+MTE3 event and private UB WQE live. Load the next task's metadata and issue its
+first up-to-three MTE2 input reads, then wait for the previous MTE3 and publish
+its WQE BEFORE computing the next partial. The current input reads can progress
+while Scalar waits for payload staging and submits the RDMA write.
+
+Unlike stage-stream, this does not wait for the next full reduction/packing.
+Unlike immediate wqe-prep, the first packet may be delayed by the next input
+issues; its first/last Put timestamps and clean latency must be checked. A
+single task, a last-ready task, a single output lane, and DIRECT keep immediate
+submission. There is no pending WQE across a group-ready poll or M5 entry.
+
+Only same-host MTE2 input reads occur between Prepare and Publish; no other
+writer can advance this core/peer SQ head in that interval. The registered GM
+source survives until quiet. The private 128-byte descriptor, prior output,
+next inputs, metadata and reduction buffers are disjoint. No extra UB or GM
+compared with wqe-prep, and no arithmetic, flags, packet count, queue owner or
+physical-host grouping changes. This applies to both two- and four-host cases.
+
+The hypothesis is that advancing independent input reads reduces exposed
+M4 wait time at BS32/48/64. A single packet per receive core cannot benefit;
+metadata/issue cost or MTE2/MTE3 contention can instead make it slower.
+
 ## Read the experiment
 
-Default build/run includes four clean and four matching profile variants.
+Default C++ build/run includes base, ready-snapshot, wqe-prep and wqe-prefetch,
+with four matching profile variants. mte-pack remains opt-in.
 Compare clean mean, P50 and min/max first. In diagnostics, compare M4 pack,
 stage issue, remaining stage wait, put, first/last put, final flag wait and
 quiet for the same rank/core/sample. `xfer` appends prepare ticks, prepared
 packets, SDK fallbacks and direct MTE packets; full CSV/Perfetto retains them.
+For wqe-prefetch, `rdma` includes deferred packet count and elapsed defer gap;
+`stage` includes input-prefetch submit count. Those existing fields also reach
+the CSV and Perfetto counters, with no extra clean-kernel timestamps.
 Preparation overlaps DMA, so its elapsed ticks are not additive network time.
-Extra MTE commands or Scalar preparation may cost more than they save; hardware
-benefit is unverified. Neither experiment reduces the number of network bytes
-or WQEs.
+Extra MTE commands or Scalar preparation may cost more than they save. None
+of these experiments reduces the number of network bytes or WQEs.
 
 The first EP8 run at `f9eec20` did not improve clean latency over
 `ready-snapshot`. It also exposed a shared retirement regression: TransferBatch
@@ -72,8 +101,38 @@ versus 516--598 ticks for `ready-snapshot`.
 Retirement now restores the original empty-batch return and empty-word skip.
 This preserves every nonempty peer's quiet and GM lifetime, including EP64
 peers in the second mask word. The isolated timing evidence identifies avoidable
-bookkeeping, not a measured clean speedup after the fix; rerun clean variants
-before judging the preparation or packing experiment.
+bookkeeping rather than a network improvement.
+
+## EP32 retirement-fix result and next comparison
+
+User-provided run after 339977a: H3584/K8/E384/BF16, random seed 0, device
+entry sync, warmup 10, 100 clean samples; global rank-MAX each iteration.
+No samples removed. Values below are mean / P50 / min..max in microseconds.
+
+| BS | base | ready-snapshot | wqe-prep | mte-pack |
+|---:|---|---|---|---|
+|32|77.64 / 77.74 / 62.13..98.18|69.91 / 68.59 / 57.76..86.64|70.26 / 69.01 / 57.18..87.45|70.29 / 68.04 / 57.90..89.98|
+|48|82.94 / 82.91 / 66.84..102.61|78.06 / 77.27 / 65.17..95.06|76.34 / 73.76 / 65.31..92.73|79.26 / 79.49 / 64.39..96.01|
+|64|91.53 / 90.49 / 77.69..110.68|86.29 / 84.31 / 74.59..102.89|83.84 / 82.35 / 73.11..98.51|85.14 / 83.41 / 73.71..102.98|
+|72|94.00 / 92.54 / 80.90..111.57|89.77 / 89.02 / 77.48..108.40|88.34 / 86.44 / 76.17..105.01|90.14 / 90.14 / 77.85..105.71|
+|256|200.82 / 201.04 / 191.50..215.05|193.83 / 193.16 / 185.54..206.69|191.74 / 190.83 / 184.53..202.86|193.47 / 192.58 / 185.80..207.65|
+
+For BS32/48/64 representative receive cores, non-quiet retirement fell from
+2.796/2.748/2.808 us to 0.593/0.618/0.698 us in wqe-prep. Quiet remains intact.
+BS48/64 clean means improve 2.20%/2.84% over snapshot within this run; BS32
+is flat. Run-to-run baseline movement prevents attributing all deltas to the
+fix, and 7--12% small-BS CV calls for repeated measurements.
+
+The BS64 wqe-prep representative core sends three packets: prepare=1921,
+stage_wait=15689, put=2343 ticks, no fallback. This motivates input prefetch,
+not a claim that network transit costs 15689 ticks. Missing final flags are
+mostly RDMA partials, but do not distinguish late producer work from network
+delay. Keep first/last Put and final flag wait alongside cumulative counters.
+
+Python build_all installs these four CLEAN versions in py311_zyq. Select one
+with --variant and use the same --sync mode for all comparisons; default device
+and explicit hccl remain separate controlled experiments. The new prefetch
+variant has host-model coverage only until CANN/NPU validation on target hosts.
 
 CPU checks execute the production adapters under delayed DMA and NIC reads,
 including partial tails, queue wrap/capacity fallback, 4/16 ranks per host,

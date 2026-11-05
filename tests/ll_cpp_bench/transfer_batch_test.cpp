@@ -26,7 +26,7 @@ int main()
         a.reservedConfig[0]=LlRdma::kBackend;a.reservedConfig[1]=cores;
         for(unsigned p=rank/host*host;p<(rank/host+1U)*host;++p)a.peerMems[p]=local.data()+p*1024U;
         CombineDedup::ReturnBatch batch;batch.Init(&a,bytes);
-#if DEEPEP_LL_COMBINE_READY == 9
+#if DEEPEP_LL_COMBINE_READY == 9 || DEEPEP_LL_COMBINE_READY == 11
         if(partial)batch.SetPartialScratch({scratch.data()});
         constexpr unsigned depth=512;
         std::vector<aclshmemi_rdma_sq_ctx> sq(world*cores);
@@ -43,7 +43,7 @@ int main()
         HnsModel::heads.clear();
         HnsModel::beforePrepare=[](){assert(events[int(HardEvent::MTE3_S)][7]);assert(!deferredMte3.empty());};
         HnsModel::beforePublish=[](){assert(!events[int(HardEvent::MTE3_S)][7]);assert(deferredMte3.empty());};
-        unsigned fallbacks=0;
+        unsigned fallbacks=0, deferred=0;
 #endif
 #ifdef DEEPEP_LL_COMBINE_PROFILE
         std::vector<uint64_t> record(CombineProfile::kWords*cores);
@@ -70,7 +70,9 @@ int main()
             for(unsigned j=0;j<dataBytes;++j)packet[j/480U*512U+j%480U]=low[j]=uint8_t((j+i)%251U+1U);
             for(unsigned j=0;j<bytes/512U;++j)for(unsigned k=0;k<8U;++k){float one=1;std::memcpy(packet.data()+j*512U+480U+k*4U,&one,4);}
             expected.push_back(packet);
-#if DEEPEP_LL_COMBINE_READY == 9
+            const unsigned postsBefore=Model::puts;
+            const bool defer=DEEPEP_LL_COMBINE_READY==11 && partial && cross && i%3U!=2U && i+1U<n;
+#if DEEPEP_LL_COMBINE_READY == 9 || DEEPEP_LL_COMBINE_READY == 11
             HnsModel::peer=peer;
             // Force admission failure without consuming the live payload event.
             const bool full=partial && cross && i%7U==3U;
@@ -80,7 +82,22 @@ int main()
             if(partial && cross)batch.EnqueueLinear(peer,i*stride,{reinterpret_cast<uint16_t*>(low.data())},{packet.data()},dataBytes);
             else
 #endif
-                CombineDedup::SendReturnPacket(batch,&a,peer,i*stride,{packet.data()},bytes,false);
+                CombineDedup::SendReturnPacket(batch,&a,peer,i*stride,{packet.data()},bytes,defer);
+#if DEEPEP_LL_COMBINE_READY == 11
+            if(defer) {
+                ++deferred;
+                assert(batch.HasStaged() && batch.Pending());
+                assert(Model::puts==postsBefore && events[int(HardEvent::MTE3_S)][7]);
+                assert(!deferredMte3.empty());
+                // Work on a disjoint input lane while payload and private WQE
+                // remain live. No NIC publication may happen before the wait.
+                std::vector<uint8_t> input(64,0x12), prefetch(64);
+                DataCopy(LocalTensor<uint8_t>{prefetch.data()},GlobalTensor<uint8_t>{input.data()},64);
+                assert(Model::puts==postsBefore);
+                batch.SubmitPending();
+                assert(Model::puts==postsBefore+1U && !batch.HasStaged());
+            }
+#endif
             // Retire local MTE as the real output-lane handshake does.
             SetFlag<HardEvent::MTE3_V>(0);WaitFlag<HardEvent::MTE3_V>(0);
             assert(!batch.HasStaged());
@@ -97,7 +114,7 @@ int main()
             quiets+=peers.size();
         }
         assert(Model::quiets==quiets);
-#if DEEPEP_LL_COMBINE_READY == 9
+#if DEEPEP_LL_COMBINE_READY == 9 || DEEPEP_LL_COMBINE_READY == 11
         assert(HnsModel::builds==HnsModel::published);
         assert(HnsModel::published==(partial?Model::puts-fallbacks:0U));
         if(partial)assert(std::find(HnsModel::heads.begin(),HnsModel::heads.end(),depth)!=HnsModel::heads.end());
@@ -106,9 +123,12 @@ int main()
         profile.Finish(rank,world,n);auto* r=record.data()+core*CombineProfile::kWords;
         assert(r[CombineProfile::RdmaPackets]==Model::puts);
         assert(r[CombineProfile::RdmaStageWaitCalls]==Model::puts);
-#if DEEPEP_LL_COMBINE_READY == 9
+#if DEEPEP_LL_COMBINE_READY == 9 || DEEPEP_LL_COMBINE_READY == 11
         assert(r[CombineProfile::WqePreparedPackets]==HnsModel::published);
         assert(r[CombineProfile::WqeFallbackPackets]==fallbacks);
+#if DEEPEP_LL_COMBINE_READY == 11
+        assert(r[CombineProfile::RdmaDeferredPackets]==deferred);
+#endif
 #else
         assert(r[CombineProfile::MtePackPackets]==(partial?Model::puts:0U));
 #endif

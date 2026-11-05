@@ -39,6 +39,39 @@ def test_default_and_four_host_plan():
                                       "--ranks-per-host","16","--devices",devices])
     cmd = launch.plan(args)[-1]
     assert "--nnodes=4" in cmd and "--nproc_per_node=16" in cmd
+    for variant in ("base", "ready-snapshot", "wqe-prep", "wqe-prefetch"):
+        for hosts in ("a,b", "a,b,c,d"):
+            args = launch.parser().parse_args(["same-run", "--hosts", hosts, "--node-rank", "1",
+                                              "--ranks-per-host", "16", "--variant", variant, "--sync", "hccl"])
+            _, _, _, _, build, cmd = launch.plan(args)
+            assert build.name == variant
+            assert cmd[cmd.index("--devices")+1] == devices
+            assert cmd[cmd.index("--sync")+1] == "hccl"
+
+
+def test_clean_build_suite_forwards_environment_and_stops(tmp_path):
+    bash = "C:/Program Files/Git/bin/bash.exe" if os.name == "nt" else shutil.which("bash")
+    if not bash or not Path(bash).exists(): pytest.skip("Bash unavailable")
+    scripts = tmp_path/"repo with spaces/tests/ll_python_bench"
+    scripts.mkdir(parents=True)
+    cpp = scripts.parent/"ll_cpp_bench"
+    cpp.mkdir()
+    shutil.copyfile(HERE/"build_all.sh",scripts/"build_all.sh")
+    shutil.copyfile(HERE.parent/"ll_cpp_bench/experiment_defaults.sh",cpp/"experiment_defaults.sh")
+    (scripts/"build.sh").write_text('''#!/usr/bin/env bash
+set -eu
+printf 'CALL %s %s %s %s %s %s\\n' "$@"
+if [[ "$2" == "${FAIL_VARIANT:-}" ]]; then exit 17; fi
+''',newline="\n")
+    cmd = [bash,str(scripts/"build_all.sh"),"--ranks-per-host","16","--conda-env","py311_zyq"]
+    result = subprocess.run(cmd,capture_output=True,text=True,check=True)
+    calls = result.stdout.splitlines()
+    assert calls == [f"CALL --variant {v} --ranks-per-host 16 --conda-env py311_zyq"
+                     for v in ("base","ready-snapshot","wqe-prep","wqe-prefetch")]
+    failed = subprocess.run(cmd,env=dict(os.environ,FAIL_VARIANT="wqe-prep"),capture_output=True,text=True)
+    assert failed.returncode == 17 and "wqe-prefetch" not in failed.stdout
+    invalid = subprocess.run(cmd+["--variants","base,typo"],capture_output=True,text=True)
+    assert invalid.returncode == 2 and not invalid.stdout
 
 
 @pytest.mark.parametrize("extra",[["--devices","12,12,14,15"],["--node-rank","2"],["--tokens","32","--iters","0"],

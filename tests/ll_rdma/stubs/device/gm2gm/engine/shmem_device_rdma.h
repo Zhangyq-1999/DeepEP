@@ -41,6 +41,6 @@ inline void aclshmemx_roce_qp_quiet(uint32_t pe,uint32_t qp,uint8_t* scratch,uin
         Model::pending.erase(Model::pending.begin()+i);
     }
 }
-#if DEEPEP_LL_COMBINE_READY == 9
+#if DEEPEP_LL_COMBINE_READY == 9 || DEEPEP_LL_COMBINE_READY == 11
 #include "hns_prepare_test_stub.h"
 #endif
