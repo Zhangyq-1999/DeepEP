@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.mark.parametrize("physical", [4, 16])
-@pytest.mark.parametrize("mode", [9, 10, 11, 12, 13, 14, 15])
+@pytest.mark.parametrize("mode", [9, 10, 11, 12, 13, 14, 15, 16, 17])
 @pytest.mark.parametrize("profile", [False, True])
 def test_transfer_lifetimes(tmp_path, physical, mode, profile):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
@@ -51,7 +51,7 @@ int main(){
 }
 ''')
     layouts = []
-    for mode in (4, 9, 10, 11, 12, 13, 14, 15):
+    for mode in (4, 9, 10, 11, 12, 13, 14, 15, 16, 17):
         exe = tmp_path / f"layout-{mode}.exe"
         subprocess.run([zig, "c++", "-std=c++17", "-O1", "-UNDEBUG",
                         f"-DDEEPEP_LL_COMBINE_READY={mode}", "-I" + str(ROOT / "csrc"),
@@ -124,7 +124,7 @@ int main(){
     subprocess.run([str(exe)],check=True,timeout=30)
 
 
-@pytest.mark.parametrize("mode", [12, 13, 14, 15])
+@pytest.mark.parametrize("mode", [12, 13, 14, 15, 16, 17])
 def test_wide_input_aggregate_order_and_ring_reuse(tmp_path, mode):
     """Execute production preload/weighted reduction with sparse early reads."""
     zig = os.environ.get("DEEPEP_TEST_ZIG")
@@ -139,6 +139,20 @@ def test_wide_input_aggregate_order_and_ring_reuse(tmp_path, mode):
 #include "kernels/combine/low_latency/combine_profile_device.h"
 #include "vector_pipeline_checks.hpp"
 using namespace AscendC;
+unsigned inputWaits=0;
+template<HardEvent E> void CheckedWait(unsigned lane) {
+    if constexpr(E==HardEvent::MTE2_V) {
+        if(++inputWaits==2) {
+#if DEEPEP_LL_COMBINE_READY == 16 || DEEPEP_LL_COMBINE_READY == 17
+            assert(VectorChecks::multiplies==1); // first product already issued
+#elif DEEPEP_LL_COMBINE_READY == 14
+            assert(VectorChecks::multiplies==0); // pair waits before first product
+#endif
+        }
+    }
+    AscendC::WaitFlag<E>(lane);
+}
+#define WaitFlag CheckedWait
 #define Cast VectorChecks::Cast
 #define Muls VectorChecks::Muls
 #define PipeBarrier VectorChecks::Barrier
@@ -157,6 +171,9 @@ template<class DataT> struct Partial {
     LocalTensor<uint32_t> table3Ub_{table};
     void Load(uint32_t,uint32_t,uint32_t member) {
         assert(++reads[member]==1);
+#if DEEPEP_LL_COMBINE_READY == 17
+        if(member)assert(VectorChecks::multiplies>=1); // anchor product before other loads
+#endif
         const uint32_t lane=(inputSequence_+member)%inputLanes_;
         WaitFlag<HardEvent::V_MTE2>(lane);
         std::memcpy(input+lane*inputBytes_/2,data[member],h_*2);
@@ -164,6 +181,7 @@ template<class DataT> struct Partial {
     }
 ''' + body + r'''
 };
+#undef WaitFlag
 #undef Cast
 #undef Muls
 #undef PipeBarrier
@@ -187,10 +205,10 @@ template<class T> void Check(unsigned h,unsigned n,unsigned lanes,unsigned seq,u
     p.prefetchMask_=mask&((1U<<std::min(n,lanes))-1U);
     for(unsigned m=0;m<std::min(n,lanes);++m)if(p.prefetchMask_&(1U<<m))p.Load(0,0,m);
 #endif
-    assert(VectorChecks::pending.empty());VectorChecks::barriers=0;
+    assert(VectorChecks::pending.empty());VectorChecks::barriers=0;VectorChecks::multiplies=0;inputWaits=0;
     p.template Aggregate<T>(0,0,n);
     assert(VectorChecks::pending.empty());
-    assert(VectorChecks::barriers == 3*n-(DEEPEP_LL_COMBINE_READY==14 ? 2*(n/2):0));
+    assert(VectorChecks::barriers == (DEEPEP_LL_COMBINE_READY==16 ? 2*n+1 : 3*n-(DEEPEP_LL_COMBINE_READY==14 ? 2*(n/2):0)));
     for(unsigned x=0;x<h;++x){T value=T(expected[x]);uint16_t bits;std::memcpy(&bits,&value,2);assert(p.low[x]==bits);}
     for(unsigned m=0;m<n;++m)assert(p.reads[m]==1);
     assert(p.inputSequence_==seq+n && p.prefetchMask_==0);
@@ -215,7 +233,7 @@ int main() {
     subprocess.run([str(exe)], check=True, timeout=60)
 
 
-@pytest.mark.parametrize("mode", [12, 13, 14, 15])
+@pytest.mark.parametrize("mode", [12, 13, 14, 15, 16, 17])
 def test_wide_input_m5_retirement(tmp_path, mode):
     """Shifted M4 output lanes must retire before M5 reuses their UB."""
     zig = os.environ.get("DEEPEP_TEST_ZIG")

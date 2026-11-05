@@ -343,7 +343,7 @@ def test_default_suite_fits_one_paste_and_keeps_each_case(reporter, tmp_path):
                     for core, role in ((2, "send"), (30, "receive"), (31, "receive"), (48, "receive")):
                         row = {name: 123456 for name in names}
                         row.update(iteration=i, device=12 + rank % 4, role=role, profile_build=1,
-                                   rank=rank, core=core, tokens=bs, world=8, complete=1, schema=18,
+                                   rank=rank, core=core, tokens=bs, world=8, complete=1, schema=20,
                                    entry_tick=1 << 60, flush_done=250000 + core, coalesce_worker=0,
                                    stage_rows=14, direct_rows=37, partial_rows=10, final_tokens=10,
                                    contributions=47, rdma_packets=10, rdma_deferred_packets=9,
@@ -374,8 +374,9 @@ def test_default_suite_fits_one_paste_and_keeps_each_case(reporter, tmp_path):
                                    partial_input_lanes=6 if variant.startswith("input") else 3,
                                    ready_input_issued=16 if variant.startswith("input-ready") else 0,
                                    ready_input_used=12 if variant.startswith("input-ready") else 0,
-                                   partial_pair_groups=32 if variant.startswith("input-pair") else 0,
-                                   partial_vector_barriers=128 if variant.startswith("input-pair") else 192)
+                                   partial_pair_groups=0, partial_stream_steps=56 if variant.startswith("input-stream") else 0,
+                                   partial_front_loads=48 if variant.startswith("input-front") else 0,
+                                   partial_vector_barriers=136 if variant.startswith("input-stream") else 192)
                         records.append(row)
             if profile:
                 for source in range(8):
@@ -408,7 +409,7 @@ def test_default_suite_fits_one_paste_and_keeps_each_case(reporter, tmp_path):
     assert size < 62 * 1024, f"Default report is {size} bytes"
     assert "LL_COMBINE END cases=8" in out
     assert "  e=" in out and "'-'=absent" in out
-    assert "input=6/0/0 vec=32/128" in out
+    assert "input=6/0/0 vec=0/136 arith=56/0" in out
     assert "  q=" in out and "  rdma=" in out and " stage=" in out
     assert " stream=9/1/123456" in out
     assert " compact=256/1024/123456" in out

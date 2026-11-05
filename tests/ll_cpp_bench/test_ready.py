@@ -8,7 +8,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
-@pytest.mark.parametrize("mode", [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15])
+@pytest.mark.parametrize("mode", [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17])
 def test_ready_lifecycle_and_vector_selection(tmp_path, mode):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
     if not zig:
@@ -23,7 +23,7 @@ def test_ready_lifecycle_and_vector_selection(tmp_path, mode):
     subprocess.run([str(exe)], check=True, timeout=30)
 
 
-@pytest.mark.parametrize("mode,pipeline", [(1, False), (3, False), (3, True), (4, False), (5, False), (6, False), (7, False), (8, False), (9, False), (10, False), (11, False), (12, False), (13, False), (14, False), (15, False)])
+@pytest.mark.parametrize("mode,pipeline", [(1, False), (3, False), (3, True), (4, False), (5, False), (6, False), (7, False), (8, False), (9, False), (10, False), (11, False), (12, False), (13, False), (14, False), (15, False), (16, False), (17, False)])
 def test_production_dependency_scheduler(tmp_path, mode, pipeline):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
     if not zig:
@@ -164,7 +164,13 @@ template<uint32_t Group> struct Scheduler {
             const uint32_t lane=(inputSequence_+member)%inputLanes_;
             WaitFlag<HardEvent::MTE2_V>(lane);
             SetFlag<HardEvent::V_MTE2>(lane);
+#if DEEPEP_LL_COMBINE_READY == 17
+            if(member==0) {
+                for(uint32_t next=1;next<=std::min(members-1,inputLanes_);++next)Load(row,source,next);
+            } else if(member+inputLanes_<members)Load(row,source,member+inputLanes_);
+#else
             if(member+inputLanes_<members)Load(row,source,member+inputLanes_);
+#endif
         }
         inputSequence_+=members;
 #endif

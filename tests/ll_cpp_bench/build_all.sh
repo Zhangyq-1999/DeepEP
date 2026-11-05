@@ -12,14 +12,16 @@ while (($#)); do
             cat <<'USAGE'
 build_all.sh [--variants NAME[,NAME...]] [--ranks-per-host 4|16] [--jobs N] [--dry-run]
              [--cann-home DIR] [--mpi-home DIR] [--shmem-root DIR]
-Defaults: base/wqe-prefetch/input6/input-pair/input-pipe, plus matching diagnostics.
+Defaults: base/input6/input-stream/input-front/input-pipe, plus matching diagnostics.
 Target BS32/48/64; BS72 is a neighboring case and BS256 checks regressions.
 base is the frozen original; ready-snapshot remains opt-in.
 wqe-prep prepares a private UB WQE while M4 payload staging runs, then publishes it.
 wqe-prefetch overlaps the next ready task's input reads with the previous staged return.
 input6: wqe-prep with up to six M4 input lanes (previously three).
-input-pair: input6 plus paired Cast/Muls, retaining the original ordered additions.
+input-stream: input6 plus alternating FP32 buffers and shared Vector barriers.
+input-front: input6 with the anchor product issued before other input reads.
 input-pipe: input6 plus WQE/input submission overlap.
+input-pair and wqe-prefetch remain opt-in experiments.
 input-ready (opt-in): input6 plus per-contribution ready prefetch.
 mte-pack (opt-in) writes M4 payload/flags directly to GM with strided MTE.
 Both retain snapshot's 28/28 core split; ready-r32/ready-r36 remain opt-in.
@@ -69,7 +71,7 @@ IFS=, read -r -a names <<< "$variants"
 # Validate the complete selection before starting any build.
 for name in "${names[@]}"; do
     case "$name" in
-        input-pair|input-pair-profile|input-pipe|input-pipe-profile|input6|input6-profile|input-ready|input-ready-profile|wqe-prep|wqe-prep-profile|wqe-prefetch|wqe-prefetch-profile|mte-pack|mte-pack-profile|plan-compact|plan-compact-profile|ready-r32|ready-r32-profile|ready-r36|ready-r36-profile) ;;
+        input-stream|input-stream-profile|input-front|input-front-profile|input-pair|input-pair-profile|input-pipe|input-pipe-profile|input6|input6-profile|input-ready|input-ready-profile|wqe-prep|wqe-prep-profile|wqe-prefetch|wqe-prefetch-profile|mte-pack|mte-pack-profile|plan-compact|plan-compact-profile|ready-r32|ready-r32-profile|ready-r36|ready-r36-profile) ;;
         stage-stream|stage-stream-profile|stage-prefetch|stage-prefetch-profile|stage-pair|stage-pair-profile|ready-snapshot|ready-snapshot-profile|ready-fast|ready-pipeline|ready-fast-profile|ready-pipeline-profile|ready-task|ready-shared|ready-task-profile|ready-shared-profile|notify-simt|notify-core|notify-simt-profile|notify-core-profile|card-all|card-row|server-all|server-row|card-all-profile|card-row-profile|server-all-profile|server-row-profile|batch|batch-profile|batch-pipeline|batch-pipeline-profile|local-first|local-first-profile|poll800|poll800-profile|meta|meta-profile|prefetch|prefetch-profile|prepare|flag|prepare-flag|prepare-profile|flag-profile|prepare-flag-profile|issue|probe|issue-probe|issue-profile|probe-profile|issue-probe-profile|base|remote|pipeline|return|ops-shmem-base|ref-profile|opt-profile|r36-profile|early-profile|remote-profile|pipeline-profile|return-profile) ;;
         *) fail "Unknown experiment: $name (see --help)";;
     esac
@@ -93,6 +95,8 @@ for name in "${names[@]}"; do
         input-ready|input-ready-profile) ready=13;;
         input-pair|input-pair-profile) ready=14;;
         input-pipe|input-pipe-profile) ready=15;;
+        input-stream|input-stream-profile) ready=16;;
+        input-front|input-front-profile) ready=17;;
         mte-pack|mte-pack-profile) ready=10;;
         ready-r32|ready-r32-profile) ready=4; recv=32;;
         ready-r36|ready-r36-profile) ready=4; recv=36;;

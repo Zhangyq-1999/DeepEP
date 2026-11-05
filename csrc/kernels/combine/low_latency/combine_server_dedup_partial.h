@@ -642,6 +642,11 @@ private:
     }
     __aicore__ inline void PreloadInputs(uint32_t row, uint32_t source, uint32_t contributions)
     {
+#if DEEPEP_LL_COMBINE_READY == 17
+        // The anchor contribution is local. Start its arithmetic before the
+        // scalar loop submits the other reads; those retain the same lanes.
+        Load(row, source, 0U);
+#else
         const uint32_t preload = contributions < inputLanes_ ? contributions : inputLanes_;
         for (uint32_t member = 0; member < preload; ++member) {
 #if DEEPEP_LL_COMBINE_READY == 13
@@ -656,8 +661,9 @@ private:
         prefetchMask_ = 0U;
         prefetchTask_ = 0xffffffffU;
 #endif
+#endif
     }
-#if DEEPEP_LL_COMBINE_READY == 14
+#if DEEPEP_LL_COMBINE_READY == 14 || DEEPEP_LL_COMBINE_READY == 16
     template <class T>
     __aicore__ inline void CastInput(uint32_t row, uint32_t source, uint32_t member,
                                     uint32_t contributions, LocalTensor<float> dst)
@@ -691,7 +697,28 @@ private:
         }
 #endif
         const auto weights = table3Ub_.ReinterpretCast<float>();
-#if DEEPEP_LL_COMBINE_READY == 14
+#if DEEPEP_LL_COMBINE_READY == 16
+        CastInput<T>(row, source, 0U, contributions, cast_);
+        const uint64_t firstCompute = profile_.DetailClock();
+        PipeBarrier<PIPE_V>();
+        Muls(sum_, cast_, weights.GetValue(1U), h_);
+        profile_.Elapsed(CombineProfile::PartialComputeIssueTicks, firstCompute);
+        for (uint32_t member = 1U; member < contributions; ++member) {
+            auto converted = (member & 1U) ? product_ : cast_;
+            // This Cast writes the OTHER FP32 buffer, so it can follow the
+            // preceding Muls/Add without a barrier. It never delays that work
+            // behind this member's MTE2 completion.
+            CastInput<T>(row, source, member, contributions, converted);
+            const uint64_t computeStart = profile_.DetailClock();
+            PipeBarrier<PIPE_V>(); // previous accumulation AND current Cast
+            Muls(converted, converted, weights.GetValue(member * 2U + 1U), h_);
+            PipeBarrier<PIPE_V>();
+            Add(sum_, sum_, converted, h_);
+            profile_.Elapsed(CombineProfile::PartialComputeIssueTicks, computeStart);
+        }
+        profile_.Add(CombineProfile::PartialStreamSteps, contributions - 1U);
+        profile_.Add(CombineProfile::PartialVectorBarriers, 2U * contributions + 1U);
+#elif DEEPEP_LL_COMBINE_READY == 14
         for (uint32_t member = 0; member < contributions; member += 2U) {
             const bool pair = member + 1U < contributions;
             CastInput<T>(row, source, member, contributions, cast_);
@@ -731,7 +758,11 @@ private:
             profile_.Elapsed(CombineProfile::PartialComputeIssueTicks, castStart);
             // Prefetch may reuse this input after Cast, independent of weighted
             // accumulation and the previous token's outstanding partial send.
+#if DEEPEP_LL_COMBINE_READY == 17
+            if (member != 0U && member + inputLanes_ < contributions) Load(row, source, member + inputLanes_);
+#else
             if (member + inputLanes_ < contributions) Load(row, source, member + inputLanes_);
+#endif
             const uint64_t computeStart = profile_.DetailClock();
             PipeBarrier<PIPE_V>();
             if (member == 0U)
@@ -741,6 +772,21 @@ private:
                 PipeBarrier<PIPE_V>();
                 Add(sum_, sum_, product_, h_);
             }
+#if DEEPEP_LL_COMBINE_READY == 17
+            if (member == 0U) {
+                // Keep the original contribution order and six-slot lookahead.
+                // Lane zero's refill follows the other initial reads, rather
+                // than jumping ahead of the next contribution when n > lanes.
+                profile_.Elapsed(CombineProfile::PartialComputeIssueTicks, computeStart);
+                const uint32_t last = contributions - 1U < inputLanes_ ? contributions - 1U : inputLanes_;
+                for (uint32_t next = 1U; next <= last; ++next) Load(row, source, next);
+                profile_.Add(CombineProfile::PartialFrontLoads, last);
+                const uint64_t finishStart = profile_.DetailClock();
+                PipeBarrier<PIPE_V>();
+                profile_.Elapsed(CombineProfile::PartialComputeIssueTicks, finishStart);
+                continue;
+            }
+#endif
             PipeBarrier<PIPE_V>();
             profile_.Elapsed(CombineProfile::PartialComputeIssueTicks, computeStart);
         }
@@ -748,6 +794,9 @@ private:
 #endif
         inputSequence_ += contributions;
         const uint64_t castStart = profile_.DetailClock();
+#if DEEPEP_LL_COMBINE_READY == 16
+        PipeBarrier<PIPE_V>(); // final Add (or the single-contribution Muls)
+#endif
         Cast(low_.template ReinterpretCast<T>(), sum_, RoundMode::CAST_RINT, h_);
         PipeBarrier<PIPE_V>();
         profile_.Elapsed(CombineProfile::PartialComputeIssueTicks, castStart);

@@ -7,7 +7,7 @@
 | 参数 | 默认值 |
 | --- | --- |
 | 主机 | `90.90.93.84,90.90.93.184` |
-| 算子 | 干净的 `base,wqe-prefetch,input6,input-pair,input-pipe` |
+| 算子 | 干净的 `base,input6,input-stream,input-front,input-pipe` |
 | BS | `32,48,64,72,256` |
 | Hidden / TopK / Experts | `3584 / 8 / 384` |
 | 数据和路由 | BF16、random、seed 0 |
@@ -131,7 +131,7 @@ bash tests/ll_python_bench/run_all.sh --variant card-all
 bash tests/ll_python_bench/build_all.sh
 ```
 
-默认安装 `base,wqe-prefetch,input6,input-pair,input-pipe`，可用 `--variants` 缩减。`wqe-prefetch` 将下一条已就绪规约任务的输入读取，提前到上一包 GM 暂存等待之前；保留数据完成后才发布 WQE 的要求。input6 是当前 BS32–64 的较优对照。input-pair 在它的基础上合并两条独立 Cast/Muls 的屏障，Add 仍按原序；input-pipe 将六输入槽与 WQE 提交流水组合。两个新实验都没有增加 UB 或省略末尾 quiet。wqe-prep、input-ready 和 ready-snapshot 仍可通过 --variants 选择。详见 [实验记录](../ll_cpp_bench/TRANSFER_AB.md)。
+默认安装 `base,input6,input-stream,input-front,input-pipe`，可用 `--variants` 缩减。input6 保留为 BS32–64 对照，input-pipe 保留作 BS256 对照。新增 input-stream：交替使用两块 FP32 缓冲，把下一项 Cast 与上一项累加共用一次屏障，不等待第二项才发起第一项乘权重。新增 input-front：先发起本卡首项乘权重，再提交其余输入读取，以测试首项前移与其他读取延后的取舍。二者均保留原累加序，不增加 UB；数据完成后才发布 WQE，末尾 quiet 保留。尚无新实验的 NPU 数据。input-pair、wqe-prefetch 等仍可通过 --variants 选择。详见 [实验记录](../ll_cpp_bench/TRANSFER_AB.md)。
 
 EP32 两台分别编译：
 

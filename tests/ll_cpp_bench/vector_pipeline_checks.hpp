@@ -8,7 +8,7 @@
 namespace VectorChecks {
 struct Access { uintptr_t begin, end; bool write; };
 inline std::vector<Access> pending;
-inline unsigned barriers = 0;
+inline unsigned barriers = 0, multiplies = 0;
 template<class T> Access Range(AscendC::LocalTensor<T> t, unsigned n, bool write) {
     return {reinterpret_cast<uintptr_t>(t.p), reinterpret_cast<uintptr_t>(t.p + n), write};
 }
@@ -26,7 +26,7 @@ void Cast(AscendC::LocalTensor<D> d, AscendC::LocalTensor<S> s, AscendC::RoundMo
     Issue({Range(d,n,true), Range(s,n,false)}); AscendC::Cast(d,s,mode,n);
 }
 template<class T> void Muls(AscendC::LocalTensor<T> d, AscendC::LocalTensor<T> s, T w, unsigned n) {
-    Issue({Range(d,n,true), Range(s,n,false)}); AscendC::Muls(d,s,w,n);
+    Issue({Range(d,n,true), Range(s,n,false)}); ++multiplies; AscendC::Muls(d,s,w,n);
 }
 template<class T>
 void Add(AscendC::LocalTensor<T> d, AscendC::LocalTensor<T> a, AscendC::LocalTensor<T> b, unsigned n) {

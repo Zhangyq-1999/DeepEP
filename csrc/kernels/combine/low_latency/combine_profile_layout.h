@@ -2,7 +2,7 @@
 #include <cstdint>
 
 namespace CombineProfile {
-// One 2176-byte record per AIV in schema 19 (schemas 10..18 used 2048).
+// One 2176-byte record per AIV in schema 20 (schemas 10..18 used 2048).
 // New counters append without shifting older fields. Detail requires level 2.
 enum Word : uint32_t {
     Entry,
@@ -263,16 +263,18 @@ enum Word : uint32_t {
     ReadyInputUsed,
     PartialPairGroups,
     PartialVectorBarriers,
+    PartialStreamSteps,
+    PartialFrontLoads,
     Count
 };
 constexpr uint32_t kWords = 272U;
-constexpr uint64_t kSchema = 19U;
+constexpr uint64_t kSchema = 20U;
 constexpr Word kDetailBegin = InitPrefixTicks;
 constexpr Word kDetailEnd = RouteCompactTicks;
 constexpr bool IsDetailWord(uint32_t word)
 {
     return (word >= kDetailBegin && word <= kDetailEnd) ||
-           (word >= WqePrepareTicks && word <= PartialVectorBarriers);
+           (word >= WqePrepareTicks && word <= PartialFrontLoads);
 }
 static_assert(Count <= kWords && StageRows <= 64U, "profile record bounds");
 }  // namespace CombineProfile
