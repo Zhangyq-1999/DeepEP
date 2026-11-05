@@ -19,16 +19,16 @@ const Record* receive_tail(const SuiteResult& d, uint32_t i)
 void tail_producers(const SuiteResult& d, const Record& r)
 {
     if (!r[TailObservations]) return;
-    std::cout << " T last-miss t=" << r[TailToken] << " first=k" << r[TailSlot] << "/b" << r[TailBlock]
-              << " missing_blocks=" << r[TailMissingBlocks] << " seen=" << r[TailObservations]
-              << " first/last/ready=" << r[TailFirstSeen] << '/' << r[TailLastSeen] << '/' << r[TailReady]
-              << " producers=";
+    std::cout << " T t=" << r[TailToken] << " first=k" << r[TailSlot] << "/b" << r[TailBlock]
+              << " blocks/seen=" << r[TailMissingBlocks] << '/' << r[TailObservations]
+              << " time=" << r[TailFirstSeen] << '/' << r[TailLastSeen] << '/' << r[TailReady]
+              << " src=";
     for (uint32_t slot = 0; slot < 32; ++slot) if ((r[TailMissingMask] >> slot) & 1U) {
         const auto found = d.producers.find({uint32_t(r[Rank]), uint32_t(r[TailToken]), slot});
-        if (found == d.producers.end()) { std::cout << "k" << slot << ":unknown "; continue; }
+        if (found == d.producers.end()) { std::cout << slot << ":unknown "; continue; }
         const auto& p = found->second;
-        std::cout << 'k' << slot << ":r" << p.rank << "/c" << p.core << '/' << p.path
-                  << '/' << (p.type == 1 ? "DIRECT" : "PARTIAL") << ' ';
+        std::cout << slot << ':' << p.rank << '/' << p.core << '/' << p.path
+                  << '/' << (p.type == 1 ? "D" : "P") << ' ';
     }
     std::cout << '\n';
 }
@@ -56,7 +56,7 @@ void tail_stability(const SuiteResult& d)
     std::vector<std::pair<Key, uint32_t>> sorted(count.begin(), count.end());
     std::stable_sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
     std::cout << " Tfreq " << d.variant << " event-tail-missed=" << observed << '/' << d.events.size()
-              << " producer>receiver/path/type:n=";
+              << " links=";
     for (size_t j = 0; j < std::min<size_t>(4, sorted.size()); ++j) {
         const auto& [key, n] = sorted[j];
         std::cout << std::get<0>(key) << '>' << std::get<1>(key) << '/' << std::get<2>(key) << '/'
@@ -74,6 +74,27 @@ double percentile(const std::vector<double>& sorted, double fraction)
     const double index = fraction * (sorted.size() - 1);
     const auto low = size_t(index), high = size_t(std::ceil(index));
     return sorted[low] + (index - low) * (sorted[high] - sorted[low]);
+}
+std::string compact_cost_name(Word w)
+{
+    std::string name = names[w];
+    const std::string suffix = "_ticks";
+    if (name.size() >= suffix.size() && name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0)
+        name.resize(name.size() - suffix.size());
+    for (const auto& prefix : {std::make_pair("stage_", "s."), std::make_pair("direct_", "d."), std::make_pair("partial_", "m4."),
+                               std::make_pair("final_", "m5."), std::make_pair("ready_", "g.")})
+        if (name.rfind(prefix.first, 0) == 0) return prefix.second + name.substr(std::string(prefix.first).size());
+    return name;
+}
+void compact_times(const Record& r, std::initializer_list<Word> words)
+{
+    bool first = true;
+    for (Word w : words) {
+        std::cout << (first ? "" : "/");
+        if (r.present[w]) std::cout << r[w];
+        else std::cout << '-';
+        first = false;
+    }
 }
 void compact_record(const Record& r)
 {
@@ -93,44 +114,53 @@ void compact_record(const Record& r)
               << " body=" << r[FlushDone] << " rows=" << r[StageRows] << '/' << r[DirectRows] << '/' << r[PartialRows]
               << " final=" << r[FinalTokens] << '/' << r[Contributions] << " local/get=" << r[PartialLocalContrib]
               << '/' << r[PartialGetContrib] << '\n';
-    std::cout << "  end";
-    for (Word w : r.receive ? std::vector<Word>{InitEnd, StageDrained, CoreNotifyEnd, ReadyObserved, ReadyEnd, PartialEnd, RdmaFirstPut, RdmaLastPut, FinalFirstReady, FinalLastReady, FinalLastStore, DrainEnd, PipeDone}
-                           : std::vector<Word>{InitEnd, StageEnd, CoreNotifyEnd, NotifyEnd, DirectFirstSubmit, DirectLastSubmit, DirectEnd, PipeDone})
-        if (r.present[w]) std::cout << ' ' << names[w] << '=' << r[w];
+    std::cout << "  e=";
+    if (r.receive)
+        compact_times(r, {InitEnd, StageDrained, CoreNotifyEnd, ReadyBegin, ReadyObserved, ReadyEnd, PartialEnd,
+                           RdmaFirstPut, RdmaLastPut, FinalFirstReady, FinalLastReady, FinalLastStore, DrainEnd, PipeDone});
+    else
+        compact_times(r, {InitEnd, StageEnd, CoreNotifyEnd, NotifyEnd, DirectFirstSubmit, DirectLastSubmit, DirectEnd, PipeDone});
     std::cout << "\n  top";
     const auto costs = top_costs(r, kDetailBegin, kDetailEnd);
-    for (size_t j = 0; j < std::min<size_t>(6, costs.size()); ++j)
-        std::cout << ' ' << names[costs[j]] << '=' << r[costs[j]];
-    std::cout << " poll=miss/call/ticks:" << r[ProbeMisses] << '/' << r[ProbeCalls] << '/' << r[ProbeMissTicks]
-              << " flags/confirmed=" << r[ProbeFlagBlocks] << '/' << r[ProbeConfirmedSlots];
-    if (r.present[ProbeBlockedSlot] && r[ProbeMisses]) {
-        std::cout << " blocked=t" << r[ProbeBlockedToken] << "/k";
-        if (r[ProbeBlockedSlot] == 0xffffffffU) std::cout << "all";
-        else std::cout << r[ProbeBlockedSlot];
-    }
-    std::cout << " early_issue=" << r[EarlyIssueTicks]
-              << " meta_batches=" << r[MetadataBatches] << " tail_inspect=" << r[TailInspectTicks]
-              << " pause=calls/ticks:" << r[PollPauseCalls] << '/' << r[PollPauseTicks]
-              << " packets/defer/gap=" << r[RdmaPackets] << '/' << r[RdmaDeferredPackets] << '/' << r[RdmaDeferGapTicks] << '\n';
-    if (r[ReadyPollCalls]) {
-        std::cout << "  ready miss/calls/max_probe=" << r[ReadyPollMisses] << '/' << r[ReadyPollCalls]
-                  << '/' << r[ReadyPollMaxTicks] << " inspect=" << r[ReadyInspectTicks];
-        if (r[ReadyMissingCount]) {
-            std::cout << " last_miss=r" << r[ReadyMissingRank] << "/c";
-            if(r[ReadyMissingCore]==0xffffffffU) std::cout << "all"; else std::cout << r[ReadyMissingCore];
-            std::cout << " n=" << r[ReadyMissingCount];
+    for (size_t j = 0; j < std::min<size_t>(4, costs.size()); ++j)
+        std::cout << ' ' << compact_cost_name(costs[j]) << '=' << r[costs[j]];
+    std::cout << '\n';
+    // Always expose staging/Put/CQ and the moved submission cost. A top-N list
+    // alone can hide them when other waits become longer.
+    if (r[RdmaPackets] || r[RdmaQuietTicks])
+        std::cout << "  rdma=" << r[RdmaPackets] << '/' << r[RdmaDeferredPackets]
+                  << '/' << r[RdmaDeferGapTicks] << '/' << r[RdmaStageIssueTicks] << '/' << r[RdmaStageWaitTicks]
+                  << '/' << r[RdmaPutTicks] << '/' << r[RdmaQuietTicks] << '\n';
+    if (r.receive) {
+        std::cout << "  probe=" << r[ProbeMisses] << '/' << r[ProbeCalls]
+                  << '/' << r[ProbeMissTicks] << '/' << r[ProbeFlagBlocks] << '/' << r[ProbeConfirmedSlots];
+        if (r.present[ProbeBlockedSlot] && r[ProbeMisses]) {
+            std::cout << " blocked=t" << r[ProbeBlockedToken] << "/k";
+            if (r[ProbeBlockedSlot] == 0xffffffffU) std::cout << "all";
+            else std::cout << r[ProbeBlockedSlot];
         }
+        std::cout << " inspect=" << r[TailInspectTicks] << '\n';
+    }
+    if (r[EarlyIssueTicks] || r[MetadataBatches] || r[PollPauseCalls])
+        std::cout << "  extra early/meta/pause_calls/pause_ticks=" << r[EarlyIssueTicks] << '/' << r[MetadataBatches]
+                  << '/' << r[PollPauseCalls] << '/' << r[PollPauseTicks] << '\n';
+    if (r[ReadyPollCalls]) {
+        std::cout << "  g=" << r[ReadyPollMisses] << '/' << r[ReadyPollCalls]
+                  << '/' << r[ReadyPollMaxTicks] << '/' << r[ReadyInspectTicks] << ' ';
+        if (r[ReadyMissingCount]) std::cout << r[ReadyMissingRank] << '/' << r[ReadyMissingCore] << '/' << r[ReadyMissingCount];
+        else std::cout << '-';
         std::cout << '\n';
     }
     if (r.receive && (r[ReadyTaskRounds] || r[ReadySnapshotTicks]))
-        std::cout << "  ready_tasks first/all/done=" << r[ReadyFirstTask] << '/' << r[ReadyObserved] << '/' << r[ReadyTasksDone]
-                  << " rounds/stalls=" << r[ReadyTaskRounds] << '/' << r[ReadyTaskStalls]
-                  << " before_all_observed/tasks/remote=" << r[ReadyTasksBeforeAll] << '/' << r[ReadyRemoteBeforeAll]
-                  << " setup/plan/filter/snapshot=" << r[ReadySetupTicks] << '/' << r[ReadyPlanTicks] << '/' << r[ReadyFilterTicks] << '/' << r[ReadySnapshotTicks]
-                  << " skip/cache/reload/issue=" << r[ReadyFilterSkips] << '/' << r[ReadyCachedTasks]
-                  << '/' << r[ReadyMetadataReloads] << '/' << r[ReadyPipelineIssueTicks]
-                  << " retire=" << (r[ReadyRetireEnd]-r[ReadyRetireBegin])
-                  << " ack_wait/consumed_wait=" << r[ReadyAckWaitTicks] << '/' << r[ReadyConsumedWaitTicks] << '\n';
+        std::cout << "  q=" << r[ReadyFirstTask] << '/' << r[ReadyObserved] << '/' << r[ReadyTasksDone]
+                  << ' ' << r[ReadyTaskRounds] << '/' << r[ReadyTaskStalls] << '/' << r[ReadyFilterSkips]
+                  << ' ' << r[ReadyTasksBeforeAll] << '/' << r[ReadyRemoteBeforeAll]
+                  << ' ' << r[ReadyCachedTasks] << '/' << r[ReadyMetadataReloads]
+                  << ' ' << r[ReadySetupTicks] << '/' << r[ReadyPlanTicks] << '/' << r[ReadyFilterTicks]
+                  << '/' << r[ReadySnapshotTicks] << '/' << r[ReadyPipelineIssueTicks]
+                  << ' ' << (r[ReadyRetireEnd]-r[ReadyRetireBegin]) << '\n';
+    if (r[ReadyAckWaitTicks] || r[ReadyConsumedWaitTicks])
+        std::cout << "  ack/consumed=" << r[ReadyAckWaitTicks] << '/' << r[ReadyConsumedWaitTicks] << '\n';
     if (r.receive && r[BatchGroupCalls] + r[BatchWholeTokens])
         std::cout << "  batch group_checks/whole_tokens/route_ticks=" << r[BatchGroupCalls] << '/'
                   << r[BatchWholeTokens] << '/' << r[BatchRouteTicks] << '\n';
@@ -213,8 +243,19 @@ void suite_report(const fs::path& root)
             cases[bs].push_back(std::move(d));
         }
     }
-    std::cout << "LL_COMBINE global rank-MAX; Event=us; profile=ticks/core-entry; no samples removed\n"
-                 "IQR flags are candidates; WIDE means (max-min)/P50 > 20%. Detailed CSVs retained.\n";
+    std::cout << "LL_COMBINE compact=v2 global rank-MAX; Event=us; profile=ticks/core-entry; no samples removed\n"
+                 "IQR=candidates; WIDE=(max-min)/P50>20%; full samples/fields in CSV; '-'=absent.\n"
+                 "e(S)=init/stage/core_notify/notify/direct_first/direct_last/direct_end/pipe\n"
+                 "e(R)=init/stage_drained/core_notify/ready_begin/ready_observed/ready_end/partial_end/put_first/put_last/final_first/final_last/store/drain/pipe\n"
+                 "top4 cumulative ticks: s.=stage_, d.=direct_, m4.=partial_, m5.=final_, g.=ready_; overlapping costs are not additive.\n"
+                 "rdma=n/deferred/gap/stage_issue/stage_wait/put/quiet\n"
+                 "probe=miss/calls/miss_ticks/flags/confirmed; N=r/c local_wait/publish miss/calls/max_probe missing_core/count stores inspect\n"
+                 "P=own-entry rank/core:first_put/last_put/partial_end/packets\n"
+                 "g=miss/calls/max_probe/inspect missing_rank/core/count; 4294967295=all\n"
+                 "G=r/c window=W(wait)|O(observe, includes work) miss/calls/max_probe missing_rank/core/count inspect; omitted if same as R\n"
+                 "q=first/all/done rounds/stalls/skips before_all/remote cached/reloads setup/plan/filter/snapshot/pipeline_issue retire\n"
+                 "T=last-miss; time=first/last/ready; src=slot:rank/core/path/type; D=direct P=partial.\n"
+                 "Tfreq links=producer>receiver/path/type:sample_count\n";
     std::cout << std::fixed << std::setprecision(2);
     for (const auto& [bs, results] : cases) {
         const auto& config = results.front().config;
@@ -232,7 +273,7 @@ void suite_report(const fs::path& root)
             for (auto v : values) square += (v - mean) * (v - mean);
             std::sort(values.begin(), values.end());
             const double p50 = percentile(values, .5);
-            std::cout << std::left << std::setw(24) << d.variant << std::setw(8) << d.kind << std::right
+            std::cout << std::left << std::setw(24) << d.variant << ' ' << std::setw(8) << d.kind << std::right
                       << std::setw(4) << values.size() << std::setw(10) << mean << std::setw(10) << p50
                       << std::setw(10) << values.front() << std::setw(10) << percentile(values, .95)
                       << std::setw(10) << values.back() << std::setw(8) << std::sqrt(square / values.size()) / mean * 100
@@ -253,9 +294,6 @@ void suite_report(const fs::path& root)
             }
             if (d.records.empty()) continue;
             if (!d.producers.empty()) tail_stability(d);
-            std::cout << "E " << d.variant << " i/r/us=";
-            for (const auto& [i, e] : d.events) std::cout << i << '/' << e.rank << '/' << e.us << ' ';
-            std::cout << '\n';
             std::vector<std::pair<uint32_t, Event>> order(d.events.begin(), d.events.end());
             std::stable_sort(order.begin(), order.end(), [](const auto& a, const auto& b) { return a.second.us < b.second.us; });
             const auto median = order[(order.size() - 1) / 2].first, worst = order.back().first;
@@ -267,6 +305,7 @@ void suite_report(const fs::path& root)
                 if (ranks.size() != integer(d.config.at("ep"))) throw std::runtime_error("Partial global diagnostics");
                 std::cout << "D " << d.variant << ' ' << (i == worst ? "worst" : "p50") << " i=" << i
                           << " event_r=" << event.rank << " us=" << event.us << '\n';
+                const Record* receiveRecord = nullptr;
                 for (bool receive : {false, true}) {
                     const Record* tail = nullptr;
                     for (const auto& r : records)
@@ -274,28 +313,29 @@ void suite_report(const fs::path& root)
                             (!tail || r[FlushDone] > (*tail)[FlushDone])) tail = &r;
                     if (!tail) throw std::runtime_error("Missing Event rank diagnostic role");
                     compact_record(*tail);
-                    if (receive) tail_producers(d, *tail);
+                    if (receive) { receiveRecord = tail; tail_producers(d, *tail); }
                 }
                 const Record* notifier=nullptr;
                 const Record* groupWait=nullptr;
                 for(const auto& r:records) if(r[Rank]==event.rank && r.present[ReadyObserved] &&
                     (!groupWait || r[ReadyObserved]-r[ReadyBegin]>(*groupWait)[ReadyObserved]-(*groupWait)[ReadyBegin])) groupWait=&r;
-                if(groupWait) {
+                // The same record's ready window is already present in e(R).
+                if(groupWait && groupWait != receiveRecord) {
                     const auto& r=*groupWait;
-                    std::cout << " G r/c=" << r[Rank] << '/' << r[Core] << (r[ReadyTaskRounds]?" observe_window=":" wait=") << r[ReadyObserved]-r[ReadyBegin]
-                              << " miss/calls/max_probe=" << r[ReadyPollMisses] << '/' << r[ReadyPollCalls] << '/' << r[ReadyPollMaxTicks]
-                              << " last_r/c/n=" << r[ReadyMissingRank] << '/' << r[ReadyMissingCore] << '/' << r[ReadyMissingCount]
-                              << " inspect=" << r[ReadyInspectTicks] << '\n';
+                    std::cout << " G " << r[Rank] << '/' << r[Core] << (r[ReadyTaskRounds]?" O=":" W=") << r[ReadyObserved]-r[ReadyBegin]
+                              << ' ' << r[ReadyPollMisses] << '/' << r[ReadyPollCalls] << '/' << r[ReadyPollMaxTicks]
+                              << ' ' << r[ReadyMissingRank] << '/' << r[ReadyMissingCore] << '/' << r[ReadyMissingCount]
+                              << ' ' << r[ReadyInspectTicks] << '\n';
                 }
                 for(const auto& r:records) if(r[Rank]==event.rank && r.present[NotifyBegin] &&
                     (!notifier || r[NotifyEnd]-r[NotifyBegin]>(*notifier)[NotifyEnd]-(*notifier)[NotifyBegin])) notifier=&r;
                 if(notifier) {
                     const auto& r=*notifier;
-                    std::cout << " N r/c=" << r[Rank] << '/' << r[Core]
-                              << " local_wait/publish=" << r[NotifyLocalReady]-r[NotifyBegin] << '/' << r[NotifyEnd]-r[NotifyLocalReady]
-                              << " miss/calls/max_probe=" << r[NotifyPollMisses] << '/' << r[NotifyPollCalls] << '/' << r[NotifyPollMaxTicks]
-                              << " last_core/n=" << r[NotifyMissingCore] << '/' << r[NotifyMissingCount]
-                              << " stores=" << r[NotifyStores] << " inspect=" << r[NotifyInspectTicks] << '\n';
+                    std::cout << " N " << r[Rank] << '/' << r[Core]
+                              << ' ' << r[NotifyLocalReady]-r[NotifyBegin] << '/' << r[NotifyEnd]-r[NotifyLocalReady]
+                              << ' ' << r[NotifyPollMisses] << '/' << r[NotifyPollCalls] << '/' << r[NotifyPollMaxTicks]
+                              << ' ' << r[NotifyMissingCore] << '/' << r[NotifyMissingCount]
+                              << ' ' << r[NotifyStores] << ' ' << r[NotifyInspectTicks] << '\n';
                 }
                 const Record* worker=nullptr;
                 for(const auto& r:records) if(r[Rank]==event.rank && r[CoalesceWorker] &&
@@ -304,7 +344,7 @@ void suite_report(const fs::path& root)
                 std::vector<const Record*> puts;
                 for (const auto& r : records) if (r.present[RdmaLastPut]) puts.push_back(&r);
                 std::stable_sort(puts.begin(), puts.end(), [](auto a, auto b) { return (*a)[RdmaLastPut] > (*b)[RdmaLastPut]; });
-                std::cout << " P own-entry r/c:first_put/last_put/partial_end/packets=";
+                std::cout << " P ";
                 for (size_t j = 0; j < std::min<size_t>(2, puts.size()); ++j) {
                     const auto& r = *puts[j];
                     std::cout << r[Rank] << '/' << r[Core] << ':' << r[RdmaFirstPut] << '/' << r[RdmaLastPut]
@@ -313,5 +353,7 @@ void suite_report(const fs::path& root)
                 std::cout << '\n';
             }
         }
+        std::cout << "END BS=" << bs << '\n';
     }
+    std::cout << "LL_COMBINE END cases=" << cases.size() << '\n';
 }

@@ -257,8 +257,8 @@ def test_tail_link_and_recurrence_use_actual_slot_map(reporter, tmp_path):
     out = subprocess.check_output([str(reporter), "--suite", str(tmp_path)], text=True)
     assert "event-tail-missed=3/3" in out and "0>1/RDMA/P:3" in out
     assert "same-slot=r1/t7/k2:3" in out
-    assert "k2:r0/c31/RDMA/PARTIAL" in out and "first=k2/b14" in out
-    assert "first/last/ready=30/60/70" in out
+    assert "2:0/31/RDMA/P" in out and "first=k2/b14" in out
+    assert "time=30/60/70" in out
 
 
 @pytest.mark.parametrize("batch_mode", [None, "group", "whole"])
@@ -309,3 +309,84 @@ def test_local_first_fields_in_reports(reporter, tmp_path, batch_mode):
         group, whole = (13, 0) if batch_mode == "group" else (0, 16)
         assert f"batch: group_checks={group} whole_tokens={whole} route_ticks=12" in full
         assert f"batch group_checks/whole_tokens/route_ticks={group}/{whole}/12" in compact
+
+
+def test_default_suite_fits_one_paste_and_keeps_each_case(reporter, tmp_path):
+    # Five BS, four clean and four profile variants, two real samples each.
+    # Exercise long counters and eight tail slots rather than mostly-zero rows.
+    names = re.findall(r'"([a-z0-9_]+)"',
+                       (HERE / "profile.hpp").read_text().split("names[] = {", 1)[1].split("};", 1)[0])
+    fields = ["iteration", "device", "role", "profile_build"] + names
+    variants = ("base", "ready-task", "ready-fast", "ready-pipeline", "ref-profile",
+                "ready-task-profile", "ready-fast-profile", "ready-pipeline-profile")
+    defaults = (32, 48, 64, 72, 256)
+    for phase, variant in enumerate(variants):
+        directory = tmp_path / f"{phase}-{variant}"
+        directory.mkdir()
+        profile = phase >= 4
+        samples = 10 if profile else 100
+        configs, events, records, producers = [], [], [], []
+        # Extra BS must not silently disappear when the report exceeds one paste.
+        for bs in (*defaults, 16, 96, 128):
+            configs.append(dict(ep=8, tokens=bs, hidden=3584, topk=8, experts=384, dtype="bf16",
+                                route="random", seed=0, warmup=10, samples=samples,
+                                entry_sync="device", profile_build=int(profile)))
+            for i in range(samples):
+                events.append(dict(tokens=bs, iteration=i, rank=i % 8,
+                                   us=500 if i == samples - 1 else 50 + i))
+                if not profile:
+                    continue
+                for rank in range(8):
+                    for core, role in ((2, "send"), (30, "receive"), (31, "receive"), (48, "receive")):
+                        row = {name: 123456 for name in names}
+                        row.update(iteration=i, device=12 + rank % 4, role=role, profile_build=1,
+                                   rank=rank, core=core, tokens=bs, world=8, complete=1, schema=12,
+                                   entry_tick=1 << 60, flush_done=250000 + core, coalesce_worker=0,
+                                   stage_rows=14, direct_rows=37, partial_rows=10, final_tokens=10,
+                                   contributions=47, rdma_packets=10, rdma_deferred_packets=9,
+                                   partial_local_contrib=10, partial_get_contrib=31,
+                                   ready_begin=10000, ready_observed=21000 + (100 if core == 30 else core),
+                                   ready_retire_begin=230000, ready_retire_end=231000,
+                                   notify_begin=10000, notify_local_ready=20000, notify_end=21000,
+                                   tail_missing_mask=255, tail_token=7, tail_slot=0, tail_block=14,
+                                   tail_missing_blocks=120, tail_observations=10,
+                                   ready_task_rounds=50 if phase > 4 else 0,
+                                   ready_snapshot_ticks=12000 if phase > 4 else 0,
+                                   early_issue_ticks=0, metadata_batches=0, poll_pause_calls=0,
+                                   local_contributions=0, remote_contributions=0,
+                                   batch_group_calls=0, batch_whole_tokens=0,
+                                   ready_ack_wait_ticks=0, ready_consumed_wait_ticks=0)
+                        records.append(row)
+            if profile:
+                for source in range(8):
+                    for slot in range(8):
+                        producers.append(dict(tokens=bs, source=source, token=7, slot=slot,
+                                              producer=slot, core=31, type=2, row=93, path="RDMA"))
+        write_csv(directory / "summary.csv", list(configs[0]), configs)
+        write_csv(directory / "rank-max.csv", list(events[0]), events)
+        if profile:
+            write_csv(directory / "diagnostic.csv", fields, records)
+            write_csv(directory / "producers.csv", list(producers[0]), producers)
+    out = subprocess.check_output([str(reporter), "--suite", str(tmp_path)], text=True)
+    header = out[:out.index("\nBS=")]
+    blocks = re.findall(r"\nBS=(\d+) .*?END BS=\1\n", out, flags=re.S)
+    assert list(map(int, blocks)) == sorted((*defaults, 16, 96, 128))
+    default_report = header
+    for bs in defaults:
+        block = re.search(rf"\nBS={bs} .*?END BS={bs}\n", out, flags=re.S)[0]
+        assert block.index("variant ") < block.index("D 4-ref-profile")
+        for phase, variant in enumerate(variants):
+            assert re.search(rf"^{phase}-{variant}\s+(clean|profile)\s+", block, re.M)
+            if phase >= 4:
+                assert f"D {phase}-{variant} p50 i=4 event_r=4" in block
+                assert f"D {phase}-{variant} worst i=9 event_r=1" in block
+                assert f"IQR {phase}-{variant} n=1" in block
+        assert " G 4/30 W=" in block and " G 4/30 O=" in block
+        default_report += block
+    # Leave room for the run ID and launch output in a 64 KiB clipboard paste.
+    size = len((default_report + "LL_COMBINE END cases=5\n").encode("utf-8"))
+    assert size < 60 * 1024, f"Default report is {size} bytes"
+    assert "LL_COMBINE END cases=8" in out
+    assert "  e=" in out and "'-'=absent" in out
+    assert "  q=" in out and "  rdma=" in out
+    assert not re.search(r"^E ", out, re.M)  # Raw samples remain in rank-max.csv.
