@@ -69,6 +69,11 @@ int main() {
             view.Add(DirectMetadataCachedRows, 2);
             view.Add(ReadySingleTasks, 1);
             view.Add(DirectRoutePreloadRows, 32);
+            view.Add(RdmaPrefixWaitTicks, 31);
+            view.Add(RdmaCopyWaitTicks, 19);
+            view.Add(RdmaWaitSplitCalls, 2);
+            view.Add(DirectLocalDeferredRows, 3);
+            view.Add(DirectPriorityScanTicks, 47);
             view.Add(DirectRouteGatherRows, 17);
             view.Elapsed(DirectRoutePreloadWaitTicks, view.DetailClock());
             view.Elapsed(ReadyMetadataWaitTicks, view.DetailClock());
@@ -93,6 +98,11 @@ int main() {
                 assert(row[PartialFrontLoads] == (level == 2 ? 6U : 0U));
                 assert(row[DirectMetadataCachedRows] == (level == 2 ? 2U : 0U));
                 assert(row[ReadySingleTasks] == (level == 2 ? 1U : 0U));
+                assert(row[RdmaPrefixWaitTicks] == (level == 2 ? 31U : 0U));
+                assert(row[RdmaCopyWaitTicks] == (level == 2 ? 19U : 0U));
+                assert(row[RdmaWaitSplitCalls] == (level == 2 ? 2U : 0U));
+                assert(row[DirectLocalDeferredRows] == (level == 2 ? 3U : 0U));
+                assert(row[DirectPriorityScanTicks] == (level == 2 ? 47U : 0U));
                 assert(row[DirectRoutePreloadRows] == (level == 2 ? 32U : 0U));
                 assert(row[DirectRouteGatherRows] == (level == 2 ? 17U : 0U));
                 assert(row[DirectRoutePreloadWaitTicks] == (level == 2 ? 17U : 0U));

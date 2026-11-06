@@ -547,12 +547,29 @@ private:
         PipeBarrier<PIPE_V>();
         profile_.Elapsed(CombineProfile::DirectSetupTicks, setupStart);
         profile_.Mark(CombineProfile::DirectSetupEnd);
-        for (uint32_t step = 1U; step <= servers; ++step) {
+        // Defer only DIRECT's local-host sends, preserving the original
+        // round-robin owner cursor and every remote host's relative order.
+        // No extra payload cache: reselect local rows after remote submissions.
+        const bool localLast = kCombineDirectRemoteFirst && servers > 1U &&
+                               Group == DispatchDedup::kLlPhysicalRanksPerHost;
+        uint32_t localFirst = 0U, localCount = 0U;
+        for (uint32_t step = 0U; step < servers + uint32_t(localLast); ++step) {
+            const bool replayLocal = localLast && step == servers;
+            if (replayLocal && localFirst >= localCount) continue;
+            const uint32_t server = replayLocal ? ownServer : CombineReturnServer<Group>(servers, ownServer, step);
             const uint64_t scanStart = profile_.DetailClock();
-            const uint32_t count = SelectDirectServer(CombineReturnServer<Group>(servers, ownServer, step - 1U));
+            const uint32_t count = SelectDirectServer(server);
             profile_.Elapsed(CombineProfile::DirectScanTicks, scanStart);
-            const uint32_t first = ServerDedupFirstOwned(core_, owner, directCores);
-            owner = (owner + count) % directCores;
+            if (replayLocal) profile_.Elapsed(CombineProfile::DirectPriorityScanTicks, scanStart);
+            const uint32_t first = replayLocal ? localFirst : ServerDedupFirstOwned(core_, owner, directCores);
+            if (!replayLocal) owner = (owner + count) % directCores;
+            if (localLast && !replayLocal && server == ownServer) {
+                localFirst = first;
+                localCount = count;
+                profile_.Set(CombineProfile::DirectLocalDeferredRows,
+                             first < count ? 1U + (count - 1U - first) / directCores : 0U);
+                continue;
+            }
             for (uint32_t task = first; task < count; task += directCores) {
                 const uint64_t metadataStart = profile_.DetailClock();
                 const uint32_t row = uint32_t(indexUb_.GetValue(task));

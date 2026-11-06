@@ -8,8 +8,9 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
-@pytest.mark.parametrize("mode", [20, 24, 25, 26, 27, 28, 29])
-def test_direct_snapshot_lanes_and_fallback(tmp_path, mode):
+@pytest.mark.parametrize("physical", [4, 16])
+@pytest.mark.parametrize("mode", [20, 24, 25, 26, 27, 28, 29, 30])
+def test_direct_snapshot_lanes_and_fallback(tmp_path, mode, physical):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
     if not zig:
         pytest.skip("Set DEEPEP_TEST_ZIG")
@@ -92,6 +93,11 @@ template<unsigned Group> struct Direct {
                 if(owner++%sendCores_==core_)expected.push_back(row);
             }
         }
+        if constexpr (kCombineDirectRemoteFirst && Group == DispatchDedup::kLlPhysicalRanksPerHost) {
+            std::stable_partition(expected.begin(), expected.end(), [&](unsigned row) {
+                return unsigned(table[row*3])/Group != a.rank/Group;
+            });
+        }
         ReturnDirectTokens();
         assert(returnBatch_.packets.size()==expected.size());
         for(unsigned i=0;i<expected.size();++i) {
@@ -115,7 +121,7 @@ template<unsigned Group> struct Direct {
     }
 };
 int main() {
-    for(unsigned hosts:{1U,2U,4U})for(unsigned rank:{0U,15U})for(bool dedup:{false,true})
+    for(unsigned hosts:{1U,2U,4U})for(unsigned rank:{0U,hosts*16-1U})for(bool dedup:{false,true})
     for(unsigned rows:{0U,1U,17U,256U,511U,512U,513U,2049U})for(unsigned c=0;c<28;++c)
         Direct<16>(rows,hosts*16,rank,c,dedup,256).Check();
     for(unsigned h:{256U,3584U,7168U})for(unsigned rows:{32U,512U,513U})for(unsigned c:{0U,1U,27U})
@@ -137,7 +143,7 @@ int main() {
     cpp, exe = tmp_path / "direct.cpp", tmp_path / "direct.exe"
     cpp.write_text(source, encoding="utf-8")
     subprocess.run([zig, "c++", "-std=c++17", "-O1", "-UNDEBUG", "-DDEEPEP_TEST_DEFERRED_MTE2=1",
-                    f"-DDEEPEP_LL_COMBINE_READY={mode}",
+                    f"-DDEEPEP_LL_COMBINE_READY={mode}", f"-DDEEPEP_LL_PHYSICAL_RANKS_PER_HOST={physical}",
                     "-I" + str(ROOT / "tests/ll_cpp_bench"),
                     "-I" + str(ROOT / "tests/ll_rdma/metadata_stubs"), "-I" + str(ROOT / "csrc"),
                     str(cpp), "-o", str(exe)], check=True, timeout=180)

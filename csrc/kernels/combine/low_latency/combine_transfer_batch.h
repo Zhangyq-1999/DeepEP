@@ -17,6 +17,37 @@ class TransferBatch {
     uint32_t peers_[kWords]{};
     GM_ADDR stage_ = nullptr;
     CombineProfile::View profile_;
+#ifdef DEEPEP_LL_COMBINE_PROFILE
+    bool splitStageWait_ = false;
+#endif
+    __aicore__ inline void MarkStagePrefix()
+    {
+#ifdef DEEPEP_LL_COMBINE_PROFILE
+        // Event 6 captures the already queued MTE3 work/dependencies BEFORE
+        // this payload DMA. Do not wait here: retain overlap with WQE build.
+        // Event 7 remains the original payload-completion/SDK event.
+        splitStageWait_ = profile_.DetailClock() != 0U;
+        if (splitStageWait_) AscendC::SetFlag<AscendC::HardEvent::MTE3_S>(6U);
+#endif
+    }
+    __aicore__ inline void WaitStage()
+    {
+#ifdef DEEPEP_LL_COMBINE_PROFILE
+        if (splitStageWait_) {
+            const uint64_t begin = profile_.DetailClock();
+            AscendC::WaitFlag<AscendC::HardEvent::MTE3_S>(6U);
+            const uint64_t prefixEnd = profile_.DetailClock();
+            AscendC::WaitFlag<AscendC::HardEvent::MTE3_S>(7U);
+            const uint64_t copyEnd = profile_.DetailClock();
+            profile_.Add(CombineProfile::RdmaPrefixWaitTicks, prefixEnd - begin);
+            profile_.Add(CombineProfile::RdmaCopyWaitTicks, copyEnd - prefixEnd);
+            profile_.Add(CombineProfile::RdmaWaitSplitCalls);
+            splitStageWait_ = false;
+            return;
+        }
+#endif
+        AscendC::WaitFlag<AscendC::HardEvent::MTE3_S>(7U);
+    }
 #if DEEPEP_LL_COMBINE_READY == 9 || DEEPEP_LL_COMBINE_READY >= 11
     AscendC::LocalTensor<uint8_t> privateUb_;
     bool partial_ = false;
@@ -95,7 +126,7 @@ class TransferBatch {
         }
 #endif
         const uint64_t wait = profile_.DetailClock();
-        WaitFlag<HardEvent::MTE3_S>(7U);
+        WaitStage();
         profile_.Add(CombineProfile::RdmaStageWaitCalls);
         profile_.SampleMax(CombineProfile::RdmaStageWaitTicks, CombineProfile::RdmaStageWaitMaxTicks,
             CombineProfile::RdmaStageWaitMaxPeer, CombineProfile::RdmaStageWaitMaxPeer, wait, peer, peer);
@@ -136,7 +167,7 @@ public:
         if (deferred_) profile_.Elapsed(CombineProfile::RdmaDeferGapTicks, queued_);
 #endif
         const uint64_t wait = profile_.DetailClock();
-        AscendC::WaitFlag<AscendC::HardEvent::MTE3_S>(7U);
+        WaitStage();
         profile_.Add(CombineProfile::RdmaStageWaitCalls);
         profile_.SampleMax(CombineProfile::RdmaStageWaitTicks, CombineProfile::RdmaStageWaitMaxTicks,
             CombineProfile::RdmaStageWaitMaxPeer, CombineProfile::RdmaStageWaitMaxPeer,
@@ -162,6 +193,7 @@ public:
         const auto dst = Next(peer, offset);
         const uint64_t begin = profile_.DetailClock();
         profile_.MarkOnce(CombineProfile::RdmaFirstStage);
+        MarkStagePrefix();
         AscendC::DataCopy(LlTransport::Tensor(dst, !kCombineTxL2), packet, bytes_);
         profile_.Elapsed(CombineProfile::RdmaStageIssueTicks, begin);
         Submit(peer, offset, dst, packet, defer);
@@ -176,6 +208,7 @@ public:
         const uint64_t begin = profile_.DetailClock();
         profile_.MarkOnce(CombineProfile::RdmaFirstStage);
         auto src = payload.ReinterpretCast<uint8_t>();
+        MarkStagePrefix();
         if (full) DataCopyPad(gm, src, {uint16_t(full), 480U, 0U, 32U, 0U});
         if (tail) DataCopyPad(gm[full * 512U], src[full * 480U], {1U, tail, 0U, 0U, 0U});
         // Reuse the original immutable 32B flags in each output slot. UB stride

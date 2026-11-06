@@ -7,7 +7,7 @@
 | 参数 | 默认值 |
 | --- | --- |
 | 主机 | `90.90.93.84,90.90.93.184` |
-| 算子 | `base,input6-l2-all,input6-l2-route,input6-l2-route-only,input6-l2-route-plan`，各有独立打点版 |
+| 算子 | `base,input6-l2-all,input6-l2-route-only,input6-l2-route-priority,input6-l2-route-tx-bypass`，各有独立打点版 |
 | BS | `32,48,64,72,256` |
 | Hidden / TopK / Experts | `3584 / 8 / 384` |
 | 数据和路由 | BF16、random、seed 0 |
@@ -129,11 +129,11 @@ bash tests/ll_python_bench/run_all.sh --variant card-all
 bash tests/ll_python_bench/build_all.sh
 ```
 
-默认共 10 个构建：原始 base、稳定对照 input6-l2-all、已测较优的 input6-l2-route，以及新实验 input6-l2-route-only、input6-l2-route-plan，各有独立打点库。lean、stage、pipe 和所有旧实验仍可显式通过 `--variants` 构建运行；不删除已有构建。
+默认共10个构建：原始 base、稳定对照 input6-l2-all、这轮BS32较优的 input6-l2-route-only，以及新实验 input6-l2-route-priority、input6-l2-route-tx-bypass，各有独立打点库。route、route-plan、lean、stage、pipe和所有旧实验仍可显式通过 `--variants` 构建运行，不删除已有构建。
 
-新实验保持 all 的 28/28 半区分工、6 个 M4 输入槽、缓存策略和累加顺序。lean 只初始化用到的输出槽，在初始化期间读取元数据；本核仅一个 M4 任务时直接检查依赖掩码，group flag 轮询仍使用 Vector。route 在 lean 基础上复用 DIRECT 已经加载到 UB 的整张路由表，减少逐包 12 B GM 读取和同步；接收行数超过 512 时自动回退，不额外分配 UB。setup-only 和 single-task-only 可选作拆解对照：`input6-l2-setup,input6-l2-single`。
+route-only 保持 all 的28/28半区分工、6个M4输入槽及累加顺序，只复用DIRECT已经加载到UB的路由表，减少逐包12 B GM读取和同步；接收行数超过512时回退，不额外分配UB。旧lean/setup/single/route-plan仍为可选对照。
 
-route-only 只在 all 上增加 DIRECT 路由复用，保留 all 的 M4 初始化和 Vector 任务筛选；route-plan 再对最多 512 行的完整表提前发起读取，与 DIRECT 类型筛选重叠，并直接按选中行号 Gather rank，避免全表 rank 提取及第二次压缩。两个新模式没有 lean 的槽位裁剪/单任务特化。大表仍走原实现，空 DIRECT 时也退休已发起的读取，不增加 UB。
+route-priority（ready30）仅把DIRECT本机发送后置：原次序中先统计本机任务以推进核间分工游标，跨机发送完成后重新筛选本机行并发送。因此每个包的核/QP、远端server顺序不变；有本机任务的核会多一次筛选。M4已有的跨机就绪任务优先调度保持。适用每机4/16rank与四机EP64；单机或逻辑组不等于物理主机时维持原序。route-tx-bypass（ready28、data_l2=5）独立比较RDMA发送暂存区旁路L2的效果，其余控制区/M3/M5缓存仍开启。这两项都需实测，不预设一定加速。
 
 下表保留完整缓存对照；pipe 仍为可选实验。
 
@@ -151,22 +151,26 @@ route-only 只在 all 上增加 DIRECT 路由复用，保留 all 的 M4 初始�
 | input6-l2-route | 开启 | lean + DIRECT 路由复用 | 7 |
 | input6-l2-route-only | 开启 | all + DIRECT 路由复用 | 7 |
 | input6-l2-route-plan | 开启 | route-only + 提前读表、按选中行提取 rank | 7 |
+| input6-l2-route-priority | 开启 | route-only + DIRECT本机发送后置 | 7 |
+| input6-l2-route-tx-bypass | 开启 | route-only，仅RDMA发送暂存区旁路 | 5 |
 
 `NORMAL` 是 GlobalTensor 默认策略；不是 persistent，也不代表所有内存强制命中 L2。专家输入、路由表和最终 output 原本就使用默认策略。SDK 的 WQE/SQ/CQ 缓存策略保持不变。发送暂存仍先完成 MTE3 再敲 DB，CQ 完成后才复用源槽；接收仍检查原有全部 flag，没有省略发布、清零或完成协议。
 
 每个 BS 正式预热前，所有版本都额外执行 4 次 `-x,-x,+x,+x` 正确性检查：只改变专家输出值，沿用同一套路由、地址、双 bank，不在调用之间强制清 flag。两个 bank 都必须读到新值；最后恢复原输入，检查不计入性能样本。开启接收/发送缓存的硬件一致性仍须目标 NPU 验证，不能用 CPU 模型通过代替。原有超时退出保留，失败不得作为有效性能结果。
 
-最新 EP32/HCCL、100 次 clean 样本：BS32 mean，base=59.28、all=55.76、lean=56.50、route=55.27 μs；route P50=54.17，min–max=51.63–75.94，P95=64.72 μs。route 比 all 的 mean 快0.49 μs，但 P95 高于 all 的59.07，尚需重复验证。保留 base/all/route，拆开 route-only 检查 lean 是否抵消了路由复用收益；route-plan 尚无 NPU 实测。
+最新EP32/HCCL、100次clean样本：BS32 mean为base=60.74、all=56.46、route-only=55.75 μs；route-only P50=55.32，min–max=53.17–68.49，P95=58.21 μs。route-only较同轮all mean快0.71 μs，但尚需复测。route-plan在BS48/64 mean为63.10/71.98 μs，仍保留为可选方案；最新附件没有BS256，不据此推断大BS回退。
 
 build_all.sh 自动安装到 py311_zyq，两台都需重编；run_all.sh 自动使用同一环境。ID 行保留 layout、control_l2、data_l2、ready、recv、remote_first，Host/Device/全 rank 核对缓存身份。干净版没有 profile 缓冲或核内采样分支；打点版是另一份 Device 库。base 对应 ref-profile，其余对应同名 `-profile`。扩展 suite_api=3，旧扩展会提示重编。
 
 schema 21 的 CSV/Perfetto 新增 `data_l2_policy`，每核仍为 272 words。P50 代表记录固定打印 `cache=mask m3=input/store_issue/drain g=load/check/calls m5=input_issue/input_wait/compute/store`，配合原有 `m4`、`rdma`、first/last Put、最晚 flag 的来源分析。`g` 把 ready 读取及其同步与 Vector 判断拆开；它们是累计 ticks，包含流水等待，不是硬件 cache miss/hit 计数。不能把不同核最大值相加，或将不同卡的 core-entry 时间直接相减当作网络单程时延。完整字段继续写入 Perfetto `profiled body` 参数。
 
-默认比较 all→route-only（仅路由复用）、route-only→route-plan（建表流水）、route→route-only（剥离 lean），保留 base 与原有最佳结果。需要复查缓存作用时，用 `--variants` 恢复 input6/control-only/TX-only/RX-only 对照。若关键等待下降但 clean mean/P50 不变，说明它可能不在关键路径，不能直接判为缓存无效。重点看 BS32/48/64，BS72/256 检查回退；保留 mean/min/max/P50/P99 和所有样本。缓存是否命中仍需硬件计数器确认。建议第二次反转 clean variants 的顺序复测以排除运行顺序影响。
+默认比较all→route-only（仅路由复用）、route-only→route-priority（DIRECT本机后置）、route-only→route-tx-bypass（只隔离TX缓存），保留base与既有对照。重点看BS32/48/64，BS72/256检查回退；保留mean/min/max/P50/P99和所有样本。缓存命中仍需硬件计数器确认。必要时反转clean版本顺序复测，排除运行顺序影响。
 
 `input6-l2-pipe` 的改动只在 M4 已选中至少两条可运行任务、且输出槽超过一个时生效：先把上一包放入独立 GM 槽并准备私有 WQE，执行下一条的读取/规约，然后等待上一包 MTE3 完成并发布，之后才打包当前结果。单任务、单槽、末条任务仍立即发送；不会带着未提交包去轮询 group flag 或进入 M5。CQ 仍保护 GM 复用，归约次序、Notify、SHMEM SDK、wire 均保持。相比旧的 eager-first 流水，它覆盖仅两条任务的小 BS；代价是首包可能稍晚下发，必须看 clean 总时延，不能只看 stage_wait 下降。
 
 现有 `rdma=包数/延后包数/延后间隔/stage_issue/stage_wait/put/quiet`、`q` 的 pipeline_issue、first/last Put 和 Tfreq 保留。schema 22 新增 `small=output_init_lanes/setup_ticks/meta_wait_ticks/single_task` 和 `direct_meta=cached/reloaded/active_lanes`，CSV/Perfetto 同步保存，仍为每核 272 words。lean 的 setup 包含在 ready_plan 内，meta_wait 仅表示重叠后剩余等待；累计计数不可相加当作独立流水。route 是否命中取决于本 rank 的接收行数，而非原始 BS，需看 cached/reloaded。schema 23 再追加 `route_plan=preload_rows/wait_ticks/gather_rows`，每核仍为 272 words；wait 仅为预取后剩余等待，gather_rows 是实际提取 rank 的行数。profile-only 的 `tail_inspect` 开销仍需单列，不能当作干净算子的瓶颈。测试详情与这轮 EP8/EP32 数据见 [发送流水实验](../ll_cpp_bench/TRANSFER_AB.md)。
+
+当前schema24为每核288 words，需重编所有选中库。二级打点新增 `txwait=prefix_remaining/copy_remaining/calls`：在当前payload DMA前记event6，原payload完成event7不变，两者都在原等待位置退休。它拆开WQE准备后前序MTE3工作/依赖与当前拷贝的剩余等待；不是完整DMA耗时或RDMA单程时延，前序也可能包含Vector→MTE3依赖。仅profile2增加该事件，clean和profile0/1不变。`priority=local_rows_deferred/extra_scan_ticks`记录本机后置行数及额外筛选成本。CSV及Perfetto的 `profiled body` 参数保存全部新增字段；不把累计ticks伪装成独立流水片段。profile事件和读时钟会扰动流水，验收仍看clean Event。
 
 EP32 两台分别编译：
 

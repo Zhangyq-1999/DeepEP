@@ -1,8 +1,12 @@
 #include <cassert>
 #include <iostream>
 #include <set>
+#include <array>
 #define DEEPEP_LL_RDMA 1
 #define DEEPEP_TEST_DEFERRED_MTE3 1
+#ifndef DEEPEP_TEST_PROFILE_LEVEL
+#define DEEPEP_TEST_PROFILE_LEVEL 2
+#endif
 #include "kernels/combine/low_latency/combine_rdma_return.h"
 #include "kernels/combine/low_latency/combine_core_layout.h"
 using namespace AscendC;
@@ -20,6 +24,19 @@ int main()
         std::vector<uint8_t> local((n+1U)*stride),remote(local.size()),stage(cores*LlRdma::kCoreBytes);
         std::vector<uint8_t> packet(bytes),low(bytes),scratch(128),quietScratch(128);
         std::vector<unsigned> targets,remoteTargets;
+        std::array<uint8_t,32> olderSrc{}, olderDst{};
+        olderSrc.fill(0x5a);
+        unsigned prefixChecks=0;
+        cycles=1000; // A nonzero simulated timestamp enables level-2 markers.
+        afterMte3Wait=[&](HardEvent event,uint32_t id) {
+            if(event==HardEvent::MTE3_S && id==6U) {
+                ++prefixChecks;
+                assert(olderDst==olderSrc);
+                assert(events[int(HardEvent::MTE3_S)][7]);
+                assert(!deferredMte3.empty()); // Current payload is STILL pending.
+                for(const auto& dma:deferredMte3)assert(dma.serial>mte3Fence[int(event)][id]);
+            }
+        };
         std::vector<std::vector<uint8_t>> expected;
         Model::local=local.data();Model::remote=remote.data();Model::pending.clear();
         Model::puts=Model::quiets=0;Model::onQuiet={};deferredMte3.clear();issuedMte3=0;
@@ -44,12 +61,12 @@ int main()
         HnsModel::state={local.data()};HnsModel::rank=rank;HnsModel::builds=HnsModel::published=0;
         HnsModel::heads.clear();
         HnsModel::beforePrepare=[](){assert(events[int(HardEvent::MTE3_S)][7]);assert(!deferredMte3.empty());};
-        HnsModel::beforePublish=[](){assert(!events[int(HardEvent::MTE3_S)][7]);assert(deferredMte3.empty());};
+        HnsModel::beforePublish=[](){assert(!events[int(HardEvent::MTE3_S)][7]);assert(!events[int(HardEvent::MTE3_S)][6]);assert(deferredMte3.empty());};
         unsigned fallbacks=0, deferred=0;
 #endif
 #ifdef DEEPEP_LL_COMBINE_PROFILE
         std::vector<uint64_t> record(CombineProfile::kWords*cores);
-        CombineProfile::DeviceProfile profile;profile.Init(reinterpret_cast<uint8_t*>(record.data()),2);
+        CombineProfile::DeviceProfile profile;profile.Init(reinterpret_cast<uint8_t*>(record.data()),DEEPEP_TEST_PROFILE_LEVEL);
         batch.SetCombineProfile(&profile);
 #endif
         const auto check=[&](const Model::Request& r){
@@ -73,6 +90,10 @@ int main()
             for(unsigned j=0;j<bytes/512U;++j)for(unsigned k=0;k<8U;++k){float one=1;std::memcpy(packet.data()+j*512U+480U+k*4U,&one,4);}
             expected.push_back(packet);
             const unsigned postsBefore=Model::puts;
+            if(cross) {
+                olderDst.fill(0);
+                DataCopy(GlobalTensor<uint8_t>{olderDst.data()},LocalTensor<uint8_t>{olderSrc.data()},32);
+            }
             const bool defer=(DEEPEP_LL_COMBINE_READY==11 || DEEPEP_LL_COMBINE_READY==15 || DEEPEP_LL_COMBINE_READY==21 || DEEPEP_LL_COMBINE_READY==22 || DEEPEP_LL_COMBINE_READY==23) && partial && cross && i%3U!=2U && i+1U<n && (DEEPEP_LL_COMBINE_READY<21 || DEEPEP_LL_COMBINE_READY==23 || i>0U);
 #if DEEPEP_LL_COMBINE_READY == 9 || DEEPEP_LL_COMBINE_READY >= 11
             HnsModel::peer=peer;
@@ -123,18 +144,25 @@ int main()
 #endif
 #ifdef DEEPEP_LL_COMBINE_PROFILE
         profile.Finish(rank,world,n);auto* r=record.data()+core*CombineProfile::kWords;
-        assert(r[CombineProfile::RdmaPackets]==Model::puts);
-        assert(r[CombineProfile::RdmaStageWaitCalls]==Model::puts);
+        const unsigned counted=DEEPEP_TEST_PROFILE_LEVEL==2?Model::puts:0U;
+        assert(r[CombineProfile::RdmaPackets]==counted);
+        assert(r[CombineProfile::RdmaWaitSplitCalls]==counted);
+        assert(prefixChecks==counted);
+        assert(r[CombineProfile::RdmaStageWaitCalls]==counted);
 #if DEEPEP_LL_COMBINE_READY == 9 || DEEPEP_LL_COMBINE_READY >= 11
-        assert(r[CombineProfile::WqePreparedPackets]==HnsModel::published);
-        assert(r[CombineProfile::WqeFallbackPackets]==fallbacks);
+        assert(r[CombineProfile::WqePreparedPackets]==(DEEPEP_TEST_PROFILE_LEVEL==2?HnsModel::published:0U));
+        assert(r[CombineProfile::WqeFallbackPackets]==(DEEPEP_TEST_PROFILE_LEVEL==2?fallbacks:0U));
 #if DEEPEP_LL_COMBINE_READY == 11 || DEEPEP_LL_COMBINE_READY == 15 || DEEPEP_LL_COMBINE_READY == 21 || DEEPEP_LL_COMBINE_READY == 22 || DEEPEP_LL_COMBINE_READY == 23
-        assert(r[CombineProfile::RdmaDeferredPackets]==deferred);
+        assert(r[CombineProfile::RdmaDeferredPackets]==(DEEPEP_TEST_PROFILE_LEVEL==2?deferred:0U));
 #endif
 #else
         assert(r[CombineProfile::MtePackPackets]==(partial?Model::puts:0U));
 #endif
 #endif
+#ifndef DEEPEP_LL_COMBINE_PROFILE
+        assert(prefixChecks==0U);
+#endif
+        afterMte3Wait={};
         for(auto& direction:events)for(bool live:direction)assert(!live);
         ++cases;
     }

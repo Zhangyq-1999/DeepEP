@@ -283,6 +283,11 @@ inline void profile_header(std::ostream& out)
         "direct_route_preload_rows",
         "direct_route_preload_wait_ticks",
         "direct_route_gather_rows",
+        "rdma_prefix_wait_ticks",
+        "rdma_copy_wait_ticks",
+        "rdma_wait_split_calls",
+        "direct_local_deferred_rows",
+        "direct_priority_scan_ticks",
     };
     static_assert(sizeof(names) / sizeof(names[0]) == CombineProfile::Count, "profile CSV fields");
     for (uint32_t w = 0; w < CombineProfile::Count; ++w) out << (w ? "," : "") << names[w];

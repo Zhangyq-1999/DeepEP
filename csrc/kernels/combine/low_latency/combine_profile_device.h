@@ -7,8 +7,9 @@
 #endif
 
 namespace CombineProfile {
-// No new synchronization in the measured path. Accumulate in local scalar state
-// and export once, after the original kernel's final drain/flush.
+// Clean builds have no profiling synchronization. Detail-mode transfer
+// diagnostics split an existing MTE3 wait with an extra prefix event; export
+// once, after the original kernel's final drain/flush.
 class DeviceProfile {
 public:
     __aicore__ inline void Init(__gm__ uint8_t* address, uint32_t level)

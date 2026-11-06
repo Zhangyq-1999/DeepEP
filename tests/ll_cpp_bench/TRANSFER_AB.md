@@ -722,3 +722,79 @@ DirectRouteLoadTicks包含类型DMA、路由发起/剩余等待，重叠的Vecto
 预取退休、UB边界保护和延迟MTE2。另检查新模式的ready调度、ordered reduction、
 M4→M5事件、异步RDMA源生命周期、4/16 rank布局的clean/profile模板、构建身份、
 共享Dispatch及紧凑报告/Perfetto。无本机CANN/NPU，不将Host通过视为设备性能结果。
+
+
+## 2026-11-06：DIRECT保留归属的跨机优先与TX缓存隔离
+
+最新附件 b90b69ff-946f-4fc6-8b31-2a8755da923c：EP32/HCCL、H3584、
+K8、E384、BF16、random seed0、warmup10、100 clean/10 profile。
+下表均为每轮global rank-MAX Event的mean，单位μs；未移除样本。
+附件只有BS32/48/64完整打点及BS72部分打点，没有BS256。
+
+| BS | base | all | route | route-only | route-plan |
+| --- | --- | --- | --- | --- | --- |
+| 32 | 60.74 | 56.46 | 56.87 | 55.75 | 56.43 |
+| 48 | 69.50 | 64.55 | 64.77 | 64.41 | 63.10 |
+| 64 | 79.24 | 72.87 | 72.11 | 72.49 | 71.98 |
+| 72 | 83.67 | 76.15 | 76.49 | 77.23 | 76.82 |
+
+BS32 route-only：P50=55.32，min–max=53.17–68.49，P95=58.21，CV=3.70%。
+同轮all：P50=56.09，min–max=53.06–73.27，P95=59.09，CV=5.10%。
+route-only相对all mean减少0.71、P50减少0.77μs，尚需同条件复测；
+route-plan对BS48/64有价值，继续可选，不删除代码或旧构建。
+
+代表profile里，route-only的R(rank9/core29)只有1个M4跨机包，
+compute_issue333、stage_wait10574、put1118 ticks；同记录tail_inspect11667
+是诊断开销，不能当成clean瓶颈。S(rank9/core1)缓存6条DIRECT元数据、
+无逐条重载。route-plan的S(rank12/core11)预取254行、剩余等待8ticks、
+Gather125行，确认预取路径实际生效；但代表核不同，不能直接相减作收益。
+BS32末次缺失贡献10/10来自RDMA/P，来源分散；这不证明网络服务慢。
+`RdmaStageWaitTicks`等待的是提交Put前的MTE3完成，可能被同核前序
+MTE3工作及Vector依赖拖住，绝不能当作RDMA传输时延。
+
+### 两个独立对照
+
+- `input6-l2-route-priority`（ready30/data7）：基于ready28，只推迟DIRECT
+  本机发送。按原server序筛选并推进owner游标，记录本机首任务和数量；
+  远端提交后重新筛本机行并发送。保留每条payload的原拥有核、QP、远端
+  server次序、全部payload/flag字节和原SQ/CQ生命周期，不用全局remote-first
+  改写M4任务归属。每核有本机任务才重筛，额外成本有打点。可能提早远端
+  下发，也可能因额外筛选或本机结果推迟变慢，需要clean验收。
+- `input6-l2-route-tx-bypass`（ready28/data5）：保持route-only调度，只旁路
+  RDMA注册GM发送暂存区的L2，控制区/M3/M5仍为原缓存策略。用于识别TX
+  缓存是否增加发送前等待，不将其推广为全局关闭L2；SDK不改。
+
+M4已有的可运行跨机任务优先调度保持；两项实验都不修改规约顺序、
+Notify、输入输出lane数、28/28分核及完成契约，也不增加UB。
+DIRECT重排只在多server且逻辑Group等于物理每机rank数时开启，保持
+单机/不匹配组的旧次序；覆盖双机4/16rank和四机16rank即EP64。
+默认base/all/route-only/route-priority/route-tx-bypass，加对应profile，
+仍5+5构建。route/route-plan转可选，不再继续叠加默认编译量。
+
+### 区分发送前等待（schema24）
+
+每核记录扩为288 words，新增：
+`rdma_prefix_wait_ticks`、`rdma_copy_wait_ticks`、`rdma_wait_split_calls`、
+`direct_local_deferred_rows`、`direct_priority_scan_ticks`。
+
+仅二级profile在当前payload DMA前Set MTE3_S event6；原payload完成
+Set event7不变，WQE准备期间不提前等待。原来等待event7的位置，先
+Wait6并读时钟、再Wait7并读时钟，最后才提交Put。prefix包含进入该
+边界前未完成的MTE3工作及依赖（包括可能的Vector→MTE3依赖）；copy
+是之后的剩余等待。它们均是WQE准备重叠后的余额，不是完整DMA服务
+时间，也不是网卡/网络时延。原stage_wait保留，包含打点本身的开销；
+不要强行用两个小计精确还原该外层计时。profile0/1不设置event6，
+clean编译完全去除新事件和分支；profile2的新事件和时钟会扰动流水。
+
+回显`txwait=prefix/copy/calls`，DIRECT的`priority=local_rows/scan_ticks`。
+CSV和Perfetto的profiled body参数保留全部新计数；累计ticks不伪装成
+独立时间片。现有阶段图、来源/频率及62KiB分块继续保留，旧CSV仍支持。
+
+Host模型以原实现的逐核完整任务序列为oracle，稳定分区后比较DIRECT
+全部payload/flags/目标/所有权，包含1/2/4hosts、每机4/16rank、0/1/17/
+256/511/512/513/2049行、H256/3584/7168及512边界回退。延迟MTE3/NIC模型
+检查event6仅退休前序DMA、event7前当前payload仍待完成、DB只能在两者
+退休后发布、CQ保护GM源槽复用，并检查profile0/1无新增事件。另验证
+M4→M5事件、构建身份、shared Dispatch、CSV/Perfetto及报告大小。
+没有CANN/NPU，不将Host测试通过写作设备正确性或性能收益；两台需
+重编全部选中库，用现有四代正确性检查及clean mean/P50/P95/min/max验收。

@@ -126,7 +126,9 @@ def test_dependency_work_is_not_rendered_as_blocking_wait(reporter, tmp_path):
                        partial_pair_groups=4, partial_vector_barriers=16, partial_stream_steps=7, partial_front_loads=6,
                        partial_output_init_lanes=1, partial_setup_ticks=32, ready_metadata_wait_ticks=7,
                        ready_single_tasks=1, direct_metadata_cached_rows=2, direct_metadata_reloads=0, direct_active_lanes=2,
-                       direct_route_preload_rows=32, direct_route_preload_wait_ticks=7, direct_route_gather_rows=17)
+                       direct_route_preload_rows=32, direct_route_preload_wait_ticks=7, direct_route_gather_rows=17,
+                       rdma_prefix_wait_ticks=31, rdma_copy_wait_ticks=12, rdma_wait_split_calls=2,
+                       direct_local_deferred_rows=3, direct_priority_scan_ticks=9)
     write_csv(path, fields, rows)
     subprocess.run([str(reporter), '--perfetto', str(tmp_path)], check=True, capture_output=True)
     trace = read_trace(next((tmp_path/'perfetto-local').glob('*p50-*.json')))
@@ -150,6 +152,8 @@ def test_dependency_work_is_not_rendered_as_blocking_wait(reporter, tmp_path):
     assert (args['partial_output_init_lanes'], args['partial_setup_ticks'], args['ready_metadata_wait_ticks'], args['ready_single_tasks']) == (1, 32, 7, 1)
     assert (args['direct_metadata_cached_rows'], args['direct_metadata_reloads'], args['direct_active_lanes']) == (2, 0, 2)
     assert (args['direct_route_preload_rows'], args['direct_route_preload_wait_ticks'], args['direct_route_gather_rows']) == (32, 7, 17)
+    assert (args['rdma_prefix_wait_ticks'], args['rdma_copy_wait_ticks'], args['rdma_wait_split_calls']) == (31, 12, 2)
+    assert (args['direct_local_deferred_rows'], args['direct_priority_scan_ticks']) == (3, 9)
     assert spans['partial plan']['dur'] == pytest.approx(.002)
 
 

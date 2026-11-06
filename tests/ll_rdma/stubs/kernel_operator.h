@@ -7,6 +7,7 @@
 #include <chrono>
 #include <vector>
 #include <atomic>
+#include <functional>
 #define __aicore__
 #define __gm__
 #define __ubuf__
@@ -26,6 +27,7 @@ inline thread_local std::vector<DeferredMte2Copy> deferredMte2;
 struct DeferredMte3Copy { void* dst; const void* src; uint32_t bytes; uint64_t serial; };
 inline thread_local std::vector<DeferredMte3Copy> deferredMte3;
 inline thread_local uint64_t issuedMte3=0, mte3Fence[12][8]{};
+inline thread_local std::function<void(HardEvent,uint32_t)> afterMte3Wait;
 #endif
 template<HardEvent E> void SetFlag(uint32_t id) {
     if(id>=8 || events[int(E)][id]) throw std::runtime_error("event reused while live");
@@ -44,6 +46,7 @@ template<HardEvent E> void WaitFlag(uint32_t id) {
             auto copy=deferredMte3.front();std::memcpy(copy.dst,copy.src,copy.bytes);
             deferredMte3.erase(deferredMte3.begin());
         }
+        if(afterMte3Wait) afterMte3Wait(E,id);
     }
 #endif
 #if defined(DEEPEP_TEST_ROUTE_THREADS) || defined(DEEPEP_TEST_DEFERRED_MTE2)

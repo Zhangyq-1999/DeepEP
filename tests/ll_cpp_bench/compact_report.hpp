@@ -157,6 +157,11 @@ void compact_record(const Record& r, bool brief = false)
             std::cout << " route_plan=" << r[DirectRoutePreloadRows] << '/'
                       << r[DirectRoutePreloadWaitTicks] << '/' << r[DirectRouteGatherRows];
     }
+    if (!r.receive && r[DirectLocalDeferredRows])
+        std::cout << " priority=" << r[DirectLocalDeferredRows] << '/' << r[DirectPriorityScanTicks];
+    if (r[RdmaWaitSplitCalls])
+        std::cout << "\n  txwait=" << r[RdmaPrefixWaitTicks] << '/' << r[RdmaCopyWaitTicks]
+                  << '/' << r[RdmaWaitSplitCalls];
     if (brief) {
         std::cout << "\n  rdma=" << r[RdmaPackets] << '/' << r[RdmaDeferredPackets]
                   << '/' << r[RdmaDeferGapTicks] << '/' << r[RdmaStageIssueTicks] << '/' << r[RdmaStageWaitTicks]
@@ -353,6 +358,7 @@ void suite_report(const fs::path& root)
                  "X=same-sample global maxima r/c:ticks; prep/drained=own-entry offsets, notify=local_wait/publish, group=W(wait)|O(observe)/missing_rank/core/count, inputwait=local/get; not additive\n"
                  "top4 cumulative ticks: s.=stage_, d.=direct_, m4.=partial_, m5.=final_, g.=ready_; overlapping costs are not additive.\n"
                  "rdma=n/deferred/gap/stage_issue/stage_wait/put/quiet; stage=wait_calls/pairs/prefetch_calls; stream=packed_posts/eager/ticks\n"
+                 "txwait=prefix_remaining/copy_remaining/calls (profile-only event split, not pure DMA latency); priority=local_rows_deferred/extra_scan_ticks\n"
                  "lg=local/get; xfer=prepare_ticks/prepared/fallback/mte_pack; input=lanes/early_reads/used_reads; vec=pair_groups/barriers; arith=stream_steps/front_loads\n"
                  "probe=miss/calls/miss_ticks/flags/confirmed; N=r/c local_wait/publish miss/calls/max_probe missing_core/count stores inspect\n"
                  "P=own-entry rank/core:first_put/last_put/partial_end/packets\n"

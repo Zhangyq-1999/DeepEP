@@ -9,12 +9,13 @@ namespace CombineDedup {
 // Match the reference Dispatch's default-L2 control views. Payload and
 // data-with-flag receive views are deliberately outside this policy.
 constexpr bool kCombineControlL2 = DEEPEP_LL_COMBINE_READY == 19 || DEEPEP_LL_COMBINE_READY == 20 ||
-                                  (DEEPEP_LL_COMBINE_READY >= 23 && DEEPEP_LL_COMBINE_READY <= 29);
+                                  (DEEPEP_LL_COMBINE_READY >= 23 && DEEPEP_LL_COMBINE_READY <= 30);
 constexpr bool kCombineLeanSetup = DEEPEP_LL_COMBINE_READY == 24 || DEEPEP_LL_COMBINE_READY == 26 ||
                                    DEEPEP_LL_COMBINE_READY == 27;
 constexpr bool kCombineSingleTask = DEEPEP_LL_COMBINE_READY >= 25 && DEEPEP_LL_COMBINE_READY <= 27;
-constexpr bool kCombineDirectRouteCache = DEEPEP_LL_COMBINE_READY >= 27 && DEEPEP_LL_COMBINE_READY <= 29;
+constexpr bool kCombineDirectRouteCache = DEEPEP_LL_COMBINE_READY >= 27 && DEEPEP_LL_COMBINE_READY <= 30;
 constexpr bool kCombineDirectRoutePlan = DEEPEP_LL_COMBINE_READY == 29;
+constexpr bool kCombineDirectRemoteFirst = DEEPEP_LL_COMBINE_READY == 30;
 // Host build identity: modes 0..3 retain their original two-bit encoding.
 // Modes 4..7 use the unused notify=3 tag; ready modes cannot enable notify.
 // This keeps the upper 16 bits available for the existing poll-nop value.
@@ -22,7 +23,7 @@ constexpr bool kCombineDirectRoutePlan = DEEPEP_LL_COMBINE_READY == 29;
 // that combination is forbidden for coalescing, and ready excludes coalesce.
 constexpr uint32_t CombineReadyOptions(uint32_t mode)
 {
-    // 28=route reuse only, 29=route reuse + overlapped selected-row plan.
+    // 28=route reuse only, 29=selected-row plan, 30=stable DIRECT remote-first.
     // Another reserved notify=3 tag; leave the upper 16 poll-nop bits intact.
     if (mode >= 28U) return (3U << 12U) | (1U << 10U) | (1U << 11U) | ((mode - 28U) << 14U);
     // 24=lean setup, 25=single task, 26=both, 27=both + DIRECT route reuse.

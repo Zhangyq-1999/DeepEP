@@ -21,9 +21,8 @@
 已有配套 SHMEM SDK 时，两台机器各执行以下命令。脚本默认使用 `/usr/local/Ascend/cann-9.2.T101`、`/usr/local/mpich-3.2.1` 和当前仓库的 `third-party/shmem/install/shmem`。已设置的 `ASCEND_HOME_PATH`、`MPI_HOME`、`SHMEM_ROOT` 优先于这些路径。脚本自动加载所选 CANN 的 `set_env.sh`，并配置 MPI、SHMEM 的库路径。
 
 ```bash
-git fetch origin
 git switch perf/ll-combine-small-batch
-git pull --ff-only origin perf/ll-combine-small-batch
+git pull --ff-only https://github.com/Zhangyq-1999/DeepEP.git perf/ll-combine-small-batch
 bash tests/ll_cpp_bench/build_all.sh
 ```
 
@@ -35,9 +34,9 @@ bash tests/ll_cpp_bench/build_all.sh
 | --- | --- | --- |
 | `base` | 冻结的上游原版 | 关闭 |
 | `input6-l2-all` | 实测对照，控制区及三个数据区使用 NORMAL 策略 | 关闭 |
-| `input6-l2-route` | 已测方案：lean + DIRECT 复用 UB 路由快照 | 关闭 |
 | `input6-l2-route-only` | all + DIRECT 路由复用，移除 lean 改动 | 关闭 |
-| `input6-l2-route-plan` | route-only + 提前读表、按选中行提取 rank | 关闭 |
+| `input6-l2-route-priority` | route-only + 保留核/QP归属，DIRECT 本机发送后置 | 关闭 |
+| `input6-l2-route-tx-bypass` | route-only + 仅 RDMA 发送暂存区旁路 L2 | 关闭 |
 | `ref-profile` | base 对应打点版 | 开启 |
 | `input6*-profile` | 与对应干净版相同策略 | 开启 |
 
@@ -45,15 +44,17 @@ bash tests/ll_cpp_bench/build_all.sh
 
 EP32 收尾修复后的实测中，`wqe-prep` 在 BS48/64 的均值比 snapshot 低约 2.20%/2.84%，BS32 基本持平，尚需重复验证。它在独立 128 B UB 提前构造 WQE，payload 完成后才发布 SQ/doorbell。新增 `wqe-prefetch` 在下一条任务已经就绪时，先发起其输入 MTE2，再等上一包 MTE3 并提交 WQE；不会等待下一条完整规约。末条任务和单输出 lane 仍立即提交，M5 前排空待提交包，最终 quiet 保留。新方案尚待 CANN/NPU 验证。`mte-pack` 收益不稳定，保留为可选项，不再默认编译。完整数据、生命周期与打点说明见 [TRANSFER_AB.md](TRANSFER_AB.md)。
 
-最新 9b3d243 的 EP32/HCCL 实测 `input6` 的 BS32/48/64 均值为 57.28/65.49/74.26 μs，仍是小 BS 对照；`input-pair` 分别慢 1.41/0.69/0.43 μs，改为可选项。保留 `input-pipe`：它在 BS256 的均值为 174.94 μs，比同轮 input6 快 8.85 μs，但 BS32–64 尚无稳定收益。
+此前 9b3d243 的 EP32/HCCL 实测 `input6` 的 BS32/48/64 均值为 57.28/65.49/74.26 μs，仍是小 BS 对照；`input-pair` 分别慢 1.41/0.69/0.43 μs，改为可选项。保留 `input-pipe`：它在 BS256 的均值为 174.94 μs，比同轮 input6 快 8.85 μs，但 BS32–64 尚无稳定收益。
 
-当前默认保留 base、稳定对照 all、已测 BS32 mean55.27 μs 的 route，以及 route-only、route-plan 两个新实验，共五个干净版及五个打点版。lean 单独版本退为可选；所有旧实验仍可用 `--variants` 选择。
+最新 EP32/HCCL 这轮 BS32 clean mean：base=60.74、all=56.46、route-only=55.75 μs；route-only P50=55.32、min–max=53.17–68.49、P95=58.21 μs。当前默认保留这三个对照，加入 route-priority 和 route-tx-bypass，共五个干净版及五个打点版。route、route-plan 改为可选，所有旧实验仍可用 `--variants` 选择。BS48/64 上 route-plan 的 mean 为63.10/71.98 μs，保留这一方案供后续形状选择，不宣称已经对所有 BS 选出最佳实现。
 
-route-only 恢复 all 的 M4 初始化及多/单任务筛选，只加入 DIRECT 的整表路由复用。route-plan 再将小表读取提前，与 DIRECT 类型筛选重叠，然后直接按选中行号 Gather rank，省去整张 rank 数组的提取及二次压缩。两者保持 28/28 半区、6 个 M4 输入槽、所有输出槽初始化、首尾包立即回传、L2 和累加顺序。最多缓存512行接收路由，大表回退；不新增 UB，空 DIRECT 路径也必须退休预取。详细数据/生命周期见 [TRANSFER_AB.md](TRANSFER_AB.md)。
+route-only 恢复 all 的 M4 初始化及多/单任务筛选，只加入 DIRECT 的整表路由复用。route-priority 在此基础上推迟 DIRECT 本机发送，保留每条任务原来的核、QP和远端 server 次序；代价是有本机任务的核多筛选一次本机行。它不改变已有的 M4 跨机就绪任务优先策略。route-tx-bypass 则仅把 data_l2 从7改为5，保留控制区、M3和M5的缓存策略，用于隔离 RDMA 发送暂存区的缓存影响。两项实验分别对比 route-only，不叠加。28/28分核、6个M4输入槽、所有输出槽初始化、规约及完成协议保持。支持每机4/16 rank及四机EP64；逻辑组不等于物理主机或单机时不调整 DIRECT 次序。详细数据/生命周期见 [TRANSFER_AB.md](TRANSFER_AB.md)。
 
 每版预热前均执行 `-x,-x,+x,+x` 四代正确性检查，复用两个 bank 且不逐轮强制清 flag，然后恢复原输入；检查不计入性能采样。原始 base 保持冻结，SDK 和 CQ 保护源槽的规则不变。
 
-schema 22 追加七个字段，schema 23 再追加 `route_plan=preload_rows/wait_ticks/gather_rows`，每核仍为 272 words。wait 为读表重叠后的剩余等待，gather_rows 是实际提取 rank 的行数；不是额外的流水段。回显新增 `small=output_init_lanes/setup_ticks/meta_wait_ticks/single_task` 和 `direct_meta=cached/reloaded/active_lanes`，CSV/Perfetto 同步保存。lean 的 setup 包含在 ready_plan 中，meta_wait 是重叠后剩余等待；它们不是独立可加的流水段。现有 M3、group-ready、M4、RDMA/CQ、M5 和拖尾计数保留。这些是软件打点，不是硬件 L2 命中计数。新实验尚待 NPU 正确性及性能验证。
+当前 schema 24 每核288 words，需两台重编。新增 `txwait=prefix_remaining/copy_remaining/calls`：仅二级打点在当前 payload DMA 前放置 MTE3→Scalar event6，并在原 event7 等待位置依次退休两个事件，拆分 WQE 准备后前序队列/依赖的剩余等待和当前拷贝的剩余等待。前者也可能包含 Vector→MTE3 依赖，不是纯粹的前一个包时间；后者不是完整 DMA 耗时，二者都不是网络单程时延。原 `stage_wait` 保留。profile增加的事件与读时钟可能扰动流水，性能以 clean Event 为准，clean/一级打点不增加此事件。
+
+`priority=local_rows_deferred/extra_scan_ticks` 记录本机后置任务数及额外筛选成本。新增计数进入 CSV 和 Perfetto 的 `profiled body` 参数，不伪造独立时间片。schema22/23的 `small`、`direct_meta`、`route_plan` 仍保留，旧CSV仍可读取。现有 M3、group-ready、M4、RDMA/CQ、M5 和拖尾计数不删减。这些是软件打点，不是硬件L2命中计数；新实验尚待NPU正确性及性能验证。
 
 两台重编：`bash tests/ll_cpp_bench/build_all.sh --ranks-per-host 16`；第一台运行 `bash tests/ll_cpp_bench/run_all.sh --ep 32 --ranks-per-host 16`，第二台复制打印的加入命令。省略拓扑参数即为双机后四卡 EP8。完整缓存策略对照见 [Python 用例](../ll_python_bench/README.md)。
 
