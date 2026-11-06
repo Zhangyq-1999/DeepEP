@@ -27,7 +27,7 @@ git pull --ff-only origin perf/ll-combine-small-batch
 bash tests/ll_cpp_bench/build_all.sh
 ```
 
-`build_all.sh` 默认更新以下 8 个构建目录，每个构建使用 4 个编译任务。Dispatch 用于准备 Combine 的输入和路由，同一配置只编译一次，各版本复用它的目标文件。每个版本再单独编译 Combine，并链接成独立的 kernel 库。
+`build_all.sh` 默认更新以下 10 个构建目录，每个构建使用 4 个编译任务。Dispatch 用于准备 Combine 的输入和路由，同一配置只编译一次，各版本复用它的目标文件。每个版本再单独编译 Combine，并链接成独立的 kernel 库。
 
 已有目录继续用于增量编译。只修改 Combine 时，Dispatch 无需重编；修改 Dispatch 或它依赖的头文件时，构建系统自动重编受影响的部分。共享目标文件保存在 `build/ll-cpp-dispatch`，不同编译器、SDK 和每机 rank 数使用独立目录。更新代码后，两台机器都执行一次 `build_all.sh`，更新所有选中的版本。
 
@@ -35,12 +35,14 @@ bash tests/ll_cpp_bench/build_all.sh
 | --- | --- | --- |
 | `base` | 冻结的上游原版 | 关闭 |
 | `input6` | wqe-prep + 最多 6 个 M4 输入槽 | 关闭 |
-| `input-interleave` | input6，仅将原发送组放在奇数物理 AIV、接收组放在偶数物理 AIV | 关闭 |
-| `input-l2` | input-interleave，控制区发布/读取/清零改用默认 L2，payload 仍旁路 | 关闭 |
+| `input6-l2` | input6 原半区分核，prepare/ready 控制区使用默认 L2 | 关闭 |
+| `input6-r32` | input6 改为 24 个 DIRECT 核、32 个接收核（56 AIV 时） | 关闭 |
+| `input6-remote` | input6 将跨机优先前移到 DIRECT 遍历和 M4 建表/任务分配 | 关闭 |
 | `ref-profile` | 实验开关全部关闭 | 开启 |
 | `input6-profile` | 与 input6 相同 | 开启 |
-| `input-interleave-profile` | 与 input-interleave 相同 | 开启 |
-| `input-l2-profile` | 与 input-l2 相同 | 开启 |
+| `input6-l2-profile` | 与 input6-l2 相同 | 开启 |
+| `input6-r32-profile` | 与 input6-r32 相同 | 开启 |
+| `input6-remote-profile` | 与 input6-remote 相同 | 开启 |
 
 优化和验收以 **BS32、48、64** 为主，BS72 作邻近对照，BS256 只检查回退。上一轮 EP8 干净版 ready-snapshot 的三个 BS 的 P50 分别为 57.11、63.56、70.19 μs，增加接收核没有持续改善这三个场景。ready-r32、ready-r36、stage-stream、plan-compact 保留为可选实验，不再默认编译运行。
 
@@ -48,9 +50,11 @@ EP32 收尾修复后的实测中，`wqe-prep` 在 BS48/64 的均值比 snapshot 
 
 最新 9b3d243 的 EP32/HCCL 实测 `input6` 的 BS32/48/64 均值为 57.28/65.49/74.26 μs，仍是小 BS 对照；`input-pair` 分别慢 1.41/0.69/0.43 μs，改为可选项。保留 `input-pipe`：它在 BS256 的均值为 174.94 μs，比同轮 input6 快 8.85 μs，但 BS32–64 尚无稳定收益。
 
-本轮 `input-interleave`（ready18）仅改变 input6 的物理核放置。56 AIV 下，原逻辑发送核 0–27 映射到物理 1、3、…、55；接收核 28–55 映射到物理 0、2、…、54；通知核 48–55 映射到物理 40、42、…、54。所有核仍执行各自的 M2 本卡准备，接收组仍负责 M4 机内规约与跨机回传、M5 最终规约，并非只有奇数核才发 RDMA。任务分片、通知表索引沿用逻辑核号，QP、RDMA 暂存、打点及拖尾生产者输出沿用物理核号。`summary.csv` 的 `core_layout` 区分 `halves` 与 `odd-send-even-receive`，Perfetto 按物理 AIV 显示角色。
+11 月 6 日最新 EP32/HCCL 数据中，input6 的 BS32/48/64 均值为 56.94/66.03/74.22 μs；奇偶布局 input-interleave 为 58.79/70.29/79.20 μs，在其上开控制区 L2 的 input-l2 为 58.25/67.91/78.76 μs。因此保留 input6 为已测对照，将奇偶两版移出默认，仍可用 `--variants` 复测。不能从奇偶布局上的收益推断原布局开 L2 必然有效，本轮 input6-l2 单独检验它。
 
-默认保留原始 base 和已测 input6；C++ 共 4 个干净版 + 4 个打点版。input-stream、input-front、input-pipe 等旧实验继续通过 `--variants` 选择。input-interleave 不调整 UB、累加序、L2 策略或完成协议，用于单独检验相邻 AIV 的资源竞争假设。input-l2（ready19）在其上启用控制区默认 L2：prepare 的发布/轮询/清零、server-ready 的发布/轮询/清零均使用默认视图；payload、块尾 flag 和 RDMA 暂存不变。控制区只在本物理机内发布，跨机 payload 仍走原 RDMA。此策略参考最新 Dispatch 的 count/cumsum 修改；该分支的 payload 开 L2 实验已回退。summary.csv/Python ID 的 control_l2=1 标识新策略。只支持发送/接收等分，显式不等分配置会拒绝执行；每机 4/16 rank 以及四机 EP64 的索引均保留。需要重新编译，尚无此次改动的 NPU 编译和性能结果。详见 [TRANSFER_AB.md](TRANSFER_AB.md)。
+参考 zzh 分支 fb97fbf 的跨机优先与接收核配比策略，本轮增加 input6-r32 和 input6-remote。input6 原就绪调度已经优先选可运行的跨机任务；remote 版进一步改变前面的遍历/建表顺序及任务分配，不能称为首次跨机优先。32 接收核可使 BS32 的 M5 每核最多处理 1 个 token、BS64 最多 2 个，但 DIRECT 核减少，收益需实测。已有 ready-r32 使用较早的 ready4 路径，与本轮 input6 组合不同；此前无稳定收益，不能作为这次的提速证据。
+
+默认共 5 个干净版 + 5 个打点版，冻结 base 和 input6 的执行策略不变。`input6-fused` / `input6-fused-profile` 可选地叠加控制 L2、32 接收核、跨机优先；默认先测三个单项以便归因。input6-l2（ready20）与旧 input-l2（ready19）不同：前者保留半区分核，后者为奇偶分核。控制 L2 同时覆盖 prepare/ready 的发布、轮询、清零；payload、data-with-flag、RDMA 暂存继续旁路。不增加 UB 预算，不改累加顺序、通知协议、QP 所有权和 CQ 回收。summary.csv/Python ID 保留核布局、接收核数和控制 L2 信息，原有阶段打点、拖尾诊断和 Perfetto 导出继续可用；Python ID 另列 ready_mode 和 remote_first。每机 4/16 rank、四机 EP64 的任务覆盖已做 CPU 检查，真实 CANN/NPU 编译、缓存可见性和性能仍待设备验证。参考审计和实验判据见 [TRANSFER_AB.md](TRANSFER_AB.md)。
 
 打点 schema 18 新增 `input=lanes/early_reads/used_reads`，分别为 M4 输入槽数、就绪后提前读取的贡献数、实际消费的提前读取数；两者之差是已安全释放但未使用的读。新增计数也写入 CSV/Perfetto。schema 19 增加 `vec=pair_groups/barriers`（M4 两项配对次数/显式 Vector 屏障次数，含最终 Cast 屏障），每核记录从 256 words 扩为 272 words；需重新编译打点库，旧 CSV 仍可读取。最慢样本回显保留接收核流水、RDMA 和拖尾，完整计数留在 CSV/Perfetto，P50 样本仍完整展示。
 
@@ -69,7 +73,7 @@ bash tests/ll_cpp_bench/run_all.sh --variants ready-snapshot,stage-stream,plan-c
 
 打点 schema 16 增加 `route_first_hop_rows`、`route_filter_rows`、`route_compact_ticks`。回显的 `compact=a/b/c` 分别对应有效 FIRST_HOP 行数、所有 server 筛选输入行数之和、压缩准备段的打点 ticks。原 snapshot 的筛选量为 server 数 × 完整行数，新版为 server 数 × FIRST_HOP 行数。压缩计时是本核发出 Vector 指令及屏障的区间，整体建表耗时看 `plan_select_ticks`；不把累计耗时伪装成独立流水段。CSV 与 Perfetto 的 `profiled body` 参数包含这些字段。
 
-`compact=v3` 回显在每个 BS 开头保留完整版本表，后面的 D/IQR/Tfreq 用表中 phase 编号引用版本，减少重复名字；保留 P50、最慢轮、拖尾来源和全量 CSV。回显检查覆盖 5 个 BS、最多 10 个版本，限制在 62 KiB 内；当前默认 8 个版本。增加 BS 或自选更多版本时可分次粘贴。
+`compact=v3` 回显在每个 BS 开头保留完整版本表，后面的 D/IQR/Tfreq 用表中 phase 编号引用版本，减少重复名字；保留 P50、最慢轮、拖尾来源和全量 CSV。回显测试覆盖默认 5 个 BS、10 个版本，合成完整诊断样本限制在 62 KiB 内。增加 BS 或自选更多版本时可分次粘贴。
 
 原有 remote、notify-simt、notify-core、聚合发送、SIMT 筛选等实验继续通过 `--variants` 选择；不在默认构建中。RDMA hidden 聚合实验见 [COALESCE_AB.md](COALESCE_AB.md)。
 

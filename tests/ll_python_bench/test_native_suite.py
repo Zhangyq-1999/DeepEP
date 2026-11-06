@@ -64,6 +64,7 @@ inline CoreConfig query_ll_core_config() {return {56};}
 #include <string>
 #include <vector>
 #include "acl/acl.h"
+#include "kernels/combine/low_latency/combine_core_layout.h"
 namespace llbench {
 constexpr uint64_t workspaceBytes=8ULL<<30;
 struct Options {
@@ -124,7 +125,8 @@ PYBIND11_MODULE(_ll_py_debug,m) {
     for index in range(2):
         path=tmp_path/f"variant{index}.pyd"
         subprocess.run([zig,"c++","-std=c++17","-shared","-O0","-DMS_WIN64",
-                        f"-DTEST_VARIANT={index}","-I",str(tmp_path),"-I",str(HERE),
+                        f"-DTEST_VARIANT={index}", f"-DDEEPEP_LL_COMBINE_READY={20 if index else 12}",
+                        "-I",str(tmp_path),"-I",str(HERE),"-I",str(HERE.parents[1]/"csrc"),
                         "-I",pybind11.get_include(),"-I",sysconfig.get_path("include"),
                         str(tmp_path/"module.cpp"),
                         str(Path(sys.base_prefix)/"libs"/f"python{sys.version_info.major}{sys.version_info.minor}.lib"),
@@ -138,6 +140,10 @@ PYBIND11_MODULE(_ll_py_debug,m) {
     borrowed=opt.Bench(owner.share())
     assert odebug.counts()[:2]==(0,0)
     assert owner.identity()["return_options"]==0 and borrowed.identity()["return_options"]==1
+    assert owner.identity()["ready_mode"]==12 and borrowed.identity()["ready_mode"]==20
+    assert owner.identity()["core_layout"]==borrowed.identity()["core_layout"]=="halves"
+    assert not owner.identity()["control_l2"] and borrowed.identity()["control_l2"]
+    assert not owner.identity()["remote_first"] and borrowed.identity()["remote_first"]
     with pytest.raises(RuntimeError,match="Close borrowed"): owner.close()
     with pytest.raises(RuntimeError,match="Release the previous"): owner.reset_workspace()
     borrowed.prepare(48); borrowed.sample(lambda:None,True); borrowed.close()

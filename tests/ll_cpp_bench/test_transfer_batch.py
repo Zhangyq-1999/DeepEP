@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.mark.parametrize("physical", [4, 16])
-@pytest.mark.parametrize("mode", [9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19])
+@pytest.mark.parametrize("mode", [9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20])
 @pytest.mark.parametrize("profile", [False, True])
 def test_transfer_lifetimes(tmp_path, physical, mode, profile):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
@@ -26,7 +26,8 @@ def test_transfer_lifetimes(tmp_path, physical, mode, profile):
     assert "PASS 40 transfer cases" in result.stdout
 
 
-def test_private_wqe_ub_budget(tmp_path):
+@pytest.mark.parametrize("recv", [28, 32])
+def test_private_wqe_ub_budget(tmp_path, recv):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
     if not zig:
         pytest.skip("Set DEEPEP_TEST_ZIG for UB layout checks")
@@ -38,10 +39,10 @@ def test_private_wqe_ub_budget(tmp_path):
 using namespace CombineDedup;
 int main(){
     for(unsigned tokens:{0U,32U,256U,2048U,10000U})for(unsigned bs:{32U,48U,64U,72U,256U}){
-        auto p=EpCombineM45Layout(tokens,bs,3584,8,28);
+        auto p=EpCombineM45Layout(tokens,bs,3584,8,TEST_RECV);
         assert(p.inputLanes && p.outputLanes && p.totalBytes<=kEpServerDedupCombineRecvUbBytes);
-        const unsigned metadata=EpCombineM4TaskBytes(tokens,28)+3*EpCombineReadyTaskBytes(tokens,28)
-            +EpCombineAlign((EpCombineReadyTaskBytes(tokens,28)/4U+7U)/8U,32U)+384+32*8*8;
+        const unsigned metadata=EpCombineM4TaskBytes(tokens,TEST_RECV)+3*EpCombineReadyTaskBytes(tokens,TEST_RECV)
+            +EpCombineAlign((EpCombineReadyTaskBytes(tokens,TEST_RECV)/4U+7U)/8U,32U)+384+32*8*8;
         const unsigned end=p.phaseOffset+metadata+15*480+((DEEPEP_LL_COMBINE_READY==9 || DEEPEP_LL_COMBINE_READY>=11)?128:0);
         assert(end<=p.inputOffset);
         auto final=EpCombineM5Layout(p,100);
@@ -51,10 +52,10 @@ int main(){
 }
 ''')
     layouts = []
-    for mode in (4, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19):
+    for mode in (4, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20):
         exe = tmp_path / f"layout-{mode}.exe"
         subprocess.run([zig, "c++", "-std=c++17", "-O1", "-UNDEBUG",
-                        f"-DDEEPEP_LL_COMBINE_READY={mode}", "-I" + str(ROOT / "csrc"),
+                        f"-DDEEPEP_LL_COMBINE_READY={mode}", f"-DTEST_RECV={recv}", "-I" + str(ROOT / "csrc"),
                         str(source), "-o", str(exe)], check=True, timeout=120)
         layouts.append(subprocess.check_output([str(exe)], text=True))
     assert all(v == layouts[4] for v in layouts[5:])
@@ -124,7 +125,7 @@ int main(){
     subprocess.run([str(exe)],check=True,timeout=30)
 
 
-@pytest.mark.parametrize("mode", [12, 13, 14, 15, 16, 17, 18, 19])
+@pytest.mark.parametrize("mode", [12, 13, 14, 15, 16, 17, 18, 19, 20])
 def test_wide_input_aggregate_order_and_ring_reuse(tmp_path, mode):
     """Execute production preload/weighted reduction with sparse early reads."""
     zig = os.environ.get("DEEPEP_TEST_ZIG")
@@ -233,7 +234,7 @@ int main() {
     subprocess.run([str(exe)], check=True, timeout=60)
 
 
-@pytest.mark.parametrize("mode", [12, 13, 14, 15, 16, 17, 18, 19])
+@pytest.mark.parametrize("mode", [12, 13, 14, 15, 16, 17, 18, 19, 20])
 def test_wide_input_m5_retirement(tmp_path, mode):
     """Shifted M4 output lanes must retire before M5 reuses their UB."""
     zig = os.environ.get("DEEPEP_TEST_ZIG")

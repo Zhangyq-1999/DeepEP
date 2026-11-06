@@ -344,3 +344,100 @@ ready18与ready19分别用于分核、控制区L2的单变量对照，冻结base
 保持，所有开关编译期固定。构建身份扩展到ready19，不占poll-nop位。
 summary.csv写core_layout/control_l2，Python ID也输出，原诊断和Perfetto
 继续提供physical AIV核号、notify/group wait与RDMA尾部时间。
+
+## 2026-11-06：参考 zzh 分支，保留 input6 的独立对照
+
+审计目标为 [Ziha0-Zeng/DeepEP 的 fb97fbf](https://github.com/Ziha0-Zeng/DeepEP/commit/fb97fbfa42cbae17e67d5d27ebc68d6e4b4b18e5)。
+该提交的主要 kernel 修改是将 remote-first 从 Group16 扩展到物理
+每机4 rank 的跨机 Group4；其余大部分是多版本共享初始化和测试入口。
+构建脚本还提供 recv36、small-batch、early-reduce、remote-first 和
+deferred-return。与当前分支逐项核对：
+
+- remote-first 的本机后置、远端相对顺序保持，我们已有按物理 host
+  分组的实现；每机4/16 rank 均适用，不需要迁回运行时 crossHostGroup
+  参数。参考提交没有新增多 SGE 或新的 L2 策略。
+- input6 已有快照建表、Vector 就绪任务筛选、六输入槽与 WQE 预构造；
+  参考分支没有这些更新。不能整文件替换，否则会退回较早的规约流水。
+- input6 已在已就绪任务集合中先选跨机任务；本轮 remote-first 是将
+  本机后置进一步应用于 DIRECT 遍历和 M4 建表/轮转分配，也会改变
+  任务所属核。不要把它描述成首次实现“跨机任务优先”。
+- 延期回传在本仓 return/input-pipe 中已有对应实验。input-pipe 曾在
+  BS256 有明显收益，但 BS32–64 尚无稳定收益，故保留选项、不默认叠加。
+  参考 r36 的方向用于重新检验接收核配比，选择32而非36是为了对齐
+  BS32/64 的 M5 token 分片，并保留更多 DIRECT 核。
+- HCCL 首次 all_reduce 完成后再初始化 SHMEM、全版本共用一次初始化
+  均已在当前 Python 用例实现。本轮不改同步、计时口径或初始化顺序。
+
+最近两个 run 均为 H3584/K8/E384/BF16/random seed0/capacity256，
+HCCL gate、warmup10、100 clean samples、逐轮 global rank-MAX Event。
+全部精度检查 PASS；未删除任何样本。以下为 mean，单位 μs。
+
+|规模 / BS|base|input6|input-interleave|input-l2（奇偶＋L2）|
+|---|---:|---:|---:|---:|
+|EP8 / 32|51.19|49.25|49.36|49.51|
+|EP8 / 48|60.63|57.20|57.89|58.05|
+|EP8 / 64|68.65|64.77|67.43|67.41|
+|EP8 / 72|72.78|68.37|72.09|71.51|
+|EP8 / 256|166.58|159.89|171.34|172.15|
+|EP32 / 32|59.46|56.94|58.79|58.25|
+|EP32 / 48|69.08|66.03|70.29|67.91|
+|EP32 / 64|78.72|74.22|79.20|78.76|
+|EP32 / 72|82.14|77.81|82.12|82.36|
+|EP32 / 256|195.38|183.24|194.08|194.33|
+
+run 分别为 `ep8-py-20261106-095739-c6bdd4ab` 和
+`ep32-py-20261106-100524-22796ef8`。奇偶布局没有超过 input6；EP32
+BS48 在奇偶布局上开控制 L2 有改善，但这不是原布局开 L2 的直接证据。
+这些是干净 Event 数据，没有同轮细粒度阶段数据，不能据此判定 OSTD、
+缓存或 RDMA 本身的耗时。新的单项实验如下：
+
+|版本|ready|接收核（56 AIV）|布局|控制区 L2|REMOTE_FIRST|
+|---|---:|---:|---|---|---|
+|base|0|28|半区|旁路|OFF|
+|input6|12|28|半区|旁路|OFF|
+|input6-l2|20|28|半区|默认|OFF|
+|input6-r32|12|32|半区|旁路|OFF|
+|input6-remote|12|28|半区|旁路|ON|
+|input6-fused（可选）|20|32|半区|默认|ON|
+
+默认前五个干净版，C++ 配对应五个 profile 版（base 对应 ref-profile）。
+可选 fused 将三项叠加，独立测试可用：
+
+```bash
+# 两机分别编译安装；EP32 再加 --ranks-per-host 16。
+bash tests/ll_python_bench/build_all.sh --variants base,input6,input6-fused
+# 第一台启动，第二台复制它打印的命令。
+bash tests/ll_python_bench/run_all.sh --variants base,input6,input6-fused --sync hccl
+```
+
+base 的冻结源码无修改，input6 的分支与配置保持。L2 同时覆盖本机
+prepare/ready 的发布、观察、清零，data-with-flag 和 payload 仍旁路。
+三项均不增加 UB、不改权重/累加顺序、wire、QP 所有权、暂存复用或
+最终 CQ 回收。ready20 的构建身份使用预留 notify=3/coalesce=1 编码，
+不占 poll-nop 的高16位、不与已有可选组合冲突；不实际启用这两个协议。
+每机4/16 rank 的跨机索引不依赖两机假设，覆盖四机 EP64。
+
+判据以 BS32/48/64 为主，BS72/256 检查回退；先看相同同步口径下干净
+版本的 mean/P50/min/max，再用 profile 定位：
+
+- L2：观察 prepare/local-ready wait、ready publish、group-ready wait
+  和 M4 起点是否共同提前；不以单次缓存读更快替代端到端收益。
+- recv32：BS32 的 M5 每核最多1 token（原最多2），BS64 最多2（原最多3）。
+  同时看 DIRECT 末尾、M4 规约/回传与 M5 最慢核；DIRECT 从28减至24核
+  可能抵消收益。此前 ready4/recv32 无稳定收益，需要本轮独立复测。
+- remote：看建表耗时、跨机 first/last Put、最终 flag 尾部，而非只看
+  group-ready wait。任务重新分配可能降低或增加核间不均衡。
+- fused：仅作为叠加实验，不能从三个单项各自快就推断组合必然快。
+
+复用现有 schema20 的原始时刻和计数，CSV、Perfetto 保留完整记录；
+累计等待/构造 ticks 不能相加当作流水块，也不能直接当作网络单包耗时。
+Python ID 增加 ready/remote_first，保留 recv/layout/control_l2。
+默认五个 BS、十个 C++ 版本的完整合成诊断通过小于62KiB检查，额外 BS
+或版本保留完整输出，可分次粘贴。
+
+本地验证覆盖新组合的完整 kernel Host-stub 编译（clean/profile、
+Group2/4/16、每机4/16 rank）、实际建表与原扫描等价、空任务/最大BS、
+四机分配、32接收核通知覆盖、UB边界、FP16/BF16累加序、延迟DMA/NIC
+源生命周期、Python双模块共享初始化、冻结base和Perfetto回归。
+新组合没有本地 CANN/NPU 实测；Host 模型不模拟 L2 硬件一致性，不能
+保证收益。所有参与节点需重新编译同一组版本后测试。

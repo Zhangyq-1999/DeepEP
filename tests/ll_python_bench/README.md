@@ -131,7 +131,9 @@ bash tests/ll_python_bench/run_all.sh --variant card-all
 bash tests/ll_python_bench/build_all.sh
 ```
 
-默认安装 `base,input6,input-interleave,input-l2`，共用一次初始化。input6 保留为 BS32–64 对照；input-interleave 仅将其原发送组映射到奇数物理 AIV、接收组映射到偶数物理 AIV，任务所属逻辑核及计算/通信协议保持不变。它与 input6 使用相同 UB 和累加序，56 核仍为 28/28 个角色。所有核仍参与本卡准备，接收组也执行规约后 RDMA 回传；并非按 RDMA 读写指令重新划分角色。build_all.sh 自动安装到 py311_zyq，两个节点都需重编；回显 ID 的 layout 标明物理布局，control_l2 标明控制区缓存策略。input-l2 在 input-interleave 上将 prepare/ready 的发布、读取和清零改为默认 L2 视图，payload/RDMA 暂存继续旁路。此实验尚无 NPU 实测，input-stream、input-front、input-pipe 等旧版可用 --variants 选择。详见 [实验记录](../ll_cpp_bench/TRANSFER_AB.md)。
+默认安装 `base,input6,input6-l2,input6-r32,input6-remote`，共用一次初始化。input6 保留为 BS32–64 的已测对照；三个新版本分别只改控制区 L2、接收核数、跨机优先的建表/分配顺序。默认都保留原半区布局。56 AIV 下 input6-r32 为 24 DIRECT / 32 接收核，其余为 28/28；所有核仍参与本卡准备，接收组也执行机内规约后的 RDMA 回传。
+
+build_all.sh 自动安装到 py311_zyq，两个节点都需重编；run_all.sh 自动使用同一环境。ID 行输出 layout、control_l2、ready、recv、remote_first，便于确认实际构建。input6-l2 的 prepare/ready 发布、读取、清零均使用默认 L2，payload/data-with-flag/RDMA 暂存继续旁路；它与旧的奇偶布局 input-l2 不同。三项组合 input6-fused 为可选项，先测默认单项再决定是否叠加。此前奇偶布局没有超过 input6，input-interleave/input-l2 不再默认编译；input-stream、input-front、input-pipe 等旧版仍可用 --variants 选择。新版本尚无 NPU 实测，详见 [参考分支审计和实验记录](../ll_cpp_bench/TRANSFER_AB.md)。
 
 EP32 两台分别编译：
 

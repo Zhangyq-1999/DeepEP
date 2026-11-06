@@ -8,8 +8,8 @@ args=()
 while (($#)); do
     case "$1" in
         --help|-h)
-            echo 'build_all.sh [--variants base,input6,input-interleave,input-l2] [build.sh environment options]'
-            echo 'Defaults: four clean Combine variants installed in py311_zyq; Dispatch is shared.'
+            echo 'build_all.sh [--variants base,input6,input6-l2,input6-r32,input6-remote] [build.sh environment options]'
+            echo 'Defaults: five clean Combine variants installed in py311_zyq; Dispatch is shared.'
             exit 0;;
         --variants)
             (($#>=2)) || { echo 'Missing --variants value' >&2; exit 2; }
@@ -24,7 +24,7 @@ done
 IFS=, read -r -a names <<< "$variants"
 for name in "${names[@]}"; do
     case "$name" in
-        base|ready-snapshot|wqe-prep|wqe-prefetch|input6|input-ready|input-pair|input-pipe|input-stream|input-front|input-interleave|input-l2|mte-pack|card-all|card-row|server-all|server-row) ;;
+        base|ready-snapshot|wqe-prep|wqe-prefetch|input6|input-ready|input-pair|input-pipe|input-stream|input-front|input-interleave|input-l2|input6-l2|input6-r32|input6-remote|input6-fused|mte-pack|card-all|card-row|server-all|server-row) ;;
         *) echo "Unknown clean variant: $name" >&2; exit 2;;
     esac
 done

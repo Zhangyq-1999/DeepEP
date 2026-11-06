@@ -8,8 +8,8 @@ import subprocess
 import pytest
 
 HERE = Path(__file__).resolve().parent
-PROFILES = ("ref-profile", "input6-profile", "input-interleave-profile", "input-l2-profile")
-CLEAN = ("base", "input6", "input-interleave", "input-l2")
+PROFILES = ("ref-profile", "input6-profile", "input6-l2-profile", "input6-r32-profile", "input6-remote-profile")
+CLEAN = ("base", "input6", "input6-l2", "input6-r32", "input6-remote")
 
 
 @pytest.fixture
@@ -73,15 +73,15 @@ def call_options(output):
 def test_build_all_isolated_matrix_and_failure_stop(harness):
     run, env = harness
     calls = call_options(run("build_all.sh").stdout)
-    assert len(calls) == 8
+    assert len(calls) == 10
     for name, call in zip((*CLEAN, *PROFILES), calls):
         assert call["--build-dir"].endswith("/build/ll-cpp-" + name)
         assert call["--variant"] == ("base" if name == "base" else "opt")
         assert call["--profile"] == ("ON" if name.endswith("-profile") else "OFF")
         assert call["--small-batch"] == ("ON" if name == "opt-profile" else "OFF")
-        assert call["--recv-cores"] == ("32" if name.startswith("ready-r32") else "36" if name.startswith("ready-r36") else "0")
+        assert call["--recv-cores"] == ("32" if name.startswith(("ready-r32", "input6-r32")) else "36" if name.startswith("ready-r36") else "0")
         assert call["--early-reduce"] == ("ON" if name == "early-profile" else "OFF")
-        assert call["--remote-first"] == ("ON" if (name.startswith("notify-") or name in ("remote", "return", "remote-profile", "return-profile")) else "OFF")
+        assert call["--remote-first"] == ("ON" if (name.startswith(("notify-", "input6-remote")) or name in ("remote", "return", "remote-profile", "return-profile")) else "OFF")
         assert call["--defer-return"] == ("ON" if name in ("pipeline", "return", "pipeline-profile", "return-profile", "ready-pipeline", "ready-pipeline-profile") else "OFF")
         assert call["--ranks-per-host"] == "4"
         assert call["--early-issue"] == ("ON" if name in ("issue", "issue-probe", "issue-profile", "issue-probe-profile") else "OFF")
@@ -89,7 +89,7 @@ def test_build_all_isolated_matrix_and_failure_stop(harness):
         assert call["--simt-meta"] == ("ON" if name.startswith("prepare") else "OFF")
         assert call["--prefetch-return"] == ("ON" if name.startswith("batch-pipeline") else "OFF")
         assert call["--simt-flag"] == "OFF"
-        assert call["--ready"] == ("19" if name.startswith("input-l2") else "18" if name.startswith("input-interleave") else "16" if name.startswith("input-stream") else "17" if name.startswith("input-front") else "14" if name.startswith("input-pair") else "15" if name.startswith("input-pipe") else "12" if name.startswith("input6") else "13" if name.startswith("input-ready") else "11" if name.startswith("wqe-prefetch") else "9" if name.startswith("wqe-prep") else "4" if name.startswith("ready-snapshot") else "0")
+        assert call["--ready"] == ("20" if name.startswith("input6-l2") else "19" if name.startswith("input-l2") else "18" if name.startswith("input-interleave") else "16" if name.startswith("input-stream") else "17" if name.startswith("input-front") else "14" if name.startswith("input-pair") else "15" if name.startswith("input-pipe") else "12" if name.startswith("input6") else "13" if name.startswith("input-ready") else "11" if name.startswith("wqe-prefetch") else "9" if name.startswith("wqe-prep") else "4" if name.startswith("ready-snapshot") else "0")
         assert call["--notify"] == ("1" if name.startswith("notify-simt") else "2" if name.startswith("notify-core") else "0")
         assert call["--local-first"] == ("ON" if name.startswith("batch") else "OFF")
         assert call["--batch-final"] == ("ON" if name.startswith("batch") else "OFF")
@@ -99,7 +99,7 @@ def test_build_all_isolated_matrix_and_failure_stop(harness):
         assert call["--shmem-root"].endswith("/third-party/shmem/install/shmem")
     env["FAIL_BUILD"] = "ref-profile"
     result = run("build_all.sh", ok=False)
-    assert result.returncode == 17 and len(call_options(result.stdout)) == 5
+    assert result.returncode == 17 and len(call_options(result.stdout)) == 6
     assert "CALL" not in run("build_all.sh", "--variants", "base,typo", ok=False).stdout
 
 
@@ -119,6 +119,16 @@ def test_build_sdk_and_selection_overrides(harness):
         assert call["--shmem-root"] == "/selected/sdk with spaces"
         assert call["--mpi-home"] == "/selected/mpi"
         assert call["--cann-home"] == "/selected/cann"
+
+
+def test_optional_fusion_is_explicit_and_old_layouts_remain_available(harness):
+    run, _ = harness
+    calls = call_options(run("build_all.sh", "--variants",
+                            "input6-fused,input6-fused-profile,input-interleave,input-l2").stdout)
+    assert [c["--ready"] for c in calls] == ["20", "20", "18", "19"]
+    assert [c["--recv-cores"] for c in calls] == ["32", "32", "0", "0"]
+    assert [c["--remote-first"] for c in calls] == ["ON", "ON", "OFF", "OFF"]
+    assert [c["--profile"] for c in calls] == ["OFF", "ON", "OFF", "OFF"]
 
 
 def test_repeat_default_run_and_second_host_join(harness):
@@ -193,8 +203,8 @@ def test_host_detection_and_benchmark_overrides(harness):
 def test_four_host_commands_and_detection(harness):
     run, env = harness
     builds = call_options(run("build_all.sh", "--ranks-per-host", "16").stdout)
-    assert len(builds) == 8 and all(call["--ranks-per-host"] == "16" for call in builds)
-    assert [call["--ready"] for call in builds] == ["0", "12", "18", "19"] * 2
+    assert len(builds) == 10 and all(call["--ranks-per-host"] == "16" for call in builds)
+    assert [call["--ready"] for call in builds] == ["0", "12", "20", "12", "12"] * 2
     hosts = "90.90.93.84,90.90.93.184,90.90.93.85,90.90.93.185"
     result = run("run_all.sh", "--ep", "64", "--ranks-per-host", "16", "--hosts", hosts,
                  "--tokens", "32,72,128,256", "--master-port", "30071")

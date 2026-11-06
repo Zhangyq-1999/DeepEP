@@ -322,8 +322,10 @@ def test_default_suite_fits_one_paste_and_keeps_each_case(reporter, tmp_path, ex
     clean = re.search(r"^ll_bench_clean_variants=(.+)$", default_text, re.M)[1].split(",")
     profiles = re.search(r"^ll_bench_profiles=(.+)$", default_text, re.M)[1].split(",")
     if extended:
-        clean += ["input-stream"]
-        profiles += ["input-stream-profile"]
+        # Optional replacement within the default five-variant paste budget.
+        # Explicitly requesting additional variants may require more pastes.
+        clean[-1] = "input-stream"
+        profiles[-1] = "input-stream-profile"
     variants = clean + profiles
     first_profile = len(clean)
     defaults = (32, 48, 64, 72, 256)

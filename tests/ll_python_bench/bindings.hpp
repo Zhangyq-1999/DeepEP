@@ -109,6 +109,8 @@ public:
         d["recv_cores"] = CombineDedup::EpCombineRecvCoreCount(runtime_.cores);
         d["core_layout"] = CombineDedup::kCombineInterleavedCores ? "odd-send-even-receive" : "halves";
         d["control_l2"] = CombineDedup::kCombineControlL2;
+        d["ready_mode"] = DEEPEP_LL_COMBINE_READY;
+        d["remote_first"] = bool(deepep_ll_combine_return_options() & 1U);
         d["rdma_qps"] = runtime_.rdmaQps;
         d["return_options"] = deepep_ll_combine_return_options();
         d["case_signature"] = o_.signature();

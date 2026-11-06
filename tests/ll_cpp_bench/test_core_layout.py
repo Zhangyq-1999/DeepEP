@@ -8,7 +8,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
-@pytest.mark.parametrize("mode", [12, 18, 19])
+@pytest.mark.parametrize("mode", [12, 18, 19, 20])
 @pytest.mark.parametrize("recv", [0, 32])
 def test_physical_placement_and_logical_ownership(tmp_path, mode, recv):
     zig = os.environ.get("DEEPEP_TEST_ZIG")

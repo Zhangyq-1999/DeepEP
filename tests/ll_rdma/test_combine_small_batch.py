@@ -20,10 +20,10 @@ def function_body(source, marker):
     return source[start:cursor]
 
 
-@pytest.mark.parametrize("workspace", ["compute", "payload", "compact"])
+@pytest.mark.parametrize("workspace", ["compute", "payload", "compact", "input6", "input6-l2"])
 @pytest.mark.parametrize("receive_cores", [0, 8, 16, 24, 32, 36])
 @pytest.mark.parametrize("remote_first", [False, True])
-def test_production_plan_matches_original_scan(tmp_path, receive_cores, remote_first, workspace):
+def test_production_plan_matches_original_scan(tmp_path, receive_cores, remote_first, workspace, physical=16):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
     if not zig:
         pytest.skip("Set DEEPEP_TEST_ZIG for the C++ CPU check")
@@ -140,7 +140,7 @@ int main(){
  // original 28/28 split. Check Host admission before executing ownership.
  assert(EpCombineRecvCoreCount(56)==(DEEPEP_LL_COMBINE_RECV_CORES?DEEPEP_LL_COMBINE_RECV_CORES:28));
  if(DEEPEP_LL_COMBINE_RECV_CORES)assert(EpCombineRecvCoreCount(DEEPEP_LL_COMBINE_RECV_CORES)==0);
- for(uint32_t world:{4,16,32})for(uint32_t bs:{32,48,64,72}){
+ for(uint32_t world:{4,16,32,64})for(uint32_t bs:{32,48,64,72,256}){
   Layout launch;assert(BuildLayout(world,bs,3584,8,384,launch,56));
   const auto ub=EpCombineM45Layout(10000,bs,3584,8,EpCombineRecvCoreCount(56));
   assert(ub.inputLanes && ub.totalBytes<=kEpServerDedupCombineRecvUbBytes);
@@ -164,11 +164,17 @@ int main(){
     cpp.write_text(source, encoding="utf-8")
     exe = tmp_path / "partial-plan.exe"
     subprocess.run([zig, "c++", "-std=c++17", "-O1", "-UNDEBUG", f"-DPAYLOAD_SNAPSHOT={int(workspace != 'compute')}", f"-DDEEPEP_LL_COMBINE_RECV_CORES={receive_cores}",
-                    f"-DDEEPEP_LL_COMBINE_READY={8 if workspace == 'compact' else 0}",
+                    f"-DDEEPEP_LL_COMBINE_READY={20 if workspace == 'input6-l2' else 12 if workspace == 'input6' else 8 if workspace == 'compact' else 0}",
+                    f"-DDEEPEP_LL_PHYSICAL_RANKS_PER_HOST={physical}",
                     *(["-DDEEPEP_LL_COMBINE_REMOTE_FIRST=1"] if remote_first else []), "-I" + str(tmp_path),
                     "-I" + str(ROOT / "csrc"), str(cpp), "-o", str(exe)], check=True, timeout=180)
     result = subprocess.run([str(exe)], check=True, capture_output=True, text=True, timeout=90)
     assert "PASS production partial plan" in result.stdout
+
+
+@pytest.mark.parametrize("remote_first", [False, True])
+def test_input6_l2_32_receivers_four_rank_host(tmp_path, remote_first):
+    test_production_plan_matches_original_scan(tmp_path, 32, remote_first, "input6-l2", physical=4)
 
 
 def test_variant_has_separate_build_cache_and_explicit_cli():

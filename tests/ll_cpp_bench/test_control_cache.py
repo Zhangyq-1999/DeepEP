@@ -8,8 +8,9 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
-@pytest.mark.parametrize("mode", [18, 19])
-def test_control_views_and_all_notify_destinations(tmp_path, mode):
+@pytest.mark.parametrize("mode", [12, 18, 19, 20])
+@pytest.mark.parametrize("recv", [28, 32])
+def test_control_views_and_all_notify_destinations(tmp_path, mode, recv):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
     if not zig:
         pytest.skip("Set DEEPEP_TEST_ZIG for control publication checks")
@@ -77,10 +78,10 @@ struct ReadyView {
 };
 template<unsigned Group> struct Publisher {
     Args* args_;uint64_t control_=0;
-    unsigned core_=48,notifyBegin_=48,coreNum_=56,recvCores_=28;
+    unsigned core_=48,notifyBegin_=48,coreNum_=56,recvCores_=TEST_RECV;
     static constexpr unsigned kCombinePrepareRowBytes=72*32;
     Profile profile_;
-    float zero[72*8]{},input[72*8]{},work[128]{},sum[8]{},publication[28*8]{};
+    float zero[72*8]{},input[72*8]{},work[128]{},sum[8]{},publication[32*8]{};
     LocalTensor<float> prepareZero_{zero},prepareInput_{input},prepareWork_{work},prepareSum_{sum},notifyUb_{publication};
     template<HardEvent E> void Sync(){}
     void WaitFlags(GlobalTensor<float> g,LocalTensor<float>,LocalTensor<float>,LocalTensor<float>,unsigned n,bool) {
@@ -90,7 +91,10 @@ template<unsigned Group> struct Publisher {
 ''' + control + notify + r'''
 };
 template<unsigned Group> void Check() {
-    std::vector<std::vector<uint64_t>> memory(4*Group,std::vector<uint64_t>(32768/8));
+    // 32 receive rows extend beyond 32 KiB; the real private-ready region
+    // ends at 64 KiB. Check that the test backing store covers every write.
+    static_assert(COMBINE_DEDUP_EP_SERVER_DEDUP_COMBINE_SERVER_READY_OFFSET+TEST_RECV*512<=65536);
+    std::vector<std::vector<uint64_t>> memory(4*Group,std::vector<uint64_t>(65536/8));
     Args a;a.rank=2*Group-1;a.host=Group;a.peerMems.resize(4*Group);
     for(unsigned p=0;p<4*Group;++p)a.peerMems[p]=reinterpret_cast<uint8_t*>(memory[p].data());
     controls=LlTransport::records=0;
@@ -106,7 +110,7 @@ template<unsigned Group> void Check() {
     assert(LlTransport::records==(kCombineControlL2?0:Group));
     for(unsigned peer=0;peer<4*Group;++peer) {
         auto* row=reinterpret_cast<float*>(a.peerMems[peer]+COMBINE_DEDUP_EP_SERVER_DEDUP_COMBINE_SERVER_READY_OFFSET);
-        for(unsigned c=0;c<28;++c)for(unsigned member=0;member<Group;++member) {
+        for(unsigned c=0;c<TEST_RECV;++c)for(unsigned member=0;member<Group;++member) {
             const bool written=peer/Group==1 && member==a.rank%Group;
             assert(row[c*128+member*8]==float(written));
         }
@@ -121,6 +125,6 @@ int main(){Check<2>();Check<4>();Check<16>();}
     cpp, exe = tmp_path / "control.cpp", tmp_path / "control.exe"
     cpp.write_text(source, encoding="utf-8")
     subprocess.run([zig, "c++", "-std=c++17", "-O1", "-UNDEBUG",
-                    f"-DDEEPEP_LL_COMBINE_READY={mode}", "-DDEEPEP_LL_COMBINE_NOTIFY=0",
+                    f"-DDEEPEP_LL_COMBINE_READY={mode}", f"-DTEST_RECV={recv}", "-DDEEPEP_LL_COMBINE_NOTIFY=0",
                     "-I" + str(ROOT / "csrc"), str(cpp), "-o", str(exe)], check=True, timeout=120)
     subprocess.run([str(exe)], check=True, timeout=30)
