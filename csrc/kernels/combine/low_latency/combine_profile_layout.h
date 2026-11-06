@@ -273,17 +273,20 @@ enum Word : uint32_t {
     DirectMetadataCachedRows,
     DirectMetadataReloads,
     DirectActiveLanes,
+    DirectRoutePreloadRows,
+    DirectRoutePreloadWaitTicks,
+    DirectRouteGatherRows,
     Count
 };
 constexpr uint32_t kWords = 272U;
-constexpr uint64_t kSchema = 22U;
+constexpr uint64_t kSchema = 23U;
 constexpr Word kDetailBegin = InitPrefixTicks;
 constexpr Word kDetailEnd = RouteCompactTicks;
 constexpr bool IsDetailWord(uint32_t word)
 {
     return (word >= kDetailBegin && word <= kDetailEnd) ||
            (word >= WqePrepareTicks && word <= PartialFrontLoads) ||
-           (word >= PartialOutputInitLanes && word <= DirectActiveLanes);
+           (word >= PartialOutputInitLanes && word <= DirectRouteGatherRows);
 }
 static_assert(Count <= kWords && StageRows <= 64U, "profile record bounds");
 }  // namespace CombineProfile

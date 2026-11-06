@@ -8,7 +8,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
-@pytest.mark.parametrize("mode", [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27])
+@pytest.mark.parametrize("mode", [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29])
 def test_ready_lifecycle_and_vector_selection(tmp_path, mode):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
     if not zig:
@@ -23,7 +23,7 @@ def test_ready_lifecycle_and_vector_selection(tmp_path, mode):
     subprocess.run([str(exe)], check=True, timeout=30)
 
 
-@pytest.mark.parametrize("mode,pipeline", [(1, False), (3, False), (3, True), (4, False), (5, False), (6, False), (7, False), (8, False), (9, False), (10, False), (11, False), (12, False), (13, False), (14, False), (15, False), (16, False), (17, False), (18, False), (19, False), (20, False), (21, False), (22, False), (23, False), (24, False), (25, False), (26, False), (27, False)])
+@pytest.mark.parametrize("mode,pipeline", [(1, False), (3, False), (3, True), (4, False), (5, False), (6, False), (7, False), (8, False), (9, False), (10, False), (11, False), (12, False), (13, False), (14, False), (15, False), (16, False), (17, False), (18, False), (19, False), (20, False), (21, False), (22, False), (23, False), (24, False), (25, False), (26, False), (27, False), (28, False), (29, False)])
 def test_production_dependency_scheduler(tmp_path, mode, pipeline):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
     if not zig:

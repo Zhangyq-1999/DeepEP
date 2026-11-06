@@ -280,6 +280,9 @@ inline void profile_header(std::ostream& out)
         "direct_metadata_cached_rows",
         "direct_metadata_reloads",
         "direct_active_lanes",
+        "direct_route_preload_rows",
+        "direct_route_preload_wait_ticks",
+        "direct_route_gather_rows",
     };
     static_assert(sizeof(names) / sizeof(names[0]) == CombineProfile::Count, "profile CSV fields");
     for (uint32_t w = 0; w < CombineProfile::Count; ++w) out << (w ? "," : "") << names[w];

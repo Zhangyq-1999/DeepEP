@@ -68,6 +68,9 @@ int main() {
             view.Add(PartialFrontLoads, 6);
             view.Add(DirectMetadataCachedRows, 2);
             view.Add(ReadySingleTasks, 1);
+            view.Add(DirectRoutePreloadRows, 32);
+            view.Add(DirectRouteGatherRows, 17);
+            view.Elapsed(DirectRoutePreloadWaitTicks, view.DetailClock());
             view.Elapsed(ReadyMetadataWaitTicks, view.DetailClock());
             view.Mark(StageEnd);
             view.MarkOnce(DirectFirstSubmit);
@@ -90,6 +93,9 @@ int main() {
                 assert(row[PartialFrontLoads] == (level == 2 ? 6U : 0U));
                 assert(row[DirectMetadataCachedRows] == (level == 2 ? 2U : 0U));
                 assert(row[ReadySingleTasks] == (level == 2 ? 1U : 0U));
+                assert(row[DirectRoutePreloadRows] == (level == 2 ? 32U : 0U));
+                assert(row[DirectRouteGatherRows] == (level == 2 ? 17U : 0U));
+                assert(row[DirectRoutePreloadWaitTicks] == (level == 2 ? 17U : 0U));
                 assert(row[ReadyMetadataWaitTicks] == (level == 2 ? 17U : 0U));
                 assert(row[PartialVectorBarriers] == (level == 2 ? 16U : 0U));
                 assert(row[DirectSubmitTicks] == (level == 2 ? 17U : 0U));

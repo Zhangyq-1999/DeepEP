@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.mark.parametrize("physical", [4, 16])
-@pytest.mark.parametrize("mode", [9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27])
+@pytest.mark.parametrize("mode", [9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29])
 @pytest.mark.parametrize("profile", [False, True])
 def test_transfer_lifetimes(tmp_path, physical, mode, profile, data_l2=0):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
@@ -133,7 +133,7 @@ int main(){
     subprocess.run([str(exe)],check=True,timeout=30)
 
 
-@pytest.mark.parametrize("mode", [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27])
+@pytest.mark.parametrize("mode", [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29])
 def test_wide_input_aggregate_order_and_ring_reuse(tmp_path, mode):
     """Execute production preload/weighted reduction with sparse early reads."""
     zig = os.environ.get("DEEPEP_TEST_ZIG")
@@ -242,7 +242,7 @@ int main() {
     subprocess.run([str(exe)], check=True, timeout=60)
 
 
-@pytest.mark.parametrize("mode", [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27])
+@pytest.mark.parametrize("mode", [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29])
 def test_wide_input_m5_retirement(tmp_path, mode):
     """Shifted M4 output lanes must retire before M5 reuses their UB."""
     zig = os.environ.get("DEEPEP_TEST_ZIG")

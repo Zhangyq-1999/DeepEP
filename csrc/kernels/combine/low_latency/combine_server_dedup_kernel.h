@@ -389,16 +389,41 @@ private:
             Sync<HardEvent::MTE2_S>();
         }
     }
+    // The small-table read is issued after type DMA completes, then overlaps
+    // the type filter and row-index Vector work. M3 only read this table cache;
+    // preserve its original Vector->MTE2 ownership fence before overwriting it.
+    __aicore__ inline bool PreloadDirectRoutes()
+    {
+        if constexpr (!kCombineDirectRoutePlan) return false;
+        if (tokens_ > kEpServerDedupCombineTableRows) return false;
+        const uint64_t start = profile_.DetailClock();
+        Sync<HardEvent::V_MTE2>();
+        DataCopyPad(tableUb_, table_, {1U, tokens_ * 12U, 0U, 0U, 0U}, {false, 0U, 0U, 0});
+        profile_.Set(CombineProfile::DirectRoutePreloadRows, tokens_);
+        profile_.Elapsed(CombineProfile::DirectRouteLoadTicks, start);
+        return true;
+    }
+    __aicore__ inline void WaitDirectRoutePreload()
+    {
+        const uint64_t start = profile_.DetailClock();
+        Sync<HardEvent::MTE2_V>();
+        // Remaining wait only; the overlapping Vector work is not charged here.
+        const uint64_t elapsed = profile_.DetailClock() - start;
+        profile_.Add(CombineProfile::DirectRoutePreloadWaitTicks, elapsed);
+        profile_.Add(CombineProfile::DirectRouteLoadTicks, elapsed);
+    }
     __aicore__ inline void PrepareDirectRows()
     {
         selected_ = 0U;
         directRoutesCached_ = false;
         if (tokens_ == 0U) return;
+        bool preloaded = false;
         if (enableDedup_) {
             const uint64_t loadStart = profile_.DetailClock();
             DataCopyPad(typeUb_, types_, {1U, tokens_ * 4U, 0U, 0U, 0U}, {false, 0U, 0U, 0});
             Sync<HardEvent::MTE2_V>();
             profile_.Elapsed(CombineProfile::DirectRouteLoadTicks, loadStart);
+            preloaded = PreloadDirectRoutes();
             const uint64_t vectorStart = profile_.DetailClock();
             Compares(maskUb_, typeUb_, int32_t(1), CMPMODE::EQ, (tokens_ + 63U) / 64U * 64U);
             CreateVecIndex(indexUb_, int32_t(0), tokens_);
@@ -408,39 +433,60 @@ private:
             Sync<HardEvent::V_S>();
             profile_.Elapsed(CombineProfile::DirectSelectVectorTicks, vectorStart);
         } else {
+            preloaded = PreloadDirectRoutes();
             // Every row is a direct row without the dedup token type table.
             CreateVecIndex(packedUb_, int32_t(0), tokens_);
             selected_ = tokens_;
             Sync<HardEvent::V_S>();
         }
         profile_.Mark(CombineProfile::DirectTypesEnd);
-        if (selected_ == 0U) return;  // no routing reads for a type2/type3-only rank
-        const uint32_t chunk = tokens_ < kEpServerDedupCombineTableRows ? tokens_ : kEpServerDedupCombineTableRows;
-        CreateVecIndex(typeUb_, int32_t(0), chunk);
-        PipeBarrier<PIPE_V>();
-        Muls(typeUb_, typeUb_, int32_t(12), chunk);  // Table2 byte offsets
-        for (uint32_t begin = 0U; begin < tokens_; begin += chunk) {
-            const uint32_t span = tokens_ - begin < chunk ? tokens_ - begin : chunk;
-            const uint64_t loadStart = profile_.DetailClock();
-            Sync<HardEvent::V_MTE2>();  // table cache is no longer a Gather source
-            DataCopyPad(tableUb_, table_[uint64_t(begin) * 3U], {1U, span * 12U, 0U, 0U, 0U}, {false, 0U, 0U, 0});
-            Sync<HardEvent::MTE2_V>();
-            profile_.Elapsed(CombineProfile::DirectRouteLoadTicks, loadStart);
+        if (selected_ == 0U) {
+            // An eager read must retire even on a type2/type3-only rank.
+            if (preloaded) WaitDirectRoutePreload();
+            return;
+        }
+        if (preloaded) {
+            // packedUb_ already contains the selected original rows. Gather
+            // their ranks directly instead of gathering the whole table and
+            // compacting the rank array a second time. No payload lane aliases.
+            Muls(indexUb_, packedUb_, int32_t(12), uint32_t(selected_));
+            PipeBarrier<PIPE_V>();
+            WaitDirectRoutePreload();
             const uint64_t gatherStart = profile_.DetailClock();
-            Gather(indexUb_[begin], tableUb_, typeUb_.ReinterpretCast<uint32_t>(), 0U, span);
+            Gather(typeUb_, tableUb_, indexUb_.ReinterpretCast<uint32_t>(), 0U, uint32_t(selected_));
             profile_.Elapsed(CombineProfile::DirectGatherTicks, gatherStart);
-        }
-        profile_.Mark(CombineProfile::DirectRoutesEnd);
-        PipeBarrier<PIPE_V>();
-        // Keep two persistent compact arrays: ranks in typeUb_, original rows
-        // in packedUb_. indexUb_ becomes the per-server compact output list.
-        if (enableDedup_) {
-            GatherMask(typeUb_, indexUb_, maskUb_.ReinterpretCast<uint32_t>(), true, tokens_, {1U, 1U, 0U, 0U},
-                       selected_);
+            profile_.Add(CombineProfile::DirectRouteGatherRows, selected_);
+            profile_.Mark(CombineProfile::DirectRoutesEnd);
+            Sync<HardEvent::V_S>();
         } else {
-            Muls(typeUb_, indexUb_, int32_t(1), tokens_);
+            const uint32_t chunk = tokens_ < kEpServerDedupCombineTableRows ? tokens_ : kEpServerDedupCombineTableRows;
+            CreateVecIndex(typeUb_, int32_t(0), chunk);
+            PipeBarrier<PIPE_V>();
+            Muls(typeUb_, typeUb_, int32_t(12), chunk);  // Table2 byte offsets
+            for (uint32_t begin = 0U; begin < tokens_; begin += chunk) {
+                const uint32_t span = tokens_ - begin < chunk ? tokens_ - begin : chunk;
+                const uint64_t loadStart = profile_.DetailClock();
+                Sync<HardEvent::V_MTE2>();  // table cache is no longer a Gather source
+                DataCopyPad(tableUb_, table_[uint64_t(begin) * 3U], {1U, span * 12U, 0U, 0U, 0U}, {false, 0U, 0U, 0});
+                Sync<HardEvent::MTE2_V>();
+                profile_.Elapsed(CombineProfile::DirectRouteLoadTicks, loadStart);
+                const uint64_t gatherStart = profile_.DetailClock();
+                Gather(indexUb_[begin], tableUb_, typeUb_.ReinterpretCast<uint32_t>(), 0U, span);
+                profile_.Elapsed(CombineProfile::DirectGatherTicks, gatherStart);
+                profile_.Add(CombineProfile::DirectRouteGatherRows, span);
+            }
+            profile_.Mark(CombineProfile::DirectRoutesEnd);
+            PipeBarrier<PIPE_V>();
+            // Keep two persistent compact arrays: ranks in typeUb_, original rows
+            // in packedUb_. indexUb_ becomes the per-server compact output list.
+            if (enableDedup_) {
+                GatherMask(typeUb_, indexUb_, maskUb_.ReinterpretCast<uint32_t>(), true, tokens_, {1U, 1U, 0U, 0U},
+                           selected_);
+            } else {
+                Muls(typeUb_, indexUb_, int32_t(1), tokens_);
+            }
+            Sync<HardEvent::V_S>();
         }
-        Sync<HardEvent::V_S>();
         // With one route tile, preserve the immutable Table2 in its existing
         // 6 KiB cache. DIRECT does not use the resident ready checker: its
         // 256B work area can hold this <=64B upper comparison mask instead.

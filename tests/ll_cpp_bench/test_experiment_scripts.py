@@ -8,8 +8,8 @@ import subprocess
 import pytest
 
 HERE = Path(__file__).resolve().parent
-PROFILES = ('ref-profile', 'input6-l2-all-profile', 'input6-l2-lean-profile', 'input6-l2-route-profile')
-CLEAN = ('base', 'input6-l2-all', 'input6-l2-lean', 'input6-l2-route')
+PROFILES = ('ref-profile', 'input6-l2-all-profile', 'input6-l2-route-profile', 'input6-l2-route-only-profile', 'input6-l2-route-plan-profile')
+CLEAN = ('base', 'input6-l2-all', 'input6-l2-route', 'input6-l2-route-only', 'input6-l2-route-plan')
 
 
 @pytest.fixture
@@ -73,7 +73,7 @@ def call_options(output):
 def test_build_all_isolated_matrix_and_failure_stop(harness):
     run, env = harness
     calls = call_options(run("build_all.sh").stdout)
-    assert len(calls) == 8
+    assert len(calls) == 10
     for name, call in zip((*CLEAN, *PROFILES), calls):
         assert call["--build-dir"].endswith("/build/ll-cpp-" + name)
         assert call["--variant"] == ("base" if name == "base" else "opt")
@@ -83,14 +83,14 @@ def test_build_all_isolated_matrix_and_failure_stop(harness):
         assert call["--early-reduce"] == ("ON" if name == "early-profile" else "OFF")
         assert call["--remote-first"] == ("ON" if (name.startswith(("notify-", "input6-l2-remote", "input6-remote", "input6-rpipe", "input6-rfull")) or name in ("remote", "return", "remote-profile", "return-profile")) else "OFF")
         assert call["--defer-return"] == ("ON" if name in ("pipeline", "return", "pipeline-profile", "return-profile", "ready-pipeline", "ready-pipeline-profile") else "OFF")
-        assert call["--data-l2"] == str(next((mask for suffix,mask in (("stage",1),("tx",2),("rx",4),("all",7),("pipe",7),("setup",7),("single",7),("lean",7),("route",7)) if name.removesuffix("-profile")=="input6-l2-"+suffix),0))
+        assert call["--data-l2"] == str(next((mask for suffix,mask in (("stage",1),("tx",2),("rx",4),("all",7),("pipe",7),("setup",7),("single",7),("lean",7),("route",7),("route-only",7),("route-plan",7)) if name.removesuffix("-profile")=="input6-l2-"+suffix),0))
         assert call["--ranks-per-host"] == "4"
         assert call["--early-issue"] == ("ON" if name in ("issue", "issue-probe", "issue-profile", "issue-probe-profile") else "OFF")
         assert call["--progress-probe"] == ("ON" if name in ("probe", "issue-probe", "probe-profile", "issue-probe-profile") else "OFF")
         assert call["--simt-meta"] == ("ON" if name.startswith("prepare") else "OFF")
         assert call["--prefetch-return"] == ("ON" if name.startswith("batch-pipeline") else "OFF")
         assert call["--simt-flag"] == "OFF"
-        assert call["--ready"] == ("23" if name.startswith("input6-l2-pipe") else "24" if name.startswith("input6-l2-setup") else "25" if name.startswith("input6-l2-single") else "26" if name.startswith("input6-l2-lean") else "27" if name.startswith("input6-l2-route") else "20" if name.startswith("input6-l2") else "19" if name.startswith("input-l2") else "18" if name.startswith("input-interleave") else "16" if name.startswith("input-stream") else "17" if name.startswith("input-front") else "14" if name.startswith("input-pair") else "15" if name.startswith("input-pipe") else "21" if name.startswith("input6-rpipe") else "22" if name.startswith("input6-rfull") else "12" if name.startswith("input6") else "13" if name.startswith("input-ready") else "11" if name.startswith("wqe-prefetch") else "9" if name.startswith("wqe-prep") else "4" if name.startswith("ready-snapshot") else "0")
+        assert call["--ready"] == ("23" if name.startswith("input6-l2-pipe") else "24" if name.startswith("input6-l2-setup") else "25" if name.startswith("input6-l2-single") else "26" if name.startswith("input6-l2-lean") else "28" if name.startswith("input6-l2-route-only") else "29" if name.startswith("input6-l2-route-plan") else "27" if name.startswith("input6-l2-route") else "20" if name.startswith("input6-l2") else "19" if name.startswith("input-l2") else "18" if name.startswith("input-interleave") else "16" if name.startswith("input-stream") else "17" if name.startswith("input-front") else "14" if name.startswith("input-pair") else "15" if name.startswith("input-pipe") else "21" if name.startswith("input6-rpipe") else "22" if name.startswith("input6-rfull") else "12" if name.startswith("input6") else "13" if name.startswith("input-ready") else "11" if name.startswith("wqe-prefetch") else "9" if name.startswith("wqe-prep") else "4" if name.startswith("ready-snapshot") else "0")
         assert call["--notify"] == ("1" if name.startswith("notify-simt") else "2" if name.startswith("notify-core") else "0")
         assert call["--local-first"] == ("ON" if name.startswith("batch") else "OFF")
         assert call["--batch-final"] == ("ON" if name.startswith("batch") else "OFF")
@@ -134,9 +134,9 @@ def test_optional_fusion_is_explicit_and_old_layouts_remain_available(harness):
 
 def test_small_task_variants_are_independent(harness):
     run, _ = harness
-    names = ["input6-l2-" + s for s in ("setup", "single", "lean", "route")]
+    names = ["input6-l2-" + s for s in ("setup", "single", "lean", "route", "route-only", "route-plan")]
     calls = call_options(run("build_all.sh", "--variants", ",".join(names)).stdout)
-    assert [c["--ready"] for c in calls] == ["24", "25", "26", "27"]
+    assert [c["--ready"] for c in calls] == ["24", "25", "26", "27", "28", "29"]
     assert all(c["--data-l2"] == "7" and c["--small-batch"] == "OFF" and
                c["--recv-cores"] == "0" and c["--remote-first"] == "OFF" for c in calls)
 
@@ -214,7 +214,7 @@ def test_four_host_commands_and_detection(harness):
     run, env = harness
     builds = call_options(run("build_all.sh", "--ranks-per-host", "16").stdout)
     assert len(builds) == len(CLEAN)+len(PROFILES) and all(call["--ranks-per-host"] == "16" for call in builds)
-    assert [call["--ready"] for call in builds] == ["0", "20", "26", "27"] * 2
+    assert [call["--ready"] for call in builds] == ["0", "20", "27", "28", "29"] * 2
     hosts = "90.90.93.84,90.90.93.184,90.90.93.85,90.90.93.185"
     result = run("run_all.sh", "--ep", "64", "--ranks-per-host", "16", "--hosts", hosts,
                  "--tokens", "32,72,128,256", "--master-port", "30071")

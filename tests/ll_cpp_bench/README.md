@@ -27,7 +27,7 @@ git pull --ff-only origin perf/ll-combine-small-batch
 bash tests/ll_cpp_bench/build_all.sh
 ```
 
-`build_all.sh` 默认更新以下 8 个构建目录，每个构建使用 4 个编译任务。Dispatch 用于准备 Combine 的输入和路由，同一配置只编译一次，各版本复用它的目标文件。每个版本再单独编译 Combine，并链接成独立的 kernel 库。
+`build_all.sh` 默认更新以下 10 个构建目录，每个构建使用 4 个编译任务。Dispatch 用于准备 Combine 的输入和路由，同一配置只编译一次，各版本复用它的目标文件。每个版本再单独编译 Combine，并链接成独立的 kernel 库。
 
 已有目录继续用于增量编译。只修改 Combine 时，Dispatch 无需重编；修改 Dispatch 或它依赖的头文件时，构建系统自动重编受影响的部分。共享目标文件保存在 `build/ll-cpp-dispatch`，不同编译器、SDK 和每机 rank 数使用独立目录。更新代码后，两台机器都执行一次 `build_all.sh`，更新所有选中的版本。
 
@@ -35,8 +35,9 @@ bash tests/ll_cpp_bench/build_all.sh
 | --- | --- | --- |
 | `base` | 冻结的上游原版 | 关闭 |
 | `input6-l2-all` | 实测对照，控制区及三个数据区使用 NORMAL 策略 | 关闭 |
-| `input6-l2-lean` | 按任务裁剪槽位初始化、重叠元数据读取、单任务免筛选 | 关闭 |
-| `input6-l2-route` | lean + DIRECT 复用 UB 路由快照，超容量回退 | 关闭 |
+| `input6-l2-route` | 已测方案：lean + DIRECT 复用 UB 路由快照 | 关闭 |
+| `input6-l2-route-only` | all + DIRECT 路由复用，移除 lean 改动 | 关闭 |
+| `input6-l2-route-plan` | route-only + 提前读表、按选中行提取 rank | 关闭 |
 | `ref-profile` | base 对应打点版 | 开启 |
 | `input6*-profile` | 与对应干净版相同策略 | 开启 |
 
@@ -46,13 +47,13 @@ EP32 收尾修复后的实测中，`wqe-prep` 在 BS48/64 的均值比 snapshot 
 
 最新 9b3d243 的 EP32/HCCL 实测 `input6` 的 BS32/48/64 均值为 57.28/65.49/74.26 μs，仍是小 BS 对照；`input-pair` 分别慢 1.41/0.69/0.43 μs，改为可选项。保留 `input-pipe`：它在 BS256 的均值为 174.94 μs，比同轮 input6 快 8.85 μs，但 BS32–64 尚无稳定收益。
 
-当前默认保留 base 和实测较优的 input6-l2-all，新增 lean 和 route，共四个干净版和四个打点版。setup-only 和 single-task-only 为可选拆解实验（`input6-l2-setup`、`input6-l2-single`）；stage、pipe 也仍可选。
+当前默认保留 base、稳定对照 all、已测 BS32 mean55.27 μs 的 route，以及 route-only、route-plan 两个新实验，共五个干净版及五个打点版。lean 单独版本退为可选；所有旧实验仍可用 `--variants` 选择。
 
-新实验延续 all 的 28/28 半区、6 个 M4 输入槽、首尾包立即回传和累加顺序。lean 按任务数裁剪 flag 槽位初始化，在此期间读取元数据；单任务时直接检查依赖掩码，group flag 仍用 Vector 轮询。route 在既有 UB 中保留最多 512 行的 DIRECT Table2，省去逐包路由重读；大表走原路径。该容量指本 rank 接收行数，不是原始 BS。详细记录见 [TRANSFER_AB.md](TRANSFER_AB.md)。
+route-only 恢复 all 的 M4 初始化及多/单任务筛选，只加入 DIRECT 的整表路由复用。route-plan 再将小表读取提前，与 DIRECT 类型筛选重叠，然后直接按选中行号 Gather rank，省去整张 rank 数组的提取及二次压缩。两者保持 28/28 半区、6 个 M4 输入槽、所有输出槽初始化、首尾包立即回传、L2 和累加顺序。最多缓存512行接收路由，大表回退；不新增 UB，空 DIRECT 路径也必须退休预取。详细数据/生命周期见 [TRANSFER_AB.md](TRANSFER_AB.md)。
 
 每版预热前均执行 `-x,-x,+x,+x` 四代正确性检查，复用两个 bank 且不逐轮强制清 flag，然后恢复原输入；检查不计入性能采样。原始 base 保持冻结，SDK 和 CQ 保护源槽的规则不变。
 
-schema 22 追加七个字段，每核仍为 272 words。回显新增 `small=output_init_lanes/setup_ticks/meta_wait_ticks/single_task` 和 `direct_meta=cached/reloaded/active_lanes`，CSV/Perfetto 同步保存。lean 的 setup 包含在 ready_plan 中，meta_wait 是重叠后剩余等待；它们不是独立可加的流水段。现有 M3、group-ready、M4、RDMA/CQ、M5 和拖尾计数保留。这些是软件打点，不是硬件 L2 命中计数。新实验尚待 NPU 正确性及性能验证。
+schema 22 追加七个字段，schema 23 再追加 `route_plan=preload_rows/wait_ticks/gather_rows`，每核仍为 272 words。wait 为读表重叠后的剩余等待，gather_rows 是实际提取 rank 的行数；不是额外的流水段。回显新增 `small=output_init_lanes/setup_ticks/meta_wait_ticks/single_task` 和 `direct_meta=cached/reloaded/active_lanes`，CSV/Perfetto 同步保存。lean 的 setup 包含在 ready_plan 中，meta_wait 是重叠后剩余等待；它们不是独立可加的流水段。现有 M3、group-ready、M4、RDMA/CQ、M5 和拖尾计数保留。这些是软件打点，不是硬件 L2 命中计数。新实验尚待 NPU 正确性及性能验证。
 
 两台重编：`bash tests/ll_cpp_bench/build_all.sh --ranks-per-host 16`；第一台运行 `bash tests/ll_cpp_bench/run_all.sh --ep 32 --ranks-per-host 16`，第二台复制打印的加入命令。省略拓扑参数即为双机后四卡 EP8。完整缓存策略对照见 [Python 用例](../ll_python_bench/README.md)。
 
@@ -95,7 +96,7 @@ bash tests/ll_cpp_bench/run_all.sh
 bash tests/ll_cpp_bench/run_all.sh 第一台打印的RUN_ID
 ```
 
-默认先跑四个干净版，再跑对应的四个打点版。每版测试 **BS32、48、64、72、256**，形状为 EP8、H3584、TopK 8、384 个专家、BF16、随机路由、seed 0、capacity 256。每个 BS 预热 10 轮；干净版采样 100 轮，打点版采样 10 轮。`--iters` 和 `--profile-iters` 分别控制两类采样次数。
+默认先跑五个干净版，再跑对应的五个打点版。每版测试 **BS32、48、64、72、256**，形状为 EP8、H3584、TopK 8、384 个专家、BF16、随机路由、seed 0、capacity 256。每个 BS 预热 10 轮；干净版采样 100 轮，打点版采样 10 轮。`--iters` 和 `--profile-iters` 分别控制两类采样次数。
 
 干净版在编译时关闭打点，使用独立 kernel。打点版在预热前启用所选打点级别，让预热和采样执行相同路径。一次运行可同时包含两类版本，`--profile 2` 只作用于支持打点的构建。
 
@@ -151,7 +152,7 @@ bash tests/ll_cpp_bench/run_all.sh --hosts HOST0,HOST1 --node-rank 0 \
 
 跨机适配使用 `aclshmemx_roce_qp_put_nbi`，在原有批次边界调用 `aclshmemx_roce_qp_quiet`。这与原仓 Hcomm 的批量提交、CQE 策略有差异，结果用于比较 SHMEM 后端上的算法方案。单机也运行这套分层算法，只执行机内阶段。原来的 `base` 继续使用冻结的 DeepEP kernel。
 
-两边分别按需编译，默认 `build_all.sh` 构建前文的 8 个版本：
+两边分别按需编译，默认 `build_all.sh` 构建前文的 10 个版本：
 
 ```bash
 bash tests/ll_cpp_bench/build_all.sh --ranks-per-host 16 --variants base,ops-shmem-base

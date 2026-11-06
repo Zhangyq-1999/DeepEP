@@ -8,13 +8,13 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
-@pytest.mark.parametrize("mode", [20, 24, 25, 26, 27])
+@pytest.mark.parametrize("mode", [20, 24, 25, 26, 27, 28, 29])
 def test_direct_snapshot_lanes_and_fallback(tmp_path, mode):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
     if not zig:
         pytest.skip("Set DEEPEP_TEST_ZIG")
     kernel = (ROOT / "csrc/kernels/combine/low_latency/combine_server_dedup_kernel.h").read_text(encoding="utf-8")
-    methods = kernel[kernel.index("    __aicore__ inline void PrepareDirectRows()"):
+    methods = kernel[kernel.index("    __aicore__ inline bool PreloadDirectRoutes()"):
                      kernel.index("    // M4→M5")]
     # Replace transport only; execute the actual Vector selection, ownership,
     # source route reads, input load, flag initialization, packing and events.
@@ -111,14 +111,27 @@ template<unsigned Group> struct Direct {
         for(unsigned i=256;i<ready.size();++i)assert(ready[i]==0xa5);
         for(unsigned i=lanes_*resultStride_;i<result.size();++i)assert(result[i]==0x5b);
         NoLiveEvents();
+        assert(deferredMte2.empty());
     }
 };
 int main() {
-    for(unsigned hosts:{2U,4U})for(unsigned rank:{0U,15U})for(bool dedup:{false,true})
+    for(unsigned hosts:{1U,2U,4U})for(unsigned rank:{0U,15U})for(bool dedup:{false,true})
     for(unsigned rows:{0U,1U,17U,256U,511U,512U,513U,2049U})for(unsigned c=0;c<28;++c)
         Direct<16>(rows,hosts*16,rank,c,dedup,256).Check();
     for(unsigned h:{256U,3584U,7168U})for(unsigned rows:{32U,512U,513U})for(unsigned c:{0U,1U,27U})
         Direct<4>(rows,8,4,c,true,h).Check();
+    // Empty selections must retire speculative DMA before cache/arena reuse.
+    for(unsigned rows:{17U,512U,513U}) {
+        Direct<16> empty(rows,64,0,0,true,256);
+        std::fill(empty.types.begin(),empty.types.end(),2);empty.Check();
+    }
+    // DIRECT-only rank validation still rejects invalid selected rows.
+    for(int bad:{-1,64}) {
+        Direct<16> invalid(17,64,0,0,true,256);invalid.table[3]=bad;
+        bool trapped=false;
+        try {invalid.PrepareDirectRows();}catch(const std::runtime_error&){trapped=true;}
+        assert(trapped);NoLiveEvents();assert(deferredMte2.empty());
+    }
 }
 '''
     cpp, exe = tmp_path / "direct.cpp", tmp_path / "direct.exe"

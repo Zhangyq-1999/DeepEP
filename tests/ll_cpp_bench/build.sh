@@ -12,8 +12,8 @@ while (($#)); do
     case "$1" in
         --help|-h)
             echo 'build.sh --shmem-root SDK [--cann-home SDK] [--mpi-home DIR] [--build-dir DIR]'
-            echo '         [--ready 0..27] (4 snapshot; 9 WQE preparation; 10 MTE packing; 11 WQE + input prefetch; 12 input6; 13 input-ready; 14 input-pair; 15 input-pipe; 16 input-stream; 17 input-front; 18 input-interleave; 19 input-l2; 20 input6-l2; 21 input6-rpipe; 22 input6-rfull; 23 input6-l2-pipe; 24 setup; 25 single; 26 lean; 27 route)'
-            echo '         [--data-l2 0..7] stage=1, RDMA TX=2, result/flags=4; requires ready=20 or 23..27'
+            echo '         [--ready 0..29] (4 snapshot; 9 WQE preparation; 10 MTE packing; 11 WQE + input prefetch; 12 input6; 13 input-ready; 14 input-pair; 15 input-pipe; 16 input-stream; 17 input-front; 18 input-interleave; 19 input-l2; 20 input6-l2; 21 input6-rpipe; 22 input6-rfull; 23 input6-l2-pipe; 24 setup; 25 single; 26 lean; 27 route; 28 route-only; 29 route-plan)'
+            echo '         [--data-l2 0..7] stage=1, RDMA TX=2, result/flags=4; requires ready=20 or 23..29'
             echo '         [--notify 0|1|2] (MTE rank / SIMT rank / SIMT per-core)'
             echo '         [--coalesce 0|1|2] [--coalesce-rows 0|1] (off/card/server; whole bucket/one hidden)'
             echo '         [--variant base|opt|ops-shmem-base|auto] [--profile ON|OFF] [--small-batch ON|OFF] [--early-reduce ON|OFF] [--recv-cores 0|8..36] [--jobs N]'
@@ -42,8 +42,8 @@ while (($#)); do
     esac
 done
 [[ $data_l2 =~ ^[0-7]$ ]] || { echo 'data-l2 must be in [0,7]' >&2; exit 2; }
-[[ $data_l2 == 0 || $ready == 20 || $ready =~ ^2[3-7]$ ]] || { echo 'data-l2 requires ready=20 or 23..27' >&2; exit 2; }
-[[ $ready =~ ^([0-9]|1[0-9]|2[0-7])$ ]] || { echo 'ready must be an integer in [0,27]' >&2; exit 2; }
+[[ $data_l2 == 0 || $ready == 20 || $ready =~ ^2[3-9]$ ]] || { echo 'data-l2 requires ready=20 or 23..29' >&2; exit 2; }
+[[ $ready =~ ^([0-9]|1[0-9]|2[0-9])$ ]] || { echo 'ready must be an integer in [0,29]' >&2; exit 2; }
 if [[ $ready != 0 && ( $notify != 0 || $coalesce != 0 || $small == ON || $simt_meta == ON ) ]]; then
     echo 'Test ready modes separately from notify, coalescing, small-batch and SIMT metadata' >&2; exit 2
 fi

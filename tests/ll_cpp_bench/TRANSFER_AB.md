@@ -667,3 +667,58 @@ TransferBatch/PreparedWrite的延迟DMA/NIC、SQ满回退和GM/CQ生命周期。
 M4顺序规约、M5事件退休、clean/profile模板编译、构建身份、共享Dispatch、
 Python单次初始化、CSV/Perfetto及62KiB报告分块均有检查。
 本机无CANN/NPU，以上不能替代真实设备正确性和性能验收；新模式均未宣称实测提速。
+
+
+## 2026-11-06：拆出路由复用、重叠 DIRECT 建表
+
+用户最新附件 fc19ee5d-2c34-4344-b997-b6fbbe91a4e6，EP32/HCCL、H3584、
+K8、E384、BF16、random seed0、warmup10、100 clean/10 profile，全部PASS。
+仍是每轮全局rank-MAX Event，单位μs，未剔除样本：
+
+| BS | base mean | all mean | lean mean | route mean | route P50 | route min–max |
+| --- | --- | --- | --- | --- | --- | --- |
+| 32 | 59.28 | 55.76 | 56.50 | 55.27 | 54.17 | 51.63–75.94 |
+| 48 | 69.07 | 63.74 | 64.04 | 64.11 | 62.92 | 60.46–80.85 |
+| 64 | 79.30 | 72.60 | 72.54 | 72.27 | 71.49 | 68.37–86.47 |
+| 72 | 82.75 | 75.41 | 75.78 | 75.82 | 74.33 | 70.98–93.87 |
+| 256 | 195.14 | 179.75 | 179.10 | 179.14 | 178.82 | 174.23–185.55 |
+
+BS32 route较同轮all降低mean0.49/P500.74μs；但P95从59.07升至64.72，
+不能把跨run的0.92μs差直接当算法收益。lean单独没有改善BS32。
+profile代表S核all为4次路由重读/776ticks，route为5次缓存读取/332ticks；
+不是相同rank/同包数的配对，只证明缓存命中及减少GM依赖。代表R核
+all初始化8槽、filter870ticks；route初始化1槽、filter195ticks，但初始化
+本身仍仅百余ticks。BS32最后缺失结果10/10均是RDMA/P；profile-only
+诊断开销仍较大，不能据此断言网络慢或累加阶段极值。
+
+- ready28/input6-l2-route-only：在all上仅加DIRECT UB路由复用，不含ready26
+  的初始化裁剪、M4元数据DMA重叠和单任务特化；DIRECT也保留全部lane。
+- ready29/input6-l2-route-plan：在28上对tokens<=512的整表做提前读取，
+  类型DMA完成后发起Table2 DMA，让它与Compares/GatherMask的类型筛选重叠。
+  已选原始row列表直接乘12形成byte offsets，再Gather选中行的rank，省掉
+  全行rank Gather、额外rank压缩及多余索引构造。筛选仍用Vector，不改任务顺序。
+- 类型筛选的0行早退也完成MTE2_V，防止未退休DMA写入之后复用的UB。
+  Scalar或Vector读取Table2之前保留MTE2完成依赖；旧Vector读者的V_MTE2
+  所有权fence保留。M3仅Scalar读取过该Table2缓存，准备结束后不再使用。
+- 原有tableUb为6KiB，readyWork提供比较mask，不增加UB或减少payload lane。
+  超过512行完全走原建表/逐包metadata路径；支持原来的1/2/4 hosts及EP64。
+  预取可能在没有DIRECT行时多读一张小表，收益需要实测，不能只凭减少指令判断。
+- M4/M5、Notify、WQE/DB/CQ、packet格式、数学顺序和双bank协议不变。
+  新身份采用另一个notify=3保留组合，仍不占poll-nop高16bit，旧身份不变。
+
+默认base/all/route/route-only/route-plan，5 clean+5 profile；删除默认lean，
+不删除旧构建/可选实验。对照28与20隔离路由复用，29与28隔离建表流水，
+27与28判断lean叠加是否有损。两台均需重编；Python仍自动安装py311_zyq，
+一次初始化跑完全部BS与版本。重点BS32 mean/P50/P95及原始范围，其他BS检查回退。
+
+schema23新增DirectRoutePreloadRows、DirectRoutePreloadWaitTicks、
+DirectRouteGatherRows，仍272words。回显route_plan=预取行数/剩余等待ticks/
+实际rank Gather行数；CSV/Perfetto保存同名snake_case字段。
+DirectRouteLoadTicks包含类型DMA、路由发起/剩余等待，重叠的Vector工作不计入；
+新计数不作为可相加的独立时间片。clean构建不启用核内采样。
+
+本地验证覆盖生产DIRECT方法的1/2/4 hosts、完整28核分配、0/1/17/256/
+511/512/513/2049行、H256/3584/7168、去重开关、非法选中rank、空DIRECT
+预取退休、UB边界保护和延迟MTE2。另检查新模式的ready调度、ordered reduction、
+M4→M5事件、异步RDMA源生命周期、4/16 rank布局的clean/profile模板、构建身份、
+共享Dispatch及紧凑报告/Perfetto。无本机CANN/NPU，不将Host通过视为设备性能结果。

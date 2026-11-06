@@ -12,7 +12,7 @@ while (($#)); do
             cat <<'USAGE'
 build_all.sh [--variants NAME[,NAME...]] [--ranks-per-host 4|16] [--jobs N] [--dry-run]
              [--cann-home DIR] [--mpi-home DIR] [--shmem-root DIR]
-Defaults: base/input6-l2-all/input6-l2-lean/input6-l2-route, plus matching diagnostics.
+Defaults: base/input6-l2-all/input6-l2-route/input6-l2-route-only/input6-l2-route-plan, plus matching diagnostics.
 Target BS32/48/64; BS72 is a neighboring case and BS256 checks regressions.
 base is the frozen original; ready-snapshot remains opt-in.
 wqe-prep prepares a private UB WQE while M4 payload staging runs, then publishes it.
@@ -23,6 +23,8 @@ input6-l2: input6's original halves with default-L2 controls only.
 input6-l2-pipe: all-region L2; overlap M4 staging with the next already-ready reduction.
 input6-l2-lean: trim unused slots, overlap metadata setup, bypass single-task compaction.
 input6-l2-route: lean plus DIRECT route reuse from its existing UB snapshot (<=512 rows).
+input6-l2-route-only: all plus DIRECT route reuse, without lean changes.
+input6-l2-route-plan: route-only plus overlapped load and selected-row rank gather.
 input6-l2-setup/single isolate the two lean changes; --variants selects them.
 Stage-only, pipe, control-only, TX-only, RX-only and input6 remain opt-in.
 input6-l2-remote: control L2 + remote-first, retaining 28/28 halves and immediate return.
@@ -85,7 +87,7 @@ IFS=, read -r -a names <<< "$variants"
 # Validate the complete selection before starting any build.
 for name in "${names[@]}"; do
     case "$name" in
-        input6-l2-setup|input6-l2-setup-profile|input6-l2-single|input6-l2-single-profile|input6-l2-lean|input6-l2-lean-profile|input6-l2-route|input6-l2-route-profile|input6-l2-stage|input6-l2-stage-profile|input6-l2-tx|input6-l2-tx-profile|input6-l2-rx|input6-l2-rx-profile|input6-l2-pipe|input6-l2-pipe-profile|input6-l2-all|input6-l2-all-profile|input6-l2|input6-l2-profile|input6-l2-remote|input6-l2-remote-profile|input6-r32|input6-r32-profile|input6-remote|input6-remote-profile|input6-fused|input6-fused-profile|input6-rpipe|input6-rpipe-profile|input6-rfull|input6-rfull-profile) ;;
+        input6-l2-route-only|input6-l2-route-only-profile|input6-l2-route-plan|input6-l2-route-plan-profile|input6-l2-setup|input6-l2-setup-profile|input6-l2-single|input6-l2-single-profile|input6-l2-lean|input6-l2-lean-profile|input6-l2-route|input6-l2-route-profile|input6-l2-stage|input6-l2-stage-profile|input6-l2-tx|input6-l2-tx-profile|input6-l2-rx|input6-l2-rx-profile|input6-l2-pipe|input6-l2-pipe-profile|input6-l2-all|input6-l2-all-profile|input6-l2|input6-l2-profile|input6-l2-remote|input6-l2-remote-profile|input6-r32|input6-r32-profile|input6-remote|input6-remote-profile|input6-fused|input6-fused-profile|input6-rpipe|input6-rpipe-profile|input6-rfull|input6-rfull-profile) ;;
         input-l2|input-l2-profile|input-interleave|input-interleave-profile|input-stream|input-stream-profile|input-front|input-front-profile|input-pair|input-pair-profile|input-pipe|input-pipe-profile|input6|input6-profile|input-ready|input-ready-profile|wqe-prep|wqe-prep-profile|wqe-prefetch|wqe-prefetch-profile|mte-pack|mte-pack-profile|plan-compact|plan-compact-profile|ready-r32|ready-r32-profile|ready-r36|ready-r36-profile) ;;
         stage-stream|stage-stream-profile|stage-prefetch|stage-prefetch-profile|stage-pair|stage-pair-profile|ready-snapshot|ready-snapshot-profile|ready-fast|ready-pipeline|ready-fast-profile|ready-pipeline-profile|ready-task|ready-shared|ready-task-profile|ready-shared-profile|notify-simt|notify-core|notify-simt-profile|notify-core-profile|card-all|card-row|server-all|server-row|card-all-profile|card-row-profile|server-all-profile|server-row-profile|batch|batch-profile|batch-pipeline|batch-pipeline-profile|local-first|local-first-profile|poll800|poll800-profile|meta|meta-profile|prefetch|prefetch-profile|prepare|flag|prepare-flag|prepare-profile|flag-profile|prepare-flag-profile|issue|probe|issue-probe|issue-profile|probe-profile|issue-probe-profile|base|remote|pipeline|return|ops-shmem-base|ref-profile|opt-profile|r36-profile|early-profile|remote-profile|pipeline-profile|return-profile) ;;
         *) fail "Unknown experiment: $name (see --help)";;
@@ -117,6 +119,8 @@ for name in "${names[@]}"; do
         input6-l2-single|input6-l2-single-profile) ready=25; data_l2=7;;
         input6-l2-lean|input6-l2-lean-profile) ready=26; data_l2=7;;
         input6-l2-route|input6-l2-route-profile) ready=27; data_l2=7;;
+        input6-l2-route-only|input6-l2-route-only-profile) ready=28; data_l2=7;;
+        input6-l2-route-plan|input6-l2-route-plan-profile) ready=29; data_l2=7;;
         input6-l2-remote|input6-l2-remote-profile) ready=20; remote=ON;;
         input6-r32|input6-r32-profile) ready=12; recv=32;;
         input6-remote|input6-remote-profile) ready=12; remote=ON;;
