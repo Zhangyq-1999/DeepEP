@@ -8,6 +8,7 @@ import math
 import os
 from pathlib import Path
 import statistics
+import subprocess
 import sys
 import threading
 import time
@@ -42,12 +43,12 @@ def summarize(per_rank):
                        for i in worst])
 
 
-TABLE_HEADER = " BS variant        sync     N     mean      p50      min      p99       max   tail50  rank0p50 error"
+TABLE_HEADER = " BS variant                     kind    sync     N     mean      p50      min      p99       max   tail50  rank0p50 error"
 
 
 def result_row(r):
     s = r["rank_max"]
-    return (f"{r['tokens']:3} {r['variant']:14} {r['sync']:6} {s['n']:3} {s['mean']:8.2f} {s['p50']:8.2f} {s['min']:8.2f} "
+    return (f"{r['tokens']:3} {r['variant']:27} {r.get('kind','clean'):7} {r['sync']:6} {s['n']:3} {s['mean']:8.2f} {s['p50']:8.2f} {s['min']:8.2f} "
             f"{s['p99']:8.2f} {s['max']:9.2f} {r['rank_max_tail50']['p50']:8.2f} "
             f"{r['rank0']['p50']:9.2f} {r['max_abs_error']:.6g}")
 
@@ -69,7 +70,8 @@ def format_report(config, identity, results, run_id, status="RUNNING"):
              f"SW source={c['source_id']} env={c['env']} python={c['python']} torch={c['torch']} npu={c['torch_npu']} "
              f"variants={','.join(identity)}",
              "SYNC host=Gloo device=SHMEM-mixed-71a2154 hccl=HCCL-all_reduce; device gates use local ACL Notify",
-             "Event_us=per-iteration rank-MAX; no samples removed; worst iteration is 1-based", TABLE_HEADER]
+             "Event_us=per-iteration rank-MAX; no samples removed; worst iteration is 1-based",
+             "clean=performance; profile=instrumented diagnostics; Perfetto uses independent core-entry origins", TABLE_HEADER]
     lines += [result_row(r) for r in results]
     lines += [f"ID {v} aiv={i['active_aiv']} recv={i['recv_cores']} qps={i['rdma_qps']} options={i['return_options']} layout={i.get('core_layout','halves')} control_l2={int(i.get('control_l2',False))} ready={i.get('ready_mode',0)} remote_first={int(i.get('remote_first',False))}"
               for v,i in identity.items()]
@@ -138,7 +140,8 @@ class Progress:
 
 def native_args(a):
     args = ["--devices",a.devices]
-    for name in ("tokens","hidden","topk","experts","capacity","dtype","route","seed","warmup","iters","timeout","kernel_timeout"):
+    for name in ("tokens","hidden","topk","experts","capacity","dtype","route","seed","warmup","iters","timeout","kernel_timeout",
+                 "profile","profile_iters","profile_frequency_hz"):
         args += ["--"+name.replace("_","-"),str(getattr(a,name))]
     return args
 
@@ -192,9 +195,57 @@ def load_native(directory, variant):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     sys.modules[name] = module
-    if getattr(module,"suite_api",0)!=1:
+    if getattr(module,"suite_api",0)!=2:
         raise RuntimeError(f"Rebuild {variant}: bash tests/ll_python_bench/build_all.sh")
     return module
+
+
+def append_csv(path, rows):
+    rows = list(rows)
+    if not rows: return
+    exists = path.exists()
+    with path.open("a",newline="") as f:
+        writer = csv.DictWriter(f,fieldnames=list(rows[0]))
+        if not exists: writer.writeheader()
+        writer.writerows(rows)
+
+
+def write_timing_artifacts(directory, result):
+    """Same offline report format as C++; only global rank 0 writes these files."""
+    directory.mkdir(parents=True,exist_ok=True)
+    c,i,s = result["config"],result["identity"],result["rank_max"]
+    append_csv(directory/"summary.csv",[dict(
+        ep=c["world"],tokens=result["tokens"],hidden=c["hidden"],topk=c["topk"],experts=c["experts"],
+        dtype=c["dtype"],route=c["route"],seed=c["seed"],capacity=c["capacity"],warmup=c["warmup"],
+        source_id=i["source_id"],samples=s["n"],active_aiv=i["active_aiv"],recv_cores=i["recv_cores"],
+        entry_sync=result["sync"],profile_build=int(result["kind"]=="profile"),
+        profile_level=c["profile"] if result["kind"]=="profile" else 0,
+        rank_max_mean_us=s["mean"],rank_max_min_us=s["min"],rank_max_max_us=s["max"],p50_us=s["p50"],p99_us=s["p99"],
+        core_layout=i.get("core_layout","halves"),control_l2=int(i.get("control_l2",False)),
+        ready=i.get("ready_mode",0),remote_first=int(i.get("remote_first",False)))])
+    ranks = result["per_rank_us"]
+    append_csv(directory/"rank-max.csv",[dict(tokens=result["tokens"],iteration=j,
+        rank=max(range(len(ranks)),key=lambda r:ranks[r][j]),us=value)
+        for j,value in enumerate(result["rank_max_us"])])
+
+
+def gather_profile_bytes(dist, world, value):
+    parts = [None]*world
+    dist.all_gather_object(parts,value)
+    if any(not isinstance(p,bytes) or len(p)!=len(value) for p in parts):
+        raise ValueError("Incomplete native profile gather")
+    return b"".join(parts)
+
+
+def render_profiles(module_root, output, modes):
+    reporter = module_root/"bin/ll_python_profile_report"
+    for mode in modes:
+        result = subprocess.run([str(reporter),"--suite",str(output/"profiles"/mode)],
+                                text=True,capture_output=True,check=True)
+        (output/f"profiling-{mode}.txt").write_text(result.stdout)
+        print(f"LL_PY_PROFILE sync={mode}\n"+result.stdout,flush=True)
+    if any((output/"profiles").glob("*/*/perfetto/*.perfetto.json")):
+        print(f"Perfetto: {output}/profiles/<sync>/<phase>-<variant>/perfetto/bs*-*.perfetto.json",flush=True)
 
 
 def runtime_diagnostics(output, rank, device, stage, local):
@@ -233,7 +284,10 @@ def main():
     for name in ("ranks-per-host","hidden","topk","experts","capacity","seed","warmup","iters","timeout","kernel-timeout"):
         p.add_argument("--"+name,type=int,required=True)
     p.add_argument("--gate-delay-ms",type=float,default=0)
-    p.add_argument("--variants",help="Clean variants sharing one SHMEM session")
+    p.add_argument("--variants",help="Clean and diagnostic phases sharing one SHMEM session")
+    p.add_argument("--profile",type=int,choices=(0,1,2),default=0)
+    p.add_argument("--profile-iters",type=int,default=10)
+    p.add_argument("--profile-frequency-hz",type=int,default=1000000000)
     p.add_argument("--check-hccl",action="store_true")
     a = p.parse_args()
     rank,world,local = (int(os.environ[k]) for k in ("RANK","WORLD_SIZE","LOCAL_RANK"))
@@ -312,7 +366,12 @@ def main():
             phase_output.mkdir(parents=True,exist_ok=True)
             identity = bench.identity()
             require_agreement(dist,identity,world,rank,local,phase_output,"native")
+            is_profile = bool(identity.get("profile_build",False))
+            if is_profile != variant.endswith("-profile"):
+                raise RuntimeError(f"Rebuild {variant}: clean/profile identity mismatch")
+            iterations = a.profile_iters if is_profile else a.iters
             identities[variant] = identity
+            if rank==0 and is_profile: print("\n"+TABLE_HEADER,flush=True)
             if a.sync in ("device","both"):
                 progress.set(f"rank={rank} SHMEM device entry sync preparation")
                 gate = ShmemGate(bench,dist,a.gate_delay_ms)
@@ -332,29 +391,38 @@ def main():
                         bench.sample(callback,mode!="host")
                         progress.set(f"rank={rank} variant={variant} BS={bs} sync={mode} warmup {i+1}/{a.warmup}",emit=False)
                     samples = []
-                    for i in range(a.iters):
-                        progress.set(f"rank={rank} variant={variant} BS={bs} sync={mode} samples {i}/{a.iters}",emit=False)
+                    diagnostics = output/"profiles"/mode/f"{phase}-{variant}"
+                    if is_profile: bench.begin_profile(str(diagnostics),mode)
+                    for i in range(iterations):
+                        progress.set(f"rank={rank} variant={variant} BS={bs} sync={mode} samples {i}/{iterations}",emit=False)
                         samples.append(float(bench.sample(callback,mode!="host")))
                     progress.set(f"rank={rank} variant={variant} BS={bs} sync={mode} precision check",emit=False)
                     error = max(error,bench.precision())
                     record = dict(config=config,identity=identity,rank=rank,variant=variant,tokens=bs,sync=mode,
                                   sync_impl=sync_implementation(mode),
+                                  kind="profile" if is_profile else "clean",
                                   measurement="native_kernel_event_us",max_abs_error=error,samples_us=samples)
                     raw.write(json.dumps(record)+"\n"); raw.flush()
                     progress.set(f"rank={rank} variant={variant} BS={bs} sync={mode} gather results",emit=False)
                     gathered = [None]*world
                     dist.all_gather_object(gathered,dict(samples=samples,error=error))
+                    if is_profile:
+                        progress.set(f"rank={rank} variant={variant} BS={bs} sync={mode} profile gather/Perfetto",emit=False)
+                        maxima = [max(v["samples"][j] for v in gathered) for j in range(iterations)]
+                        bench.finish_profile(maxima,lambda data:gather_profile_bytes(dist,world,data))
                     if rank==0:
                         result = summarize([v["samples"] for v in gathered])
                         result.update(config=config,identity=identity,variant=variant,tokens=bs,sync=mode,
+                                      kind="profile" if is_profile else "clean",
                                       sync_impl=sync_implementation(mode),
                                       max_abs_error=max(v["error"] for v in gathered))
                         (phase_output/f"bs{bs}-{mode}.json").write_text(json.dumps(result,indent=2)+"\n")
+                        write_timing_artifacts(diagnostics,result)
                         s = result["rank_max"]
                         path = output/"summary.csv"
                         exists = path.exists()
                         with path.open("a",newline="") as f:
-                            row = dict(bs=bs,variant=variant,sync=mode,sync_impl=sync_implementation(mode),**s,
+                            row = dict(bs=bs,variant=variant,kind=result["kind"],sync=mode,sync_impl=sync_implementation(mode),**s,
                                        tail50_p50=result["rank_max_tail50"]["p50"],rank0_p50=result["rank0"]["p50"],
                                        max_abs_error=result["max_abs_error"])
                             writer = csv.DictWriter(f,fieldnames=list(row))
@@ -362,7 +430,10 @@ def main():
                             writer.writerow(row)
                         results.append(result)
                         (output/"report.txt").write_text(format_report(config,identities,results,output.name))
-                        print("\n"+TABLE_HEADER+"\n"+result_row(result)+"\n"+diagnostic_row(result),flush=True)
+                        # Profile distribution details are in the final compact report.
+                        # Keep interim progress small enough to paste with that report.
+                        print(result_row(result) if is_profile else
+                              "\n"+TABLE_HEADER+"\n"+result_row(result)+"\n"+diagnostic_row(result),flush=True)
                     dist.barrier()
             torch.npu.synchronize(); dist.barrier()
             if phase==0: owner.release_case()
@@ -371,13 +442,21 @@ def main():
             (phase_output/f"rank-{rank}.SAMPLED").write_text("precision and sampling passed\n")
         progress.set(f"rank={rank} SHMEM finalize")
         torch.npu.synchronize(); dist.barrier(); owner.close(); dist.barrier()
-        (output/f"rank-{rank}.PASS").write_text("precision, sampling and SHMEM finalize passed\n")
         if a.sync=="hccl": dist.destroy_process_group(gate.group)
+    if rank==0 and any(i.get("profile_build") for i in identities.values()):
+        progress.set("rank=0 render compact profile report")
+        render_profiles(Path(a.module_dir).parent,output,modes)
+    dist.barrier()
+    (output/f"rank-{rank}.PASS").write_text("precision, sampling, profiling and SHMEM finalize passed\n")
     dist.destroy_process_group()
     if rank==0:
         report = format_report(config,identities,results,output.name,"PASS")
         (output/"report.txt").write_text(report)
-        print("\n"+report,flush=True)
+        if any(i.get("profile_build") for i in identities.values()):
+            # The compact report already includes clean/profile tables for each BS.
+            print("\n"+"\n".join(line for line in report.splitlines()
+                if line.startswith(("LL_PY_REPORT_","CFG ","SW ","SYNC ","ID "))),flush=True)
+        else: print("\n"+report,flush=True)
     progress.set(f"rank={rank} PASS"); progress.stopped.set()
 
 

@@ -133,6 +133,11 @@ void compact_record(const Record& r, bool brief = false)
                            RdmaFirstPut, RdmaLastPut, FinalFirstReady, FinalLastReady, FinalLastStore, DrainEnd, PipeDone});
     else
         compact_times(r, {InitEnd, StageEnd, CoreNotifyEnd, NotifyEnd, DirectFirstSubmit, DirectLastSubmit, DirectEnd, PipeDone});
+    if (r.receive && r[Level] >= 2)
+        std::cout << "\n  m4=" << r[PartialLocalIssueTicks] << '/' << r[PartialGetIssueTicks]
+                  << '/' << r[PartialLocalWaitTicks] << '/' << r[PartialGetWaitTicks]
+                  << '/' << r[PartialComputeIssueTicks] << '/' << r[PartialOutputWaitTicks]
+                  << '/' << r[PartialPackTicks] << '/' << r[PartialInputDrainTicks];
     if (brief) {
         std::cout << "\n  rdma=" << r[RdmaPackets] << '/' << r[RdmaDeferredPackets]
                   << '/' << r[RdmaDeferGapTicks] << '/' << r[RdmaStageIssueTicks] << '/' << r[RdmaStageWaitTicks]
@@ -218,6 +223,34 @@ void compact_record(const Record& r, bool brief = false)
                   << " reduce_ticks=" << r[LocalReduceTicks] << '/' << r[RemoteReduceTicks] << '\n';
     }
 }
+// Same real collective iteration, never a concatenation of unrelated samples.
+// These are independent maxima with core-local origins, not additive durations.
+void compact_supply(const std::vector<Record>& records)
+{
+    const Record *prep=nullptr,*drain=nullptr,*notify=nullptr,*group=nullptr,*input=nullptr;
+    auto interval=[](const Record& r,Word begin,Word end) {
+        return r.present[begin] && r.present[end] && r[end]>=r[begin] ? r[end]-r[begin] : 0U;
+    };
+    for (const auto& r:records) {
+        if(r.present[StageEnd] && (!prep || r[StageEnd]>(*prep)[StageEnd])) prep=&r;
+        if(r.present[StageDrained] && (!drain || r[StageDrained]>(*drain)[StageDrained])) drain=&r;
+        if(r.present[NotifyEnd] && (!notify || interval(r,NotifyBegin,NotifyEnd)>interval(*notify,NotifyBegin,NotifyEnd))) notify=&r;
+        if(r.present[ReadyObserved] && (!group || interval(r,ReadyBegin,ReadyObserved)>interval(*group,ReadyBegin,ReadyObserved))) group=&r;
+        if(r[Level]>=2 && r.receive && (!input || r[PartialLocalWaitTicks]+r[PartialGetWaitTicks]>
+            (*input)[PartialLocalWaitTicks]+(*input)[PartialGetWaitTicks])) input=&r;
+    }
+    std::cout << " X";
+    if(prep) std::cout << " prep=" << (*prep)[Rank] << '/' << (*prep)[Core] << ':' << (*prep)[StageEnd];
+    if(drain) std::cout << " drained=" << (*drain)[Rank] << '/' << (*drain)[Core] << ':' << (*drain)[StageDrained];
+    if(notify) std::cout << " notify=" << (*notify)[Rank] << '/' << (*notify)[Core] << ':'
+        << interval(*notify,NotifyBegin,NotifyLocalReady) << '/' << interval(*notify,NotifyLocalReady,NotifyEnd);
+    if(group) std::cout << " group=" << (*group)[Rank] << '/' << (*group)[Core] << ':'
+        << ((*group)[ReadyTaskRounds]?"O":"W") << interval(*group,ReadyBegin,ReadyObserved)
+        << '/' << (*group)[ReadyMissingRank] << '/' << (*group)[ReadyMissingCore] << '/' << (*group)[ReadyMissingCount];
+    if(input) std::cout << " inputwait=" << (*input)[Rank] << '/' << (*input)[Core] << ':'
+        << (*input)[PartialLocalWaitTicks] << '/' << (*input)[PartialGetWaitTicks];
+    std::cout << '\n';
+}
 void suite_report(const fs::path& root)
 {
     std::vector<fs::path> directories;
@@ -295,6 +328,8 @@ void suite_report(const fs::path& root)
                  "IQR=candidates; WIDE=(max-min)/P50>20%; full samples/fields in CSV; '-'=absent.\n"
                  "e(S)=init/stage/core_notify/notify/direct_first/direct_last/direct_end/pipe\n"
                  "e(R)=init/stage_drained/core_notify/ready_begin/ready_observed/ready_end/partial_end/put_first/put_last/final_first/final_last/store/drain/pipe\n"
+                 "m4=local_issue/get_issue/local_wait/get_wait/compute_issue/output_wait/pack/input_drain cumulative ticks\n"
+                 "X=same-sample global maxima r/c:ticks; prep/drained=own-entry offsets, notify=local_wait/publish, group=W(wait)|O(observe)/missing_rank/core/count, inputwait=local/get; not additive\n"
                  "top4 cumulative ticks: s.=stage_, d.=direct_, m4.=partial_, m5.=final_, g.=ready_; overlapping costs are not additive.\n"
                  "rdma=n/deferred/gap/stage_issue/stage_wait/put/quiet; stage=wait_calls/pairs/prefetch_calls; stream=packed_posts/eager/ticks\n"
                  "lg=local/get; xfer=prepare_ticks/prepared/fallback/mte_pack; input=lanes/early_reads/used_reads; vec=pair_groups/barriers; arith=stream_steps/front_loads\n"
@@ -355,6 +390,7 @@ void suite_report(const fs::path& root)
                 if (ranks.size() != integer(d.config.at("ep"))) throw std::runtime_error("Partial global diagnostics");
                 std::cout << "D " << diagnostic_id(d.variant) << ' ' << (i == worst ? "worst" : "p50") << " i=" << i
                           << " event_r=" << event.rank << " us=" << event.us << '\n';
+                compact_supply(records);
                 const Record* receiveRecord = nullptr;
                 for (bool receive : {false, true}) {
                     const Record* tail = nullptr;

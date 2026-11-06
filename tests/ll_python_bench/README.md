@@ -7,12 +7,12 @@
 | 参数 | 默认值 |
 | --- | --- |
 | 主机 | `90.90.93.84,90.90.93.184` |
-| 算子 | 干净的 `base,input6,input-interleave,input-l2` |
+| 算子 | `base,input6,input6-l2,input6-remote,input6-l2-remote`，各有独立打点版 |
 | BS | `32,48,64,72,256` |
 | Hidden / TopK / Experts | `3584 / 8 / 384` |
 | 数据和路由 | BF16、random、seed 0 |
 | Capacity | 256 |
-| 预热 / 正式采样 | 10 / 100 次 |
+| 预热 / 干净版采样 / 打点版采样 | 10 / 100 / 10 次 |
 | 算子前同步 | SHMEM 混合 MTE/RoCE 设备同步，计时不包含同步 |
 
 Python 流程复用 C++ 用例的输入、路由、精度检查和原始 Combine kernel。Dispatch 只负责准备 Combine 的输入，放在计时外。每个 worker 只初始化一次 NPU、SHMEM；使用 HCCL 时也只创建一次 HCCL 通信组，依次完成所有版本的全部 BS。
@@ -22,16 +22,14 @@ Python 流程复用 C++ 用例的输入、路由、精度检查和原始 Combine
 在现有仓库目录执行：
 
 ```bash
-git fetch origin
-git switch perf/ll-combine-small-batch
-git pull --ff-only origin perf/ll-combine-small-batch
+git pull --ff-only https://github.com/Zhangyq-1999/DeepEP.git perf/ll-combine-small-batch
 
 bash tests/ll_python_bench/build_all.sh
 ```
 
 脚本自动激活 `py311_zyq`，用该环境的 Python 编译并安装测试扩展。扩展、对应 kernel 库和构建记录安装在 `py311_zyq/lib/python3.11/site-packages/deepep_ll_bench/base/`。运行脚本自动切换到同一环境，并加载这里的安装产物。
 
-默认编译七个干净版本，复用已有 Dispatch 编译产物。`--variants base` 可缩减为原版。脚本保留环境中的 Torch 和 torch-npu 版本，只在缺少构建工具时安装 pybind11 或 CMake。测试扩展独立安装，环境中原有的 `deep_ep` 包保持不变。
+默认编译五个干净版本及五个独立打点版本，复用已有 Dispatch 编译产物。`--variants base` 缩减为 base/ref-profile；编译和运行同时传 `--profile 0` 则只测干净版。脚本保留环境中的 Torch 和 torch-npu 版本，只在缺少构建工具时安装 pybind11 或 CMake。测试扩展独立安装，环境中原有的 `deep_ep` 包保持不变。
 
 编译和运行都会打印 `ENV=py311_zyq PYTHON=...`，安装完成后打印 `INSTALLED=...`。即使当前终端激活了 `base` 或其他环境，脚本也会切换到 `py311_zyq`；激活失败则退出。若 Conda 不在常见路径，可先设置 `CONDA_EXE=/实际路径/bin/conda`。
 
@@ -116,24 +114,26 @@ bash tests/ll_python_bench/run_all.sh \
 
 ## 参数和其他实验
 
-默认一次测试七个版本。只测原版可用 `--variant base`；要测聚合实验，两台机器都编译同一版本，然后在第一台启动，第二台粘贴输出的命令：
+默认一次测试五个干净版本和对应的打点版本。只测原版可用 `--variant base`；要测聚合实验，两台机器都编译同一版本，然后在第一台启动，第二台粘贴输出的命令：
 
 ```bash
-bash tests/ll_python_bench/build.sh --variant card-all
+bash tests/ll_python_bench/build_all.sh --variants card-all
 bash tests/ll_python_bench/run_all.sh --variant card-all
 ```
 
 可用 `--variants base,wqe-prefetch` 指定比较列表，或 `--variant base` 只选一个版本。版本各自独立安装、使用独立 kernel 库，原版 kernel 保持不变。版本切换在所有 rank 完成上一阶段后释放 case、清空共享工作区及注册暂存区，再准备下一版输入；SHMEM 通信资源保持到整个测试结束才释放。
 
-当前七版对照可在两台机器上各用一条命令编译安装，默认仅编译干净版，Dispatch 复用已有构建：
+当前默认先测五个干净版本，再测相同策略的五个打点版本，只有一次 SHMEM 初始化：
 
 ```bash
 bash tests/ll_python_bench/build_all.sh
 ```
 
-默认安装 `base,input6,input6-l2,input6-r32,input6-remote,input6-rpipe,input6-rfull`，共用一次初始化。input6 保留为 BS32–64 的已测对照；前三项分别只改控制区 L2、接收核数、跨机优先的建表/分配顺序。input6-rpipe / input6-rfull 在 input6-remote 上叠加首末包立即提交的回传流水，中间包分别在下一任务输入读取发起后 / 完整规约结束后提交。默认都保留原半区布局。56 AIV 下 input6-r32 为 24 DIRECT / 32 接收核，其余为 28/28；所有核仍参与本卡准备，接收组也执行机内规约后的 RDMA 回传。
+默认对照为 `base,input6,input6-l2,input6-remote,input6-l2-remote`。新组合 input6-l2-remote 采用 input6 的 28/28 半区分工，启用 prepare/ready 控制区 L2 和跨机优先，继续立即提交回传。不改变 payload 缓存策略、累加顺序、通知格式、QP 所有权或 CQ 回收。
 
-build_all.sh 自动安装到 py311_zyq，两个节点都需重编；run_all.sh 自动使用同一环境。ID 行输出 layout、control_l2、ready、recv、remote_first，便于确认实际构建。input6-l2 的 prepare/ready 发布、读取、清零均使用默认 L2，payload/data-with-flag/RDMA 暂存继续旁路；它与旧的奇偶布局 input-l2 不同。三项组合 input6-fused 为可选项，先测默认单项再决定是否叠加。此前奇偶布局没有超过 input6，input-interleave/input-l2 不再默认编译；input-stream、input-front、input-pipe 等旧版仍可用 --variants 选择。新版本尚无 NPU 实测，详见 [参考分支审计和实验记录](../ll_cpp_bench/TRANSFER_AB.md)。
+11 月 6 日 EP32/HCCL 实测 BS32 mean：input6=58.61、input6-l2=56.37、input6-remote=56.85 μs，故新一轮组合这两项。input6-r32、input6-rpipe、input6-rfull 对 BS32 没有稳定优势，移出默认但仍可用 `--variants` 选择。新组合尚待 NPU 实测。
+
+build_all.sh 自动安装到 py311_zyq，两台都需重编；run_all.sh 自动使用同一环境。ID 行保留 layout、control_l2、ready、recv、remote_first。干净版没有 profile 缓冲或核内采样分支；打点版是另一份 Device 库。base 对应 ref-profile，其余对应同名 `-profile`。扩展 suite_api=2，旧扩展会提示重编。
 
 EP32 两台分别编译：
 
@@ -147,7 +147,7 @@ bash tests/ll_python_bench/build_all.sh --ranks-per-host 16
 bash tests/ll_python_bench/run_all.sh --ranks-per-host 16 --sync hccl
 ```
 
-一条命令连续跑七个版本，在第二台粘贴打印的命令即可。整个测试共用一个新 RUN_ID。省略 `--ranks-per-host 16` 就是双机各 12–15 卡的 EP8。省略 `--sync hccl` 则统一用默认 SHMEM device 同步，不混用两种同步结果判断算子收益。默认 BS 为 `32,48,64,72,256`，可用 `--tokens` 修改。
+一条命令连续跑全部干净版和打点版，在第二台粘贴打印的命令即可。整个测试共用一个新 RUN_ID。省略 `--ranks-per-host 16` 就是双机各 12–15 卡的 EP8。省略 `--sync hccl` 则统一用默认 SHMEM device 同步，不混用两种同步结果判断算子收益。默认 BS 为 `32,48,64,72,256`，可用 `--tokens` 修改。
 
 IP、端口、设备和 case 参数都可修改：
 
@@ -174,13 +174,14 @@ PyTorch 默认使用端口 30011，SHMEM 使用下一端口 30012。`--shmem-ip-
 
 若其他配置不同，每台机器会打印一段 `LL_PY_MISMATCH_BEGIN` 至 `LL_PY_MISMATCH_END` 的错误信息，列出不同的字段、rank 和实际值。复制这一段即可定位差异。全部 rank 的配置保存在 `rank-0-configuration.json` 等文件中。
 
-每个 BS 完成后立即输出表格，并保存到 `results/ll-python/<RUN_ID>/`。全部结束后，第一台集中打印 `LL_PY_REPORT_BEGIN` 至 `LL_PY_REPORT_END` 的汇总块。正常跑完后，复制这一块即可分析两台机器的全局数据。
+每个 BS 完成后立即输出时延，并保存到 `results/ll-python/<RUN_ID>/`。默认带打点时，全部结束后第一台打印 `LL_PY_PROFILE` 后的 `LL_COMBINE` 紧凑报告，再打印配置、版本及 PASS 信息。把这些最终回显发来即可分析全局数据，无需发送 Perfetto 文件。超过容量时自动用 `PASTE_BEGIN/PASTE_END` 分块，每块不超过 62 KiB；每块都要保留。`--profile 0` 时仍打印完整 `LL_PY_REPORT_BEGIN` 至 `LL_PY_REPORT_END`。
 
 汇总先给配置和时延表，再列每个 case 的 `D` 行。表格包含均值、P50、最小值、P99、最大值、末 50 轮 P50、rank0 P50 和最大精度误差。`D` 行补充前 3／10／20 轮均值、各 rank 的 P50 范围，以及最慢 3 轮的轮次、rank 和耗时。轮次从 1 开始；并列最慢时显示编号最小的 rank。`--sync both` 还输出设备同步相对 Host 同步的 P50 降幅。
 
 | 输出 | 内容 |
 | --- | --- |
-| `report.txt` | 与首台汇总块相同的文本，每完成一个 case 就更新 |
+| `report.txt` | 完整时延与分布统计，每完成一个 case 就更新 |
+| `profiling-<sync>.txt` | 默认最终打屏的核内紧凑报告，包含 clean/profile 时延对照及全部粘贴分块 |
 | `summary.csv` | 每个版本、BS、同步方式的时延统计；`sync_impl` 记录实际同步实现 |
 | `<variant>/bs32-device.json` 等 | 配置、所有 rank 的原始样本和汇总 |
 | `rank-N.jsonl` | 本 rank 每个 BS 的样本，完成后立即写盘 |
@@ -201,3 +202,27 @@ PyTorch 默认使用端口 30011，SHMEM 使用下一端口 30012。`--shmem-ip-
 显式使用 `--sync hccl` 时，初始化会分别打印建组、张量分配、首次 `all_reduce` 和 stream 同步阶段。脚本还启用 `PYTHONFAULTHANDLER`，进程收到段错误信号时尽量将 Python 调用栈写入 `node-N/console.log`。
 
 Host 检查覆盖了启动参数、采样汇总、单次初始化和入队顺序。CANN 编译及双机 NPU 测量需要在目标环境执行。
+
+## Python 核内打点及 Perfetto
+
+默认 `--profile 2 --profile-iters 10`，每个打点阶段先预热 10 次；干净性能仍测 100 次，两类结果在表格中分别标为 clean/profile。`--sync hccl` 下两类采用同一个 HCCL gate、相同工作流和输入，HCCL 在 SHMEM 之前初始化。profile 缓冲清零在 gate 前，下载/CSV 写入在 end Event 完成后，跨 rank 收集在整组采样结束后使用 Gloo。不要用 profile Event 代替 clean 性能。
+
+每个 BS 都导出：
+
+- `results/ll-python/$RUN_ID/profiles/hccl/<phase>-<variant>/rank-N-profile.csv`：该机器全部本地 rank、全部核、全部 profile 样本。
+- 同目录 `diagnostic.csv`、`producers.csv`：第一台保存全局代表核及真实 Dispatch 回传来源。
+- 同目录 `perfetto/bs32-p50-i*.perfetto.json`、`bs32-worst-i*.perfetto.json`：第一台汇集所有 rank 和全部核，选择同一个真实全局 P50/最慢轮次。每个 BS 都有对应文件。
+- `profiling-hccl.txt`：第一台自动生成并打屏的紧凑分析文本，包含每 BS 的 clean/profile mean、P50、min/max 和核内计数，沿用 C++ 的 D/S/R/G/T 解释及 62 KiB 分块。
+
+使用其他同步时，路径中的 hccl 对应改为 host/device。CSV 保留 ticks，Perfetto 默认按 1 GHz 换算（可传 `--profile-frequency-hz`，0 只落 CSV）；每条核轨道以自身 entry 为原点，不能据此相减跨卡时钟、推算 RDMA 单程时延或启动偏差。P50 图选排序中间的一次真实迭代，不拼接不同轮次。
+
+新增 producer 导出使用独立 coalesce 构建选项，不再把 ready 模式复用的身份位误认成合包，避免错误扣减 DIRECT 核数或将 RDMA 标为 packed/relay。算子数据路径不受此诊断修复影响。
+
+回显独立于 Perfetto：每轮每 rank 除最长发送/接收核、最晚 Put、合包核外，另保留
+最晚准备、最晚准备 drain、最长通知、最长 group-ready 窗口、最大 M4 取数等待
+的核，去重后汇总。`X` 行报告同一真实全局轮次的准备/通知/group-ready/输入等待
+极值及 rank/core；`m4` 固定列出本地/机内读取发起、等待、计算发起、输出等待、
+打包、输入 drain 累计 ticks，不依赖 top4 是否把它们选中。RDMA 暂存/发布/CQ、
+最终缺失 flag 的 token/slot/block、producer 链路和重复拖尾频次仍保留。
+独立阶段最大值与累计计数不能相加当成一条跨 rank 流水；回显也不把 put 返回
+当作对端数据已到达。所有新增筛选发生在 Host 采样后，无新增 Device 热路径打点。

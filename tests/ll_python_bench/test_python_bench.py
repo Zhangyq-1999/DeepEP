@@ -31,7 +31,7 @@ def test_default_and_four_host_plan():
     assert cmd[cmd.index("--devices")+1]=="12,13,14,15"
     assert "--nproc_per_node=4" in cmd
     assert cmd[cmd.index("--sync")+1]=="device"
-    assert cmd[cmd.index("--variants")+1]=="base,input6,input6-l2,input6-r32,input6-remote,input6-rpipe,input6-rfull"
+    assert cmd[cmd.index("--variants")+1]=="base,input6,input6-l2,input6-remote,input6-l2-remote,ref-profile,input6-profile,input6-l2-profile,input6-remote-profile,input6-l2-remote-profile"
     assert launch.plan(args)[2]!=run_id
     other = launch.parser().parse_args([run_id,"--node-rank","1"])
     assert launch.plan(other)[3]==out
@@ -40,7 +40,7 @@ def test_default_and_four_host_plan():
                                       "--ranks-per-host","16","--devices",devices])
     cmd = launch.plan(args)[-1]
     assert "--nnodes=4" in cmd and "--nproc_per_node=16" in cmd
-    for variant in ("base", "input6", "input6-l2", "input6-r32", "input6-remote", "input6-rpipe", "input6-rfull"):
+    for variant in ("base", "input6", "input6-l2", "input6-r32", "input6-remote", "input6-l2-remote", "input6-rpipe", "input6-rfull"):
         for hosts in ("a,b", "a,b,c,d"):
             args = launch.parser().parse_args(["same-run", "--hosts", hosts, "--node-rank", "1",
                                               "--ranks-per-host", "16", "--variant", variant, "--sync", "hccl"])
@@ -48,6 +48,9 @@ def test_default_and_four_host_plan():
             assert build.name == variant
             assert cmd[cmd.index("--devices")+1] == devices
             assert cmd[cmd.index("--sync")+1] == "hccl"
+    args = launch.parser().parse_args(["--node-rank","0","--profile","0"])
+    cmd = launch.plan(args)[-1]
+    assert cmd[cmd.index("--variants")+1] == "base,input6,input6-l2,input6-remote,input6-l2-remote"
 
 
 def test_clean_build_suite_forwards_environment_and_stops(tmp_path):
@@ -68,11 +71,14 @@ if [[ "$2" == "${FAIL_VARIANT:-}" ]]; then exit 17; fi
     result = subprocess.run(cmd,capture_output=True,text=True,check=True)
     calls = result.stdout.splitlines()
     assert calls == [f"CALL --variant {v} --ranks-per-host 16 --conda-env py311_zyq"
-                     for v in ("base","input6","input6-l2","input6-r32","input6-remote", "input6-rpipe", "input6-rfull")]
+                     for v in ("base","input6","input6-l2","input6-remote","input6-l2-remote",
+                               "ref-profile","input6-profile","input6-l2-profile","input6-remote-profile","input6-l2-remote-profile")]
     failed = subprocess.run(cmd,env=dict(os.environ,FAIL_VARIANT="input6"),capture_output=True,text=True)
     assert failed.returncode == 17 and "input6-l2" not in failed.stdout
     invalid = subprocess.run(cmd+["--variants","base,typo"],capture_output=True,text=True)
     assert invalid.returncode == 2 and not invalid.stdout
+    clean = subprocess.run(cmd+["--profile","0"],capture_output=True,text=True,check=True)
+    assert clean.stdout.splitlines() == calls[:5]
 
 
 @pytest.mark.parametrize("extra",[["--devices","12,12,14,15"],["--node-rank","2"],["--tokens","32","--iters","0"],
@@ -314,7 +320,8 @@ def test_python_patch_difference_does_not_hide_other_mismatches():
 
 
 @pytest.mark.parametrize("failure",[None,"python_patch","finalize","configuration","native"])
-@pytest.mark.parametrize("variants", [("base",), ("base","input6","input6-l2","input6-r32","input6-remote", "input6-rpipe", "input6-rfull")])
+@pytest.mark.parametrize("variants", [("base",), ("base","input6","input6-l2","input6-r32","input6-remote", "input6-rpipe", "input6-rfull"),
+                                       ("base","input6-l2-remote","ref-profile","input6-l2-remote-profile")])
 @pytest.mark.parametrize("sync", ["both", "hccl"])
 def test_worker_saves_each_case_and_closes_once(tmp_path,monkeypatch,capsys,failure,variants,sync):
     run = module("run")
@@ -333,19 +340,27 @@ def test_worker_saves_each_case_and_closes_once(tmp_path,monkeypatch,capsys,fail
         def share(self): return "capsule"
         def reset_workspace(self): calls.append("reset")
         def release_case(self): calls.append("release-case")
-        def identity(self): return dict(source_id="same",active_aiv=56,recv_cores=28,rdma_qps=56,return_options=0)
+        def identity(self): return dict(source_id="same",active_aiv=56,recv_cores=28,rdma_qps=56,return_options=0,
+                                       profile_build=self.variant.endswith("-profile"))
         def prepare(self,bs): self.bs=bs; calls.append(("prepare",bs))
         def dispatch(self): calls.append("dispatch")
         def clear_flags(self): calls.append("clear")
         def check_entry_sync(self): calls.append("entry-preflight")
         def entry_sync(self): calls.append("device-barrier")
         def sample(self,cb,device): cb(); calls.append(("sample",device)); return 12.0
+        def begin_profile(self,path,mode):
+            assert mode in ("host","device","hccl")
+            calls.append("begin-profile")
+        def finish_profile(self,times,cb):
+            assert times==[12.0]*2 and cb(b"profile")==b"profile"*8
+            calls.append("finish-profile")
         def precision(self): return 0.0
         def close(self):
             calls.append("close" if self.owner else "release")
             if self.owner and failure=="finalize": raise RuntimeError("injected finalize failure")
     def gather(out,value):
         out[:]=[value]*len(out)
+        if isinstance(value,bytes): return
         stage = "configuration" if "tokens" in value else "native"
         if failure==stage and "source_id" in value:
             out[4:] = [dict(value,source_id="other")]*4
@@ -366,7 +381,7 @@ def test_worker_saves_each_case_and_closes_once(tmp_path,monkeypatch,capsys,fail
     monkeypatch.setitem(sys.modules,"torch_npu",SimpleNamespace(__version__="test"))
     def load_native(*args):
         calls.append("load-native")
-        return SimpleNamespace(Bench=Bench,ranks_per_host=4)
+        return SimpleNamespace(Bench=type("VariantBench",(Bench,),dict(variant=args[1])),ranks_per_host=4)
     monkeypatch.setattr(run,"load_native",load_native)
     class Gate:
         group=1
@@ -377,6 +392,7 @@ def test_worker_saves_each_case_and_closes_once(tmp_path,monkeypatch,capsys,fail
             calls.append("hccl-init")
         def __call__(self): calls.append("gate")
     monkeypatch.setattr(run,"DeviceGate",Gate)
+    monkeypatch.setattr(run,"render_profiles",lambda *args:calls.append("render-profiles"))
     for key,value in dict(RANK="0",WORLD_SIZE="8",LOCAL_RANK="0",LOCAL_WORLD_SIZE="4").items():
         monkeypatch.setenv(key,value)
     for variant in variants:
@@ -386,7 +402,7 @@ def test_worker_saves_each_case_and_closes_once(tmp_path,monkeypatch,capsys,fail
           "--variant","base","--sync",sync,"--devices","12,13,14,15","--ranks-per-host","4",
           "--tokens","32,48","--hidden","3584","--topk","8","--experts","384","--capacity","256",
           "--dtype","bf16","--route","random","--seed","0","--warmup","2","--iters","3",
-          "--timeout","180","--kernel-timeout","10"]
+          "--timeout","180","--kernel-timeout","10","--profile","2","--profile-iters","2"]
     monkeypatch.setattr(sys,"argv",args)
     if failure in ("configuration","native"):
         with pytest.raises(run.ConfigurationMismatch,match=failure): run.main()
@@ -409,11 +425,15 @@ def test_worker_saves_each_case_and_closes_once(tmp_path,monkeypatch,capsys,fail
     assert calls.count("init")==calls.count("close")==1
     assert calls.count("borrow")==calls.count("release")==calls.count("reset")==len(variants)-1
     assert calls.count("release-case")==1
-    assert calls.count(("sample",True))==10*len(variants)
-    assert calls.count(("sample",False))==(12 if sync=="both" else 2)*len(variants)  # correctness plus two host-mode batches
+    profiled=sum(v.endswith("-profile") for v in variants)
+    measurements=10*len(variants)-2*profiled
+    assert calls.count(("sample",True))==measurements
+    assert calls.count(("sample",False))==2*len(variants)+(measurements if sync=="both" else 0)
+    assert calls.count("begin-profile")==calls.count("finish-profile")==profiled*(4 if sync=="both" else 2)
+    assert calls.count("render-profiles")==int(profiled>0 and not fail_close)
     assert calls.count("hccl-init")==int(sync=="hccl")
     assert calls.count("entry-preflight")==len(variants)*int(sync=="both")
-    assert calls.count("device-barrier")==10*len(variants)*int(sync=="both")
+    assert calls.count("device-barrier")==measurements*int(sync=="both")
     assert len((tmp_path/"out/rank-0.jsonl").read_text().splitlines())==(4 if sync=="both" else 2)*len(variants)
     for bs in (32,48):
         for mode in (("host","device") if sync=="both" else ("hccl",)):
@@ -421,6 +441,14 @@ def test_worker_saves_each_case_and_closes_once(tmp_path,monkeypatch,capsys,fail
             assert data["rank_max"]["n"]==3 and len(data["per_rank_us"])==8
             assert data["sync_impl"]==run.sync_implementation(mode)
     assert (tmp_path/"out/rank-0.PASS").is_file()==(not fail_close)
+    for index,variant in enumerate(variants):
+        import csv
+        mode="host" if sync=="both" else "hccl"
+        directory=tmp_path/f"out/profiles/{mode}/{index}-{variant}"
+        rows=list(csv.DictReader((directory/"summary.csv").open()))
+        assert len(rows)==2 and {r["profile_build"] for r in rows}=={str(int(variant.endswith("-profile")))}
+        events=list(csv.DictReader((directory/"rank-max.csv").open()))
+        assert len(events)==(4 if variant.endswith("-profile") else 6)
     report=(tmp_path/"out/report.txt").read_text()
     assert f"status={'RUNNING' if fail_close else 'PASS'}" in report
     assert "Event_us=per-iteration rank-MAX" in report and "aiv=56 recv=28 qps=56" in report

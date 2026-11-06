@@ -36,6 +36,14 @@ class Bench {
     llbench::Runtime runtime_{};
     std::unique_ptr<Buffer> comm_;
     std::unique_ptr<Case> case_;
+#if DEEPEP_BENCH_PROFILE
+    std::unique_ptr<Buffer> profileBuffer_;
+    std::vector<uint64_t> profileData_;
+    llbench::ProfileSamples profiles_;
+    std::ofstream profileCsv_;
+    uint32_t profileIteration_ = 0;
+    bool collecting_ = false;
+#endif
     void live() const { if (!shared_ || shared_->session->closed()) throw std::runtime_error("Session is closed"); }
     void hasCase() const { live(); if (!case_) throw std::runtime_error("Prepare a case first"); }
     void sync() const { wait(runtime_.stream, o_.kernelTimeout * 1000U); }
@@ -47,7 +55,7 @@ public:
         std::vector<char*> argv;
         for (auto& word : words) argv.push_back(word.data());
         o_ = llbench::Options::parse(int(argv.size()), argv.data(), rank, world, localRank);
-        if (!stream || deepep_ll_combine_profile_enabled()) throw std::runtime_error("Use a stream and clean build");
+        if (!stream) throw std::runtime_error("Use a valid NPU stream");
         const auto cores = deepep::query_ll_core_config().active;
         py::gil_scoped_release release;
         shared_ = std::make_shared<SharedSession>();
@@ -69,8 +77,8 @@ public:
         live();
         runtime_ = shared_->runtime;
         o_ = runtime_.options;
-        if (o_.ranksPerHost != DispatchDedup::kLlPhysicalRanksPerHost || deepep_ll_combine_profile_enabled())
-            throw std::runtime_error("Shared session requires matching topology and clean variants");
+        if (o_.ranksPerHost != DispatchDedup::kLlPhysicalRanksPerHost)
+            throw std::runtime_error("Shared session requires matching topology");
         py::gil_scoped_release release;
         comm_ = std::make_unique<Buffer>(sizeof(DispatchDedup::CommArgs));
         auto args = comm_args(runtime_);
@@ -98,12 +106,16 @@ public:
     ~Bench() {
         if (shared_ && !shared_->session->closed()) {
             case_.release(); comm_.release();
+#if DEEPEP_BENCH_PROFILE
+            profileBuffer_.release();
+#endif
         }
     }
     py::dict identity() const {
         py::dict d;
         d["source_id"] = DEEPEP_BENCH_SOURCE_ID;
         d["original"] = bool(DEEPEP_LL_COMBINE_ORIGINAL);
+        d["profile_build"] = bool(deepep_ll_combine_profile_enabled());
         d["ranks_per_host"] = o_.ranksPerHost;
         d["active_aiv"] = runtime_.cores;
         d["recv_cores"] = CombineDedup::EpCombineRecvCoreCount(runtime_.cores);
@@ -120,6 +132,10 @@ public:
         live();
         if (std::find(o_.tokens.begin(), o_.tokens.end(), bs) == o_.tokens.end())
             throw std::invalid_argument("BS is outside the validated case list");
+#if DEEPEP_BENCH_PROFILE
+        if (collecting_) throw std::runtime_error("Finish the previous profile capture first");
+        if (!o_.profile) throw std::runtime_error("Profile build requires --profile 1 or 2");
+#endif
         py::gil_scoped_release release;
         sync(); case_.reset();
 #if DEEPEP_LL_COMBINE_COALESCE > 0
@@ -139,6 +155,12 @@ public:
                 CombineCoalesce::kBase,packed.bytes,0,packed.bytes), "reset coalescing workspace");
 #endif
         case_ = std::make_unique<Case>(o_, bs, runtime_.cores, comm_->p);
+#if DEEPEP_BENCH_PROFILE
+        profileData_.assign(size_t(runtime_.cores) * CombineProfile::kWords, 0U);
+        profileBuffer_ = std::make_unique<Buffer>(profileData_.size() * sizeof(uint64_t));
+        case_->combine.stageTimer = profileBuffer_->p;
+        case_->combine.timerMode = o_.profile;
+#endif
     }
     void dispatch() {
         hasCase(); py::gil_scoped_release release;
@@ -163,6 +185,11 @@ public:
     }
     float sample(py::function callback, bool deviceGate) {
         hasCase();
+#if DEEPEP_BENCH_PROFILE
+        // Copies and CSV writes stay outside both the gate and the timed Event.
+        std::fill(profileData_.begin(), profileData_.end(), 0U);
+        profileBuffer_->upload(profileData_.data(), profileBuffer_->bytes);
+#endif
         Timer timer;
         std::unique_ptr<LaunchGate> gate;
         if (deviceGate) gate = std::make_unique<LaunchGate>(o_.kernelTimeout*1000U);
@@ -173,8 +200,58 @@ public:
         });
         py::gil_scoped_release release;
         sync();
-        return timer.microseconds();
+        const auto elapsed = timer.microseconds();
+#if DEEPEP_BENCH_PROFILE
+        if (collecting_) {
+            profileBuffer_->download(profileData_.data(), profileBuffer_->bytes);
+            const auto recv = CombineDedup::EpCombineRecvCoreCount(runtime_.cores);
+            llbench::profile_rows(profileCsv_, profileData_, runtime_.cores, recv, o_.rank, o_.world,
+                                  case_->bs, o_.device, o_.profile, profileIteration_++);
+            profiles_.capture(profileData_, runtime_.cores, recv, o_.profileFrequencyHz != 0);
+        }
+#endif
+        return elapsed;
     }
+#if DEEPEP_BENCH_PROFILE
+    void beginProfile(const std::string& directory, const std::string& syncMode) {
+        hasCase(); sync();
+        if (collecting_) throw std::runtime_error("Profile capture already active");
+        if (syncMode != "host" && syncMode != "device" && syncMode != "hccl")
+            throw std::invalid_argument("Invalid profile synchronization mode");
+        o_.output = directory;
+        o_.entrySync = syncMode;
+        std::filesystem::create_directories(directory);
+        const auto path = std::filesystem::path(directory) / ("rank-" + std::to_string(o_.rank) + "-profile.csv");
+        const bool exists = std::filesystem::exists(path);
+        profileCsv_.open(path, std::ios::app);
+        if (!profileCsv_) throw std::runtime_error("Cannot open Python profile output");
+        if (!exists) llbench::profile_header(profileCsv_);
+        profiles_ = llbench::ProfileSamples{};
+        profileIteration_ = 0;
+        collecting_ = true;
+    }
+    void finishProfile(const std::vector<float>& rankMax, py::function gather) {
+        hasCase(); sync();
+        if (!collecting_ || rankMax.size() != profileIteration_)
+            throw std::runtime_error("Profile/Event sample counts differ");
+        profileCsv_.close();
+        if (!profileCsv_) throw std::runtime_error("Cannot write Python profile output");
+        // Gloo only after all measured samples; no MPI initialization in Python.
+        struct Peers {
+            py::function callback; uint32_t world;
+            std::vector<uint8_t> gather(const void* data, size_t bytes) const {
+                const auto result = callback(py::bytes(static_cast<const char*>(data), bytes)).cast<std::string>();
+                if (result.size() != bytes * world) throw std::runtime_error("Incomplete profile gather");
+                return {result.begin(), result.end()};
+            }
+        } peers{gather, o_.world};
+        const auto recv = CombineDedup::EpCombineRecvCoreCount(runtime_.cores);
+        case_->exportProducers(o_, peers, runtime_.cores, recv, deepep_ll_combine_return_options());
+        profiles_.write(peers, o_, case_->bs, runtime_.cores, recv, rankMax, DEEPEP_BENCH_SOURCE_ID);
+        profiles_ = llbench::ProfileSamples{};
+        collecting_ = false;
+    }
+#endif
     double precision() { hasCase(); py::gil_scoped_release release; sync(); return case_->precision(o_.dtype=="bf16"); }
     void close() {
         live();
@@ -182,6 +259,9 @@ public:
             throw std::runtime_error("Close borrowed variants before the shared session owner");
         py::gil_scoped_release release;
         sync(); case_.reset(); comm_.reset();
+#if DEEPEP_BENCH_PROFILE
+        profileBuffer_.reset();
+#endif
         if (owner_) shared_->session->close(true);
         shared_.reset();
     }
@@ -189,7 +269,7 @@ public:
 }  // namespace llpython
 
 PYBIND11_MODULE(_ll_py_combine, m) {
-    m.attr("suite_api") = 1;
+    m.attr("suite_api") = 2;
     m.attr("ranks_per_host") = DispatchDedup::kLlPhysicalRanksPerHost;
     py::class_<llpython::Bench>(m, "Bench", py::module_local())
         .def(py::init<int,int,int,const std::vector<std::string>&,uintptr_t,const std::string&>())
@@ -200,5 +280,8 @@ PYBIND11_MODULE(_ll_py_combine, m) {
         .def("dispatch", &llpython::Bench::dispatch).def("clear_flags", &llpython::Bench::clearFlags)
         .def("entry_sync", &llpython::Bench::entrySync).def("check_entry_sync", &llpython::Bench::checkEntrySync)
         .def("sample", &llpython::Bench::sample).def("precision", &llpython::Bench::precision)
+#if DEEPEP_BENCH_PROFILE
+        .def("begin_profile", &llpython::Bench::beginProfile).def("finish_profile", &llpython::Bench::finishProfile)
+#endif
         .def("close", &llpython::Bench::close);
 }

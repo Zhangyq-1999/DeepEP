@@ -178,6 +178,7 @@ inline int MPI_Allgather(const void* s,int n,int,void* d,int,int,int) {
 ''')
     (tmp_path/'test.cpp').write_text(r'''
 #include "profile_samples.hpp"
+#include "mpi_coordinator.hpp"
 int main(int argc,char** argv) {
     using namespace CombineProfile;
     llbench::Options o; o.world=2; o.device=12; o.profile=2; o.iterations=3; o.output=argv[1];

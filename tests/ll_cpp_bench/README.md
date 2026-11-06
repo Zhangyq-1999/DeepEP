@@ -36,17 +36,19 @@ bash tests/ll_cpp_bench/build_all.sh
 | `base` | 冻结的上游原版 | 关闭 |
 | `input6` | wqe-prep + 最多 6 个 M4 输入槽 | 关闭 |
 | `input6-l2` | input6 原半区分核，prepare/ready 控制区使用默认 L2 | 关闭 |
-| `input6-r32` | input6 改为 24 个 DIRECT 核、32 个接收核（56 AIV 时） | 关闭 |
+| `input6-l2-remote` | input6-l2 + 跨机优先，28/28 半区布局、立即回传 | 关闭 |
+| `input6-r32`（可选） | input6 改为 24 个 DIRECT 核、32 个接收核（56 AIV 时） | 关闭 |
 | `input6-remote` | input6 将跨机优先前移到 DIRECT 遍历和 M4 建表/任务分配 | 关闭 |
-| `input6-rpipe` | input6-remote + 首末包立即提交，中间包在下一任务输入读取发起后提交 | 关闭 |
-| `input6-rfull` | input6-remote + 首末包立即提交，中间包在下一任务规约完成、打包前提交 | 关闭 |
+| `input6-rpipe`（可选） | input6-remote + 首末包立即提交，中间包在下一任务输入读取发起后提交 | 关闭 |
+| `input6-rfull`（可选） | input6-remote + 首末包立即提交，中间包在下一任务规约完成、打包前提交 | 关闭 |
 | `ref-profile` | 实验开关全部关闭 | 开启 |
 | `input6-profile` | 与 input6 相同 | 开启 |
 | `input6-l2-profile` | 与 input6-l2 相同 | 开启 |
-| `input6-r32-profile` | 与 input6-r32 相同 | 开启 |
+| `input6-l2-remote-profile` | 与 input6-l2-remote 相同 | 开启 |
+| `input6-r32-profile`（可选） | 与 input6-r32 相同 | 开启 |
 | `input6-remote-profile` | 与 input6-remote 相同 | 开启 |
-| `input6-rpipe-profile` | 与 input6-rpipe 相同 | 开启 |
-| `input6-rfull-profile` | 与 input6-rfull 相同 | 开启 |
+| `input6-rpipe-profile`（可选） | 与 input6-rpipe 相同 | 开启 |
+| `input6-rfull-profile`（可选） | 与 input6-rfull 相同 | 开启 |
 
 优化和验收以 **BS32、48、64** 为主，BS72 作邻近对照，BS256 只检查回退。上一轮 EP8 干净版 ready-snapshot 的三个 BS 的 P50 分别为 57.11、63.56、70.19 μs，增加接收核没有持续改善这三个场景。ready-r32、ready-r36、stage-stream、plan-compact 保留为可选实验，不再默认编译运行。
 
@@ -54,19 +56,15 @@ EP32 收尾修复后的实测中，`wqe-prep` 在 BS48/64 的均值比 snapshot 
 
 最新 9b3d243 的 EP32/HCCL 实测 `input6` 的 BS32/48/64 均值为 57.28/65.49/74.26 μs，仍是小 BS 对照；`input-pair` 分别慢 1.41/0.69/0.43 μs，改为可选项。保留 `input-pipe`：它在 BS256 的均值为 174.94 μs，比同轮 input6 快 8.85 μs，但 BS32–64 尚无稳定收益。
 
-11 月 6 日最新 EP32/HCCL 数据中，input6 的 BS32/48/64 均值为 56.94/66.03/74.22 μs；奇偶布局 input-interleave 为 58.79/70.29/79.20 μs，在其上开控制区 L2 的 input-l2 为 58.25/67.91/78.76 μs。因此保留 input6 为已测对照，将奇偶两版移出默认，仍可用 `--variants` 复测。不能从奇偶布局上的收益推断原布局开 L2 必然有效，本轮 input6-l2 单独检验它。
+11 月 6 日 EP32/HCCL 实测 BS32 mean：input6=58.61、input6-l2=56.37、input6-remote=56.85 μs。新一轮默认 `base,input6,input6-l2,input6-remote,input6-l2-remote` 及其五个独立打点版。最后一项在 28/28 半区布局下叠加控制区 L2、跨机优先，继续立即回传；尚待目标 NPU 测试。input6-r32、input6-rpipe、input6-rfull 移出默认但仍可显式选择，input6-fused 仍是额外改变接收核数的可选组合。
 
-参考 zzh 分支 fb97fbf 的跨机优先与接收核配比策略，本轮增加 input6-r32 和 input6-remote。input6 原就绪调度已经优先选可运行的跨机任务；remote 版进一步改变前面的遍历/建表顺序及任务分配，不能称为首次跨机优先。32 接收核可使 BS32 的 M5 每核最多处理 1 个 token、BS64 最多 2 个，但 DIRECT 核减少，收益需实测。已有 ready-r32 使用较早的 ready4 路径，与本轮 input6 组合不同；此前无稳定收益，不能作为这次的提速证据。
-
-默认共 7 个干净版 + 7 个打点版，冻结 base 和 input6 的执行策略不变。`input6-fused` / `input6-fused-profile` 可选地叠加控制 L2、32 接收核、跨机优先；默认先测三个单项以便归因。input6-l2（ready20）与旧 input-l2（ready19）不同：前者保留半区分核，后者为奇偶分核。控制 L2 同时覆盖 prepare/ready 的发布、轮询、清零；payload、data-with-flag、RDMA 暂存继续旁路。不增加 UB 预算，不改累加顺序、通知协议、QP 所有权和 CQ 回收。summary.csv/Python ID 保留核布局、接收核数和控制 L2 信息，原有阶段打点、拖尾诊断和 Perfetto 导出继续可用；Python ID 另列 ready_mode 和 remote_first。每机 4/16 rank、四机 EP64 的任务覆盖已做 CPU 检查，真实 CANN/NPU 编译、缓存可见性和性能仍待设备验证。参考审计和实验判据见 [TRANSFER_AB.md](TRANSFER_AB.md)。
-
-新增 input6-rpipe（ready21）和 input6-rfull（ready22）在 input6-remote 上比较两种提交时机：前者用下一条就绪任务的输入 MTE2 覆盖上一包暂存等待，后者等下一条完整规约完成、打包前再提交。每轮已就绪任务集合的首包和末包都立即提交，只有中间包可延后；不足三条任务或只有一个输出槽时不延后。两版保持 28 接收核、半区布局和控制区旁路，不把 L2/核数混入流水实验。private WQE、GM 源和输出槽生命周期、最终 CQ 回收不变。重点看 BS32–64 的干净 mean/P50/min/max，以及打点中的 first/last Put、剩余 stage_wait、deferred/gap、prefetch_calls 和 q 的 pipeline_issue；任务太少时可能没有延后包，不能预设会加速。
+新组合不增加 UB，不改累加顺序、通知协议、QP 所有权和 CQ 回收。控制区 L2 仅覆盖 prepare/ready 的发布、轮询、清零；payload/data-with-flag/RDMA 暂存继续旁路。支持每机 4/16 rank 和四机 EP64。参考审计见 [TRANSFER_AB.md](TRANSFER_AB.md)。
 
 增加实验版后，C++ 紧凑回显按 BS 自动分成多个 `PASTE_BEGIN part=i/N` 块，每块不超过 62 KiB，完整保留表格、P50/worst 和拖尾计数。特别大的单个 BS 会在行边界续到下一块。无需删除异常样本或诊断字段；CSV 和 Perfetto 继续保存完整数据。
 
 打点 schema 18 新增 `input=lanes/early_reads/used_reads`，分别为 M4 输入槽数、就绪后提前读取的贡献数、实际消费的提前读取数；两者之差是已安全释放但未使用的读。新增计数也写入 CSV/Perfetto。schema 19 增加 `vec=pair_groups/barriers`（M4 两项配对次数/显式 Vector 屏障次数，含最终 Cast 屏障），每核记录从 256 words 扩为 272 words；需重新编译打点库，旧 CSV 仍可读取。最慢样本回显保留接收核流水、RDMA 和拖尾，完整计数留在 CSV/Perfetto，P50 样本仍完整展示。
 
-schema 20 追加 `arith=stream_steps/front_loads`：分别计数流水规约的后续贡献项、首项 Muls 发起后补发的初始输入读取。记录大小仍为 272 words，字段写入 CSV 和 Perfetto 的 `profiled body` 参数；这些计数不是时间片。继续结合 `partial_compute_issue_ticks`、`partial_local_wait_ticks`、`partial_get_wait_ticks`、M4 起止、first/last Put 和最终拖尾分析。Python 当前仍只测干净版，C++ 打点不同 entry sync 的阶段时间不能直接当成 Python HCCL 的阶段耗时。
+schema 20 追加 `arith=stream_steps/front_loads`：分别计数流水规约的后续贡献项、首项 Muls 发起后补发的初始输入读取。记录大小仍为 272 words，字段写入 CSV 和 Perfetto 的 `profiled body` 参数；这些计数不是时间片。继续结合 `partial_compute_issue_ticks`、`partial_local_wait_ticks`、`partial_get_wait_ticks`、M4 起止、first/last Put 和最终拖尾分析。Python 已提供同样的独立打点版，可在 HCCL gate 下采样并导出同格式 CSV/Perfetto；不同 entry sync 的阶段时间仍不能直接混作对照。
 
 打点 schema 17 的 `xfer prepare_ticks/prepared/fallback/mte_pack` 给出 WQE 构造累计 ticks、成功预构造包数、队列容量回退包数、直接 MTE 打包数。`rdma_stage_wait_ticks` 是预构造后剩余等待，`rdma_put_ticks` 是之后的 SQ 发布与 doorbell（回退包包含完整 SDK put）。CSV 和 Perfetto 的 `profiled body` 参数也包含这些计数；累计 ticks 不作为独立流水块，也不能直接等同于网卡或网络耗时。
 

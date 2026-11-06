@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Shared defaults for the two convenience entry points. Source from Bash.
-# Keep the measured best, then isolate cache, receive count and host ordering.
-ll_bench_clean_variants=base,input6,input6-l2,input6-r32,input6-remote,input6-rpipe,input6-rfull
-ll_bench_profiles=ref-profile,input6-profile,input6-l2-profile,input6-r32-profile,input6-remote-profile,input6-rpipe-profile,input6-rfull-profile
+# BS32-64: retain the measured references and test cache + remote-first at 28/28.
+ll_bench_clean_variants=base,input6,input6-l2,input6-remote,input6-l2-remote
+ll_bench_profiles=ref-profile,input6-profile,input6-l2-profile,input6-remote-profile,input6-l2-remote-profile
 ll_bench_variants=$ll_bench_clean_variants,$ll_bench_profiles
 ll_bench_cann=${ASCEND_HOME_PATH:-/usr/local/Ascend/cann-9.2.T101}
 ll_bench_mpi=${MPI_HOME:-/usr/local/mpich-3.2.1}

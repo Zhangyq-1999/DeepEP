@@ -13,9 +13,15 @@ import sys
 import sysconfig
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_VARIANTS = "base,input6,input6-l2,input6-r32,input6-remote,input6-rpipe,input6-rfull"
+DEFAULT_VARIANTS = "base,input6,input6-l2,input6-remote,input6-l2-remote"
 CLEAN_VARIANTS = ("base", "ready-snapshot", "wqe-prep", "wqe-prefetch", "input6", "input-ready", "input-pair", "input-pipe", "input-stream", "input-front", "input-interleave", "input-l2", "input6-l2", "input6-r32", "input6-remote", "input6-fused", "input6-rpipe", "input6-rfull", "mte-pack",
-                  "card-all", "card-row", "server-all", "server-row")
+                  "card-all", "card-row", "server-all", "server-row", "input6-l2-remote")
+
+
+def phase_names(a):
+    clean = a.variants.split(",")
+    return clean + (["ref-profile" if name=="base" else name+"-profile" for name in clean]
+                    if a.profile and not a.check_hccl else [])
 
 
 def parser():
@@ -34,6 +40,9 @@ def parser():
     p.add_argument("--sync", choices=("device", "host", "both", "hccl"), default="device",
                    help="device=SHMEM barrier; both=Gloo vs SHMEM; hccl=explicit legacy HCCL comparison")
     p.add_argument("--tokens", default="32,48,64,72,256")
+    p.add_argument("--profile", type=int, choices=(0,1,2), default=2, help="Append separate diagnostic phases; 0=clean only")
+    p.add_argument("--profile-iters", type=int, default=10)
+    p.add_argument("--profile-frequency-hz", type=int, default=1000000000, help="Device clock for Perfetto; 0=CSV only")
     for name, default in (("hidden",3584),("topk",8),("experts",384),("capacity",256),
                           ("seed",0),("warmup",10),("iters",100),("timeout",180),("kernel-timeout",10)):
         p.add_argument("--"+name, type=int, default=default)
@@ -76,6 +85,8 @@ def plan(a):
         raise ValueError("Invalid node rank or master port")
     if a.iters<1 or a.warmup<0 or a.timeout<1 or a.kernel_timeout<1 or not 0<=a.gate_delay_ms<=60000:
         raise ValueError("Invalid sample count or timeout/delay")
+    if not 1<=a.profile_iters<=10000 or not 0<=a.profile_frequency_hz<=0xffffffff:
+        raise ValueError("Invalid profile samples or frequency")
     if a.gate_delay_ms and a.sync == "host":
         raise ValueError("Gate delay validation requires device synchronization")
     run_id = a.run_id
@@ -91,11 +102,11 @@ def plan(a):
            f"--nproc_per_node={len(devices)}",f"--node_rank={node}",f"--master_addr={hosts[0]}",
            f"--master_port={a.master_port}","--max_restarts=0",str(Path(__file__).with_name("run.py")),
            "--output",str(out),"--module-dir",str(build),"--shmem-ip-port",endpoint,
-           "--variant",names[0],"--variants",a.variants,"--sync",a.sync,"--devices",a.devices,
+           "--variant",names[0],"--variants",",".join(phase_names(a)),"--sync",a.sync,"--devices",a.devices,
            "--ranks-per-host",str(a.ranks_per_host)]
     if a.check_hccl: cmd.append("--check-hccl")
     for key in ("tokens","hidden","topk","experts","capacity","dtype","route","seed","warmup","iters",
-                "timeout","kernel_timeout","gate_delay_ms"):
+                "timeout","kernel_timeout","gate_delay_ms","profile","profile_iters","profile_frequency_hz"):
         cmd += ["--"+key.replace("_","-"),str(getattr(a,key))]
     return node, hosts, run_id, out, build, cmd
 
@@ -163,7 +174,8 @@ def main():
     node, hosts, run_id, out, build, cmd = plan(a)
     print(f"RUN_ID={run_id}\nnode={node} EP={len(hosts)*a.ranks_per_host} variants={a.variants} sync={a.sync}"
           f" check_hccl={int(a.check_hccl)}",flush=True)
-    print(f"devices={a.devices} BS={a.tokens} warmup={a.warmup} iters={a.iters}\nResults: {out}",flush=True)
+    print(f"devices={a.devices} BS={a.tokens} warmup={a.warmup} clean_iters={a.iters} "
+          f"profile={a.profile} profile_iters={a.profile_iters}\nResults: {out}",flush=True)
     if node == 0:
         custom = []
         defaults = vars(parser().parse_args([]))
@@ -171,7 +183,7 @@ def main():
         defaults["devices"] = "12,13,14,15" if a.ranks_per_host == 4 else ",".join(map(str,range(16)))
         for key in ("hosts","master_port","shmem_ip_port","devices","ranks_per_host","variants","sync","tokens",
                     "hidden","topk","experts","capacity","dtype","route","seed","warmup","iters","timeout",
-                    "kernel_timeout","gate_delay_ms","ifname"):
+                    "kernel_timeout","gate_delay_ms","ifname","profile","profile_iters","profile_frequency_hz"):
             value = getattr(a,key)
             if value != defaults[key]: custom += ["--"+key.replace("_","-"),str(value)]
         if a.check_hccl: custom += ["--check-hccl"]
@@ -183,12 +195,14 @@ def main():
     if a.dry_run:
         print(shlex.join(cmd)); return 0
     if not a.check_hccl:
-        for variant in a.variants.split(","):
+        for variant in phase_names(a):
             directory = build.parent/variant
             if not list(directory.glob("_ll_py_combine*.so")):
                 raise RuntimeError(f"Install {variant} into {sys.prefix}: bash tests/ll_python_bench/build_all.sh")
             if f"ranks_per_host={a.ranks_per_host}" not in (directory/"bench-build.txt").read_text().splitlines():
                 raise RuntimeError(f"Rebuild {variant} with matching --ranks-per-host")
+        if a.profile and not (build.parent/"bin/ll_python_profile_report").is_file():
+            raise RuntimeError("Rebuild Python diagnostic variants: missing installed profile reporter")
     import resource
     soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
     if soft < 65536: resource.setrlimit(resource.RLIMIT_NOFILE,(min(65536,hard) if hard>=0 else 65536,hard))

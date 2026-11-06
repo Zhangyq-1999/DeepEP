@@ -1,7 +1,6 @@
 #pragma once
 #include "profile.hpp"
 #include "perfetto.hpp"
-#include "mpi_coordinator.hpp"
 #include "options.hpp"
 #include <filesystem>
 #include <fstream>
@@ -9,20 +8,21 @@
 #include <set>
 
 namespace llbench {
-// Four selections per iteration: longest send/receive body, latest local
-// Put-return offset. Full per-core records remain in each rank's CSV.
-// Also keep the slowest coalescing worker; duplicates are removed on export.
+// Preserve the critical producers/waits as well as the longest bodies. A fast
+// notifier can finish before the tail core and otherwise disappear from stdout.
+// Full per-core records remain in each rank's CSV; duplicate selections collapse.
 class ProfileSamples {
     std::vector<uint64_t> records_;
     std::vector<uint64_t> full_;
 public:
+    static constexpr uint32_t kSelections = 9;
     void capture(const std::vector<uint64_t>& data, uint32_t cores, uint32_t recv, bool trace = true)
     {
         using namespace CombineProfile;
         if (!recv || recv >= cores || data.size() != size_t(cores) * kWords)
             throw std::runtime_error("Invalid profile sample dimensions");
         if (trace) full_.insert(full_.end(), data.begin(), data.end());
-        uint32_t selected[4] = {CombineDedup::kCombineInterleavedCores ? 1U : 0U,
+        uint32_t selected[kSelections] = {CombineDedup::kCombineInterleavedCores ? 1U : 0U,
                                CombineDedup::kCombineInterleavedCores ? 0U : cores - recv, 0, 0};
         for (uint32_t c=0;c<cores;++c)
             if (!CombineDedup::CombineIsReceiveCore(c, cores, recv) && !data[c*kWords+CoalesceWorker]) {
@@ -40,13 +40,28 @@ public:
                 profile_interval(row,Entry,FlushDone)>profile_interval(worker,Entry,FlushDone))) selected[3]=c;
         }
         if (!data[selected[3]*kWords+CoalesceWorker]) selected[3]=selected[0];
+        auto score = [](const uint64_t* row, uint32_t selection) -> uint64_t {
+            switch (selection) {
+                case 4: return profile_interval(row, Entry, StageEnd);
+                case 5: return profile_interval(row, Entry, StageDrained);
+                case 6: return profile_interval(row, NotifyBegin, NotifyEnd);
+                case 7: return profile_interval(row, ReadyBegin, ReadyObserved);
+                default: return row[PartialLocalWaitTicks] + row[PartialGetWaitTicks];
+            }
+        };
+        for (uint32_t j=4;j<kSelections;++j) {
+            selected[j]=selected[0];
+            for (uint32_t c=0;c<cores;++c)
+                if (score(data.data()+c*kWords,j)>score(data.data()+selected[j]*kWords,j)) selected[j]=c;
+        }
         for (auto c : selected) records_.insert(records_.end(), data.begin() + c * kWords, data.begin() + (c + 1) * kWords);
     }
-    void write(const Coordinator& peers, const Options& o, uint32_t bs, uint32_t cores, uint32_t recv,
+    template<class Peers>
+    void write(const Peers& peers, const Options& o, uint32_t bs, uint32_t cores, uint32_t recv,
                const std::vector<float>& times, const std::string& source = "")
     {
         using namespace CombineProfile;
-        if (times.empty() || records_.size() != times.size() * 4 * kWords)
+        if (times.empty() || records_.size() != times.size() * kSelections * kWords)
             throw std::runtime_error("Missing profile samples");
         std::ofstream out;
         if (!o.rank) {
@@ -56,17 +71,17 @@ public:
             if (!exists) profile_header(out);
         }
         for (uint32_t i = 0; i < times.size(); ++i) {
-            std::vector<uint64_t> send(1 + 4 * kWords);
+            std::vector<uint64_t> send(1 + kSelections * kWords);
             send[0] = o.device;
-            std::copy_n(records_.data() + size_t(i) * 4 * kWords, 4 * kWords, send.data() + 1);
-            // A few KiB per rank, after sampling; no communication in the timed path.
+            std::copy_n(records_.data() + size_t(i) * kSelections * kWords, kSelections * kWords, send.data() + 1);
+            // About 20 KiB per rank, after sampling; never in the timed path.
             const auto all = peers.gather(send.data(), send.size() * sizeof(uint64_t));
             if (o.rank) continue;
             for (uint32_t rank = 0; rank < o.world; ++rank) {
                 std::memcpy(send.data(), all.data() + rank * send.size() * sizeof(uint64_t), send.size() * sizeof(uint64_t));
                 std::vector<uint64_t> data(size_t(cores) * kWords);
                 std::set<uint32_t> selected;
-                for (uint32_t j = 0; j < 4; ++j) {
+                for (uint32_t j = 0; j < kSelections; ++j) {
                     auto row = send.data() + 1 + j * kWords;
                     if (row[Core] >= cores) throw std::runtime_error("Invalid selected core");
                     selected.insert(uint32_t(row[Core]));

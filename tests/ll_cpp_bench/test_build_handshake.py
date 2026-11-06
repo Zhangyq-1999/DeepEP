@@ -9,7 +9,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
-@pytest.mark.parametrize("mode", ["plain", "early", "local", "batch", "card-all", "card-row", "server-all", "server-row", "notify-simt", "notify-core", "ready-task", "ready-shared", "ready-fast", "ready-pipeline", "ready-snapshot", "stage-pair", "stage-prefetch", "stage-stream", "plan-compact", "ready-r32", "ready-r36", "wqe-prep", "mte-pack", "wqe-prefetch", "input6", "input-ready", "input-pair", "input-pipe", "input-stream", "input-front", "input-interleave", "input-l2", "input6-l2", "input6-r32", "input6-remote", "input6-fused", "input6-rpipe", "input6-rfull"])
+@pytest.mark.parametrize("mode", ["plain", "early", "local", "batch", "card-all", "card-row", "server-all", "server-row", "notify-simt", "notify-core", "ready-task", "ready-shared", "ready-fast", "ready-pipeline", "ready-snapshot", "stage-pair", "stage-prefetch", "stage-stream", "plan-compact", "ready-r32", "ready-r36", "wqe-prep", "mte-pack", "wqe-prefetch", "input6", "input-ready", "input-pair", "input-pipe", "input-stream", "input-front", "input-interleave", "input-l2", "input6-l2", "input6-l2-remote", "input6-r32", "input6-remote", "input6-fused", "input6-rpipe", "input6-rfull"])
 @pytest.mark.parametrize("profile", [False, True])
 def test_benchmark_build_handshake(tmp_path, mode, profile):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
@@ -66,8 +66,8 @@ int main() {
     rows = int(mode.endswith("-row"))
     notify = 1 if mode == "notify-simt" else 2 if mode == "notify-core" else 0
     if mode in ("input6-r32", "input6-fused"): flags.append("-DDEEPEP_LL_COMBINE_RECV_CORES=32")
-    if mode in ("input6-remote", "input6-fused", "input6-rpipe", "input6-rfull"): flags.append("-DDEEPEP_LL_COMBINE_REMOTE_FIRST=1")
-    ready = 1 if mode == "ready-task" else 2 if mode == "ready-shared" else 3 if mode in ("ready-fast", "ready-pipeline") else 4 if mode in ("ready-snapshot", "ready-r32", "ready-r36") else 5 if mode == "stage-pair" else 6 if mode == "stage-prefetch" else 7 if mode == "stage-stream" else 8 if mode == "plan-compact" else 9 if mode == "wqe-prep" else 10 if mode == "mte-pack" else 20 if mode in ("input6-l2", "input6-fused") else 21 if mode == "input6-rpipe" else 22 if mode == "input6-rfull" else 12 if mode.startswith("input6") else 14 if mode == "input-pair" else 16 if mode == "input-stream" else 19 if mode == "input-l2" else 18 if mode == "input-interleave" else 17 if mode == "input-front" else 15 if mode == "input-pipe" else 13 if mode == "input-ready" else 11 if mode == "wqe-prefetch" else 0
+    if mode in ("input6-remote", "input6-l2-remote", "input6-fused", "input6-rpipe", "input6-rfull"): flags.append("-DDEEPEP_LL_COMBINE_REMOTE_FIRST=1")
+    ready = 1 if mode == "ready-task" else 2 if mode == "ready-shared" else 3 if mode in ("ready-fast", "ready-pipeline") else 4 if mode in ("ready-snapshot", "ready-r32", "ready-r36") else 5 if mode == "stage-pair" else 6 if mode == "stage-prefetch" else 7 if mode == "stage-stream" else 8 if mode == "plan-compact" else 9 if mode == "wqe-prep" else 10 if mode == "mte-pack" else 20 if mode in ("input6-l2", "input6-l2-remote", "input6-fused") else 21 if mode == "input6-rpipe" else 22 if mode == "input6-rfull" else 12 if mode.startswith("input6") else 14 if mode == "input-pair" else 16 if mode == "input-stream" else 19 if mode == "input-l2" else 18 if mode == "input-interleave" else 17 if mode == "input-front" else 15 if mode == "input-pipe" else 13 if mode == "input-ready" else 11 if mode == "wqe-prefetch" else 0
     flags.extend([f"-DDEEPEP_LL_COMBINE_READY={ready}", f"-DDEEPEP_BENCH_READY={ready}"])
     flags.extend([f"-DDEEPEP_LL_COMBINE_NOTIFY={notify}", f"-DDEEPEP_BENCH_NOTIFY={notify}"])
     flags.extend([f"-DDEEPEP_LL_COMBINE_COALESCE={coalesce}", f"-DDEEPEP_BENCH_COALESCE={coalesce}",
@@ -76,7 +76,7 @@ int main() {
                  "SIMT_META", "SIMT_FLAG", "PREFETCH_RETURN", "POLL_NOP", "LOCAL_FIRST", "BATCH_FINAL"):
         enabled = (name == "LOCAL_FIRST" and mode in ("local", "batch")) or (name == "BATCH_FINAL" and mode == "batch")
         enabled = enabled or (name == "DEFER_RETURN" and mode == "ready-pipeline")
-        enabled = enabled or (name == "REMOTE_FIRST" and mode in ("input6-remote", "input6-fused", "input6-rpipe", "input6-rfull"))
+        enabled = enabled or (name == "REMOTE_FIRST" and mode in ("input6-remote", "input6-l2-remote", "input6-fused", "input6-rpipe", "input6-rfull"))
         flags.append(f"-DDEEPEP_BENCH_{name}={int(enabled)}")
     exe = tmp_path / "handshake.exe"
     subprocess.run([zig, "c++", "-std=c++17", "-O1", "-UNDEBUG", *flags,

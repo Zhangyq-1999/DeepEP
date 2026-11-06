@@ -491,3 +491,48 @@ rfull 进一步将上一包提交推迟到下一条规约后。它比参考实�
 单输出槽/空任务、FP16/BF16累加序、UB容量和 M5 前后退休。
 脚本/报告检查覆盖七版本一次初始化和14阶段调度、全部 BS 诊断、分页无损恢复。
 尚无 CANN/NPU 实测；需要各节点重编后按相同同步方式比较干净性能。
+
+## 2026-11-06 EP32 回显后：L2/跨机优先组合与 Python 原生打点
+
+用户回传 `ep32-py-20261106-111912-bfde7b22`，EP32/H3584/K8/E384、random0、
+BF16，HCCL gate，10 warmup/100 samples，全部精度通过。
+BS32/48/64 clean mean（μs）：base=59.16/69.60/79.15，
+input6=58.61/66.73/75.40，input6-l2=56.37/67.91/73.48，
+input6-remote=56.85/65.07/73.89。两种流水相对 remote 的 BS32 mean
+分别慢0.61/2.13μs；更多接收核也未改善 BS32 mean。仅凭这些总时延不能
+证明是 group ready、规约还是链路改善。
+
+新增 input6-l2-remote：ready20 + remote_first，保持28/28半区布局和立即回传。
+它组合两项已有单项实测的策略，不叠加 recv32 或延后发布，不修改 SDK、
+载荷缓存策略、协议、累加顺序及源缓冲/CQ 生命周期。默认缩为上述四个对照
+加新组合，五干净+五打点；旧实验仍可显式选择。组合收益待 NPU 实测。
+
+Python suite_api2 接入已有 Combine schema20，独立 profile Device 库、默认
+10次采样；干净版编译时删除 profile 状态、缓冲和采集分支。两类共用一次
+SHMEM 初始化，同样的 HCCL/Notify gate。HCCL 首次 all_reduce 仍在 native
+和 SHMEM 初始化之前。复制/落盘在 Event 外，采样完成后用 Gloo 汇总。
+
+第一台保存全 rank 的代表记录、实际 producer 映射、全局 rank-MAX 样本，
+每个 BS 的两次真实 collective 样本（P50与worst）全部核写入 Perfetto。
+每条轨道保持 core-entry 相对时间，默认1GHz换算可配置；不跨 rank
+相减时钟。离线报告沿用 C++ D/S/R/G/T、mean/P50/min/max 和62KiB分页。
+
+同时修复 producer 导出的身份解码：ready9及以后的模式复用了 coalesce
+身份位，不能用 `(return_options >> 9) & 3` 推断其 transport 核数或链路标签。
+改为独立编译选项 DEEPEP_BENCH_COALESCE，避免把普通 RDMA 错标 packed/relay。
+此项只影响诊断，不改变 kernel 行为。
+
+Host 验证覆盖真实 pybind 干净/打点多模块共享一次初始化、未采集 warmup、
+profile 缓冲逐轮清零、全核 CSV、跨 rank Gloo 字节桥、P50/worst Perfetto、
+Python timing CSV 接入真实 C++ 紧凑报告及8/32/64P启动参数。
+新组合已通过4/16 ranks-per-host的 clean/profile Host-stub 编译与身份检查。
+尚未进行 CANN 编译或 NPU 性能验证。
+
+回显独立于 Perfetto：每轮每 rank 除最长发送/接收核、最晚 Put、合包核外，另保留
+最晚准备、最晚准备 drain、最长通知、最长 group-ready 窗口、最大 M4 取数等待
+的核，去重后汇总。`X` 行报告同一真实全局轮次的准备/通知/group-ready/输入等待
+极值及 rank/core；`m4` 固定列出本地/机内读取发起、等待、计算发起、输出等待、
+打包、输入 drain 累计 ticks，不依赖 top4 是否把它们选中。RDMA 暂存/发布/CQ、
+最终缺失 flag 的 token/slot/block、producer 链路和重复拖尾频次仍保留。
+独立阶段最大值与累计计数不能相加当成一条跨 rank 流水；回显也不把 put 返回
+当作对端数据已到达。所有新增筛选发生在 Host 采样后，无新增 Device 热路径打点。

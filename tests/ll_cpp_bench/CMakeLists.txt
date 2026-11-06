@@ -168,6 +168,7 @@ target_compile_definitions(ll_bench_variant PRIVATE DEEPEP_LL_RDMA=1 DEEPEP_LL_M
     $<$<BOOL:${DEEPEP_LL_COMBINE_BATCH_FINAL}>:DEEPEP_LL_COMBINE_BATCH_FINAL=1>
     $<$<BOOL:${DEEPEP_LL_COMBINE_EARLY_REDUCE}>:DEEPEP_LL_COMBINE_EARLY_REDUCE=1>)
 target_compile_definitions(ll_bench_variant PRIVATE
+    DEEPEP_BENCH_PROFILE=$<BOOL:${DEEPEP_LL_COMBINE_PROFILE}>
     DEEPEP_BENCH_READY=${DEEPEP_LL_COMBINE_READY}
     DEEPEP_BENCH_NOTIFY=${DEEPEP_LL_COMBINE_NOTIFY}
     DEEPEP_BENCH_COALESCE=${DEEPEP_LL_COMBINE_COALESCE}
@@ -207,8 +208,8 @@ target_compile_definitions(ll_combine_bench PRIVATE DEEPEP_LL_RDMA=1 DEEPEP_LL_M
 add_dependencies(ll_combine_bench ll_bench_variant)
 option(DEEPEP_LL_PYTHON_BENCH "Build the PyTorch-controlled benchmark extension" OFF)
 if(DEEPEP_LL_PYTHON_BENCH)
-    if(DEEPEP_LL_OPS_BASE OR DEEPEP_LL_COMBINE_PROFILE)
-        message(FATAL_ERROR "Python timing currently uses clean DeepEP variants")
+    if(DEEPEP_LL_OPS_BASE)
+        message(FATAL_ERROR "Python benchmark requires DeepEP variants")
     endif()
     find_package(Python 3.11 REQUIRED COMPONENTS Interpreter Development.Module)
     find_package(pybind11 CONFIG REQUIRED)
@@ -227,6 +228,11 @@ if(DEEPEP_LL_PYTHON_BENCH)
     target_link_options(_ll_py_combine PRIVATE -Wl,-Bsymbolic)
     set(DEEPEP_LL_PYTHON_VARIANT "base" CACHE STRING "Installed Python benchmark variant")
     set(_python_destination "${Python_SITEARCH}/deepep_ll_bench/${DEEPEP_LL_PYTHON_VARIANT}")
+    if(DEEPEP_LL_COMBINE_PROFILE)
+        add_executable(ll_python_profile_report profile_report.cpp)
+        add_dependencies(_ll_py_combine ll_python_profile_report)
+        install(TARGETS ll_python_profile_report RUNTIME DESTINATION "${Python_SITEARCH}/deepep_ll_bench/bin" COMPONENT ll_python)
+    endif()
     # The installed extension uses its colocated kernel, not the build-tree copy.
     set_target_properties(_ll_py_combine PROPERTIES INSTALL_RPATH "$ORIGIN")
     install(TARGETS _ll_py_combine LIBRARY DESTINATION "${_python_destination}" COMPONENT ll_python)

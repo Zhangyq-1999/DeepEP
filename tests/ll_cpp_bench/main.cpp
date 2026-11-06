@@ -3,7 +3,9 @@
 #include "profile_samples.hpp"
 #include "profile.hpp"
 #include "producer_map.hpp"
+#ifndef LL_BENCH_PYTHON
 #include "mpi_coordinator.hpp"
+#endif
 #include <cstdlib>
 #include <acl/acl.h>
 #include <filesystem>
@@ -207,7 +209,8 @@ struct Case {
         }
         return worst;
     }
-    void exportProducers(const llbench::Options& o, const llbench::Coordinator& peers,
+    template<class Peers>
+    void exportProducers(const llbench::Options& o, const Peers& peers,
                          uint32_t cores, uint32_t recv, uint32_t options)
     {
         int32_t count = 0;
@@ -226,7 +229,7 @@ struct Case {
         }
         const auto local = llbench::return_producers(types, table, o.rank, o.world, bs, o.topk,
             DispatchDedup::LlGroupForWorld(o.world), o.ranksPerHost, cores, recv, options & 1U,
-            ((options >> 9U) & 3U) ? CombineCoalesce::kWorkers : 0U);
+            DEEPEP_BENCH_COALESCE ? CombineCoalesce::kWorkers : 0U);
         const auto gathered = peers.gather(local.data(), local.size() * sizeof(uint64_t));
         if (o.rank) return;
         const auto path = std::filesystem::path(o.output) / "producers.csv";
@@ -246,7 +249,7 @@ struct Case {
             out << bs << ',' << source << ',' << (i / o.topk) % bs << ',' << i % o.topk << ',' << peer << ','
                 << ((producer >> 16U) & 0xffU) << ',' << ((producer >> 24U) & 0xffU) << ',' << (producer >> 32U)
                 << ',' << (source == peer ? "local" : source / o.ranksPerHost == peer / o.ranksPerHost ? "UBMEM" :
-                    ((options>>9U)&3U)==2U ? "RDMA-relay" : ((options>>9U)&3U)==1U ? "RDMA-packed" : "RDMA") << '\n';
+                    DEEPEP_BENCH_COALESCE==2U ? "RDMA-relay" : DEEPEP_BENCH_COALESCE==1U ? "RDMA-packed" : "RDMA") << '\n';
         }
         out.close();
         if (!out) throw std::runtime_error("Cannot write return producer map");

@@ -206,6 +206,17 @@ def test_compact_diagnostics_select_same_global_iteration(reporter, tmp_path, co
             reader = csv.DictReader(f)
             fields = reader.fieldnames
             records.extend(row for row in reader if row["iteration"] in ("1", "2"))
+    for row in records:
+        if row["role"] == "send":
+            row.update(stage_drained=80 if row["rank"] == "0" else 90,
+                       notify_begin=100, notify_local_ready=111, notify_end=120)
+        else:
+            row.update(ready_begin=20, ready_observed=70, ready_missing_rank=0,
+                       ready_missing_core=3, ready_missing_count=2,
+                       partial_local_issue_ticks=2, partial_get_issue_ticks=3,
+                       partial_local_wait_ticks=5, partial_get_wait_ticks=7,
+                       partial_compute_issue_ticks=11, partial_output_wait_ticks=13,
+                       partial_pack_ticks=17, partial_input_drain_ticks=19)
     if coalesce:
         workers=[]
         for row in records:
@@ -222,6 +233,8 @@ def test_compact_diagnostics_select_same_global_iteration(reporter, tmp_path, co
     assert "D 0 p50 i=2 event_r=0 us=13.00" in out
     assert "D 0 worst i=1 event_r=1 us=30.00" in out
     assert "S r/c=1/0" in out and "R r/c=1/1" in out
+    assert "X prep=0/0:50 drained=1/0:90 notify=0/0:11/9 group=0/1:W50/0/3/2 inputwait=0/1:5/7" in out
+    assert "m4=2/3/5/7/11/13/17/19" in out
     if coalesce:
         assert out.count(" A r/c=") == 2
         assert "rows/wqes/bytes/unpack/forward=12/1/92608/12/9" in out
