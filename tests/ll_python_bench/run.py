@@ -73,7 +73,7 @@ def format_report(config, identity, results, run_id, status="RUNNING"):
              "Event_us=per-iteration rank-MAX; no samples removed; worst iteration is 1-based",
              "clean=performance; profile=instrumented diagnostics; Perfetto uses independent core-entry origins", TABLE_HEADER]
     lines += [result_row(r) for r in results]
-    lines += [f"ID {v} aiv={i['active_aiv']} recv={i['recv_cores']} qps={i['rdma_qps']} options={i['return_options']} layout={i.get('core_layout','halves')} control_l2={int(i.get('control_l2',False))} ready={i.get('ready_mode',0)} remote_first={int(i.get('remote_first',False))}"
+    lines += [f"ID {v} aiv={i['active_aiv']} recv={i['recv_cores']} qps={i['rdma_qps']} options={i['return_options']} layout={i.get('core_layout','halves')} control_l2={int(i.get('control_l2',False))} data_l2={i.get('data_l2',0)} ready={i.get('ready_mode',0)} remote_first={int(i.get('remote_first',False))}"
               for v,i in identity.items()]
     lines += [diagnostic_row(r) for r in results]
     for variant,bs in dict.fromkeys((r["variant"],r["tokens"]) for r in results):
@@ -195,7 +195,7 @@ def load_native(directory, variant):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     sys.modules[name] = module
-    if getattr(module,"suite_api",0)!=2:
+    if getattr(module,"suite_api",0)!=3:
         raise RuntimeError(f"Rebuild {variant}: bash tests/ll_python_bench/build_all.sh")
     return module
 
@@ -221,7 +221,7 @@ def write_timing_artifacts(directory, result):
         entry_sync=result["sync"],profile_build=int(result["kind"]=="profile"),
         profile_level=c["profile"] if result["kind"]=="profile" else 0,
         rank_max_mean_us=s["mean"],rank_max_min_us=s["min"],rank_max_max_us=s["max"],p50_us=s["p50"],p99_us=s["p99"],
-        core_layout=i.get("core_layout","halves"),control_l2=int(i.get("control_l2",False)),
+        core_layout=i.get("core_layout","halves"),control_l2=int(i.get("control_l2",False)),data_l2=i.get("data_l2",0),
         ready=i.get("ready_mode",0),remote_first=int(i.get("remote_first",False)))])
     ranks = result["per_rank_us"]
     append_csv(directory/"rank-max.csv",[dict(tokens=result["tokens"],iteration=j,
@@ -384,6 +384,15 @@ def main():
                 bench.sample(dist.barrier,False)
                 error = bench.precision()
                 dist.barrier()
+                progress.set(f"rank={rank} variant={variant} BS={bs} cache reuse correctness",emit=False)
+                # Each bank sees -x then +x at the same addresses. Do not clear
+                # flags between generations; original input is restored before warmup.
+                for generation in range(4):
+                    if generation % 2 == 0: bench.flip_inputs()
+                    dist.barrier()
+                    bench.sample(dist.barrier,False)
+                    error = max(error,bench.precision())
+                    dist.barrier()
                 for mode in modes:
                     callback = dist.barrier if mode=="host" else gate
                     progress.set(f"rank={rank} variant={variant} BS={bs} sync={mode} warmup 0/{a.warmup}",emit=False)

@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 @pytest.mark.parametrize("small", [False, True])
 @pytest.mark.parametrize("returns", [False, True, "new", "simt", "poll", "local", "batch", "batch-pipeline",
                                      "card-all", "card-row", "server-all", "server-row", "notify-simt", "notify-core", "ready-task", "ready-shared", "ready-fast", "ready-pipeline", "ready-snapshot", "stage-pair", "stage-prefetch", "stage-stream", "plan-compact", "ready-r32", "ready-r36", "wqe-prep", "mte-pack", "wqe-prefetch", "input6", "input-ready", "input-pair", "input-pipe", "input-stream", "input-front", "input-interleave", "input-l2", "input6-l2", "input6-l2-remote", "input6-r32", "input6-remote", "input6-fused", "input6-rpipe", "input6-rfull"])
-def test_all_combine_profile_paths_compile(tmp_path, profile, small, returns, physical=16):
+def test_all_combine_profile_paths_compile(tmp_path, profile, small, returns, physical=16, data_l2=0):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
     if not zig:
         pytest.skip("Set DEEPEP_TEST_ZIG for CPU compile checks")
@@ -72,6 +72,7 @@ int main() {}
                   "-DDEEPEP_LL_PHYSICAL_RANKS_PER_HOST=4"]
     elif returns:
         flags += ["-DDEEPEP_LL_COMBINE_REMOTE_FIRST=1", "-DDEEPEP_LL_COMBINE_DEFER_RETURN=1"]
+    flags.append(f"-DDEEPEP_LL_COMBINE_DATA_L2={data_l2}")
     if profile:
         flags += ["-DDEEPEP_LL_COMBINE_PROFILE=1"]
     if isinstance(returns, str) and returns.startswith("input6"):
@@ -90,3 +91,10 @@ int main() {}
 @pytest.mark.parametrize("profile", [False, True])
 def test_new_combinations_four_rank_host(tmp_path, profile, returns):
     test_all_combine_profile_paths_compile(tmp_path, profile, False, returns, physical=4)
+
+
+@pytest.mark.parametrize("data_l2", [1, 2, 4, 7])
+@pytest.mark.parametrize("physical", [4, 16])
+@pytest.mark.parametrize("profile", [False, True])
+def test_data_l2_paths_compile(tmp_path, data_l2, physical, profile):
+    test_all_combine_profile_paths_compile(tmp_path, profile, False, "input6-l2", physical, data_l2)

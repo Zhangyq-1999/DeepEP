@@ -1,4 +1,5 @@
 #pragma once
+#include "combine_cache_policy.h"
 #include "../../dispatch/low_latency/device/ll_transport.h"
 namespace CombineDedup {
 // Shared workspace may later be scanned before dispatch prefix is known.
@@ -18,7 +19,7 @@ __aicore__ inline void LoadStageWire(const __gm__ DispatchDedup::CommArgs* args,
     const uint32_t full=bytes/480U,tail=bytes%480U;
     LlTransport::Check(args,peer,offset,uint64_t((bytes+479U)/480U)*512U);
     if (!LlTransport::SameHost(args,peer) || args->peerMems[peer]==nullptr) { Trap(); return; }
-    auto src=LlTransport::Tensor(args->peerMems[peer]+offset,LlTransport::Rdma(args));
+    auto src=LlTransport::Tensor(args->peerMems[peer]+offset,LlTransport::Rdma(args) && !kCombineStageL2);
     auto dst=out.ReinterpretCast<uint8_t>();
     if(full)DataCopyPad(dst,src,{uint16_t(full),480U,32U,0U,0U},{false,0U,0U,uint8_t(0)});
     if(tail)DataCopyPad(dst[full*480U],src[full*512U],{1U,tail,0U,0U,0U},{false,0U,0U,uint8_t(0)});

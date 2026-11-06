@@ -7,6 +7,7 @@
 #include "kernel_operator.h"
 #include "combine_profile_device.h"
 #include "combine_poll.h"
+#include "combine_cache_policy.h"
 #ifdef DEEPEP_LL_COMBINE_SIMT_FLAG
 #include "combine_simt.h"
 #endif
@@ -169,7 +170,7 @@ private:
         outputs_ = scratch[outputOffset].ReinterpretCast<uint16_t>();
         result_.SetGlobalBuffer(reinterpret_cast<__gm__ uint16_t*>(result));
         resultFlags_.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(result));
-        if (uncached) {
+        if (uncached && !kCombineResultL2) {
             result_.SetL2CacheHint(CacheMode::CACHE_MODE_DISABLE);
             resultFlags_.SetL2CacheHint(CacheMode::CACHE_MODE_DISABLE);
         }

@@ -5,7 +5,7 @@ mpi=${MPI_HOME:-/usr/local/mpich-3.2.1}
 cann=${ASCEND_HOME_PATH:-}
 shmem=${SHMEM_ROOT:-}
 build="$root/build/ll-cpp-base"
-ready=0 notify=0 coalesce=0 coalesce_rows=0
+data_l2=0 ready=0 notify=0 coalesce=0 coalesce_rows=0
 batch_final=OFF local_first=OFF poll_nop=0 ranks_per_host=16 issue=OFF probe=OFF simt_meta=OFF simt_flag=OFF prefetch_return=OFF
 small=OFF early=OFF profile=OFF remote_first=OFF defer_return=OFF recv=0 jobs=4 variant=auto ops_source=${OPS_SOURCE_DIR:-}
 while (($#)); do
@@ -13,6 +13,7 @@ while (($#)); do
         --help|-h)
             echo 'build.sh --shmem-root SDK [--cann-home SDK] [--mpi-home DIR] [--build-dir DIR]'
             echo '         [--ready 0..22] (4 snapshot; 9 WQE preparation; 10 MTE packing; 11 WQE + input prefetch; 12 input6; 13 input-ready; 14 input-pair; 15 input-pipe; 16 input-stream; 17 input-front; 18 input-interleave; 19 input-l2; 20 input6-l2; 21 input6-rpipe; 22 input6-rfull)'
+            echo '         [--data-l2 0..7] stage=1, RDMA TX=2, result/flags=4; requires ready=20'
             echo '         [--notify 0|1|2] (MTE rank / SIMT rank / SIMT per-core)'
             echo '         [--coalesce 0|1|2] [--coalesce-rows 0|1] (off/card/server; whole bucket/one hidden)'
             echo '         [--variant base|opt|ops-shmem-base|auto] [--profile ON|OFF] [--small-batch ON|OFF] [--early-reduce ON|OFF] [--recv-cores 0|8..36] [--jobs N]'
@@ -21,7 +22,7 @@ while (($#)); do
             echo '         [--local-first ON|OFF] [--poll-nop 0..65535] [--simt-meta ON|OFF] [--simt-flag ON|OFF] [--prefetch-return ON|OFF]'
             echo '         [--batch-final ON|OFF] requires --local-first ON; vector batch checks and pipelined reduction'
             exit 0;;
-        --ready|--notify|--shmem-root|--cann-home|--mpi-home|--build-dir|--variant|--profile|--small-batch|--early-reduce|--recv-cores|--jobs|--remote-first|--defer-return|--ops-source|--early-issue|--progress-probe|--ranks-per-host|--simt-meta|--simt-flag|--prefetch-return|--poll-nop|--local-first|--batch-final|--coalesce|--coalesce-rows)
+        --data-l2|--ready|--notify|--shmem-root|--cann-home|--mpi-home|--build-dir|--variant|--profile|--small-batch|--early-reduce|--recv-cores|--jobs|--remote-first|--defer-return|--ops-source|--early-issue|--progress-probe|--ranks-per-host|--simt-meta|--simt-flag|--prefetch-return|--poll-nop|--local-first|--batch-final|--coalesce|--coalesce-rows)
             (($# >= 2)) || { echo "Missing value: $1" >&2; exit 2; }
             key=$1 value=$2; shift 2
             case "$key" in
@@ -31,6 +32,7 @@ while (($#)); do
                 --remote-first) remote_first=$value;; --defer-return) defer_return=$value;;
                 --ops-source) ops_source=$value;; --early-issue) issue=$value;; --progress-probe) probe=$value;; --ranks-per-host) ranks_per_host=$value;;
                 --local-first) local_first=$value;; --poll-nop) poll_nop=$value;; --simt-meta) simt_meta=$value;; --simt-flag) simt_flag=$value;; --prefetch-return) prefetch_return=$value;;
+                --data-l2) data_l2=$value;;
                 --ready) ready=$value;;
                 --notify) notify=$value;;
                 --batch-final) batch_final=$value;;
@@ -39,6 +41,8 @@ while (($#)); do
         *) echo "Unknown build option: $1" >&2; exit 2;;
     esac
 done
+[[ $data_l2 =~ ^[0-7]$ ]] || { echo 'data-l2 must be in [0,7]' >&2; exit 2; }
+[[ $data_l2 == 0 || $ready == 20 ]] || { echo 'data-l2 requires ready=20' >&2; exit 2; }
 [[ $ready =~ ^([0-9]|1[0-9]|2[0-2])$ ]] || { echo 'ready must be an integer in [0,22]' >&2; exit 2; }
 if [[ $ready != 0 && ( $notify != 0 || $coalesce != 0 || $small == ON || $simt_meta == ON ) ]]; then
     echo 'Test ready modes separately from notify, coalescing, small-batch and SIMT metadata' >&2; exit 2
@@ -109,6 +113,7 @@ cmake -S "$root/tests/ll_cpp_bench" -B "$build" -G 'Unix Makefiles' \
     "-DDEEPEP_LL_COMBINE_PREFETCH_RETURN=$prefetch_return" \
     "-DDEEPEP_LL_COMBINE_LOCAL_FIRST=$local_first" \
     "-DDEEPEP_LL_COMBINE_BATCH_FINAL=$batch_final" \
+    "-DDEEPEP_LL_COMBINE_DATA_L2=$data_l2" \
     "-DDEEPEP_LL_COMBINE_READY=$ready" \
     "-DDEEPEP_LL_COMBINE_NOTIFY=$notify" \
     "-DDEEPEP_LL_COMBINE_COALESCE=$coalesce" "-DDEEPEP_LL_COMBINE_COALESCE_ROWS=$coalesce_rows" \

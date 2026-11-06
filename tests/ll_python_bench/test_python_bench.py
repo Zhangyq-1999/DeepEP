@@ -31,7 +31,7 @@ def test_default_and_four_host_plan():
     assert cmd[cmd.index("--devices")+1]=="12,13,14,15"
     assert "--nproc_per_node=4" in cmd
     assert cmd[cmd.index("--sync")+1]=="device"
-    assert cmd[cmd.index("--variants")+1]=="base,input6,input6-l2,input6-remote,input6-l2-remote,ref-profile,input6-profile,input6-l2-profile,input6-remote-profile,input6-l2-remote-profile"
+    assert cmd[cmd.index("--variants")+1]=="base,input6,input6-l2,input6-l2-stage,input6-l2-tx,input6-l2-rx,input6-l2-all,ref-profile,input6-profile,input6-l2-profile,input6-l2-stage-profile,input6-l2-tx-profile,input6-l2-rx-profile,input6-l2-all-profile"
     assert launch.plan(args)[2]!=run_id
     other = launch.parser().parse_args([run_id,"--node-rank","1"])
     assert launch.plan(other)[3]==out
@@ -50,7 +50,7 @@ def test_default_and_four_host_plan():
             assert cmd[cmd.index("--sync")+1] == "hccl"
     args = launch.parser().parse_args(["--node-rank","0","--profile","0"])
     cmd = launch.plan(args)[-1]
-    assert cmd[cmd.index("--variants")+1] == "base,input6,input6-l2,input6-remote,input6-l2-remote"
+    assert cmd[cmd.index("--variants")+1] == "base,input6,input6-l2,input6-l2-stage,input6-l2-tx,input6-l2-rx,input6-l2-all"
 
 
 def test_clean_build_suite_forwards_environment_and_stops(tmp_path):
@@ -71,14 +71,13 @@ if [[ "$2" == "${FAIL_VARIANT:-}" ]]; then exit 17; fi
     result = subprocess.run(cmd,capture_output=True,text=True,check=True)
     calls = result.stdout.splitlines()
     assert calls == [f"CALL --variant {v} --ranks-per-host 16 --conda-env py311_zyq"
-                     for v in ("base","input6","input6-l2","input6-remote","input6-l2-remote",
-                               "ref-profile","input6-profile","input6-l2-profile","input6-remote-profile","input6-l2-remote-profile")]
+                     for v in ('base', 'input6', 'input6-l2', 'input6-l2-stage', 'input6-l2-tx', 'input6-l2-rx', 'input6-l2-all', 'ref-profile', 'input6-profile', 'input6-l2-profile', 'input6-l2-stage-profile', 'input6-l2-tx-profile', 'input6-l2-rx-profile', 'input6-l2-all-profile')]
     failed = subprocess.run(cmd,env=dict(os.environ,FAIL_VARIANT="input6"),capture_output=True,text=True)
     assert failed.returncode == 17 and "input6-l2" not in failed.stdout
     invalid = subprocess.run(cmd+["--variants","base,typo"],capture_output=True,text=True)
     assert invalid.returncode == 2 and not invalid.stdout
     clean = subprocess.run(cmd+["--profile","0"],capture_output=True,text=True,check=True)
-    assert clean.stdout.splitlines() == calls[:5]
+    assert clean.stdout.splitlines() == calls[:7]
 
 
 @pytest.mark.parametrize("extra",[["--devices","12,12,14,15"],["--node-rank","2"],["--tokens","32","--iters","0"],
@@ -354,6 +353,7 @@ def test_worker_saves_each_case_and_closes_once(tmp_path,monkeypatch,capsys,fail
         def finish_profile(self,times,cb):
             assert times==[12.0]*2 and cb(b"profile")==b"profile"*8
             calls.append("finish-profile")
+        def flip_inputs(self): calls.append("flip-inputs")
         def precision(self): return 0.0
         def close(self):
             calls.append("close" if self.owner else "release")
@@ -425,10 +425,11 @@ def test_worker_saves_each_case_and_closes_once(tmp_path,monkeypatch,capsys,fail
     assert calls.count("init")==calls.count("close")==1
     assert calls.count("borrow")==calls.count("release")==calls.count("reset")==len(variants)-1
     assert calls.count("release-case")==1
+    assert calls.count("flip-inputs")==4*len(variants)
     profiled=sum(v.endswith("-profile") for v in variants)
     measurements=10*len(variants)-2*profiled
     assert calls.count(("sample",True))==measurements
-    assert calls.count(("sample",False))==2*len(variants)+(measurements if sync=="both" else 0)
+    assert calls.count(("sample",False))==10*len(variants)+(measurements if sync=="both" else 0)
     assert calls.count("begin-profile")==calls.count("finish-profile")==profiled*(4 if sync=="both" else 2)
     assert calls.count("render-profiles")==int(profiled>0 and not fail_close)
     assert calls.count("hccl-init")==int(sync=="hccl")

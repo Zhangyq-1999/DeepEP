@@ -36,19 +36,12 @@ bash tests/ll_cpp_bench/build_all.sh
 | `base` | 冻结的上游原版 | 关闭 |
 | `input6` | wqe-prep + 最多 6 个 M4 输入槽 | 关闭 |
 | `input6-l2` | input6 原半区分核，prepare/ready 控制区使用默认 L2 | 关闭 |
-| `input6-l2-remote` | input6-l2 + 跨机优先，28/28 半区布局、立即回传 | 关闭 |
-| `input6-r32`（可选） | input6 改为 24 个 DIRECT 核、32 个接收核（56 AIV 时） | 关闭 |
-| `input6-remote` | input6 将跨机优先前移到 DIRECT 遍历和 M4 建表/任务分配 | 关闭 |
-| `input6-rpipe`（可选） | input6-remote + 首末包立即提交，中间包在下一任务输入读取发起后提交 | 关闭 |
-| `input6-rfull`（可选） | input6-remote + 首末包立即提交，中间包在下一任务规约完成、打包前提交 | 关闭 |
-| `ref-profile` | 实验开关全部关闭 | 开启 |
-| `input6-profile` | 与 input6 相同 | 开启 |
-| `input6-l2-profile` | 与 input6-l2 相同 | 开启 |
-| `input6-l2-remote-profile` | 与 input6-l2-remote 相同 | 开启 |
-| `input6-r32-profile`（可选） | 与 input6-r32 相同 | 开启 |
-| `input6-remote-profile` | 与 input6-remote 相同 | 开启 |
-| `input6-rpipe-profile`（可选） | 与 input6-rpipe 相同 | 开启 |
-| `input6-rfull-profile`（可选） | 与 input6-rfull 相同 | 开启 |
+| `input6-l2-stage` | input6-l2 + M3 staging/M4 input L2 | OFF |
+| `input6-l2-tx` | input6-l2 + RDMA TX staging L2 | OFF |
+| `input6-l2-rx` | input6-l2 + M5 payload/flags/local publication L2 | OFF |
+| `input6-l2-all` | input6-l2 + all three data regions | OFF |
+| `ref-profile` | base diagnostic counterpart | ON |
+| `input6*-profile` | same policy as the corresponding clean variant | ON |
 
 优化和验收以 **BS32、48、64** 为主，BS72 作邻近对照，BS256 只检查回退。上一轮 EP8 干净版 ready-snapshot 的三个 BS 的 P50 分别为 57.11、63.56、70.19 μs，增加接收核没有持续改善这三个场景。ready-r32、ready-r36、stage-stream、plan-compact 保留为可选实验，不再默认编译运行。
 
@@ -56,9 +49,27 @@ EP32 收尾修复后的实测中，`wqe-prep` 在 BS48/64 的均值比 snapshot 
 
 最新 9b3d243 的 EP32/HCCL 实测 `input6` 的 BS32/48/64 均值为 57.28/65.49/74.26 μs，仍是小 BS 对照；`input-pair` 分别慢 1.41/0.69/0.43 μs，改为可选项。保留 `input-pipe`：它在 BS256 的均值为 174.94 μs，比同轮 input6 快 8.85 μs，但 BS32–64 尚无稳定收益。
 
-11 月 6 日 EP32/HCCL 实测 BS32 mean：input6=58.61、input6-l2=56.37、input6-remote=56.85 μs。新一轮默认 `base,input6,input6-l2,input6-remote,input6-l2-remote` 及其五个独立打点版。最后一项在 28/28 半区布局下叠加控制区 L2、跨机优先，继续立即回传；尚待目标 NPU 测试。input6-r32、input6-rpipe、input6-rfull 移出默认但仍可显式选择，input6-fused 仍是额外改变接收核数的可选组合。
+Current defaults isolate L2 policies at a fixed 28/28 core split and six input lanes:
+`base,input6,input6-l2,input6-l2-stage,input6-l2-tx,input6-l2-rx,input6-l2-all`,
+plus seven independent diagnostic builds. Existing remote-first/core-split experiments remain opt-in.
+The data policy is a separate mask (stage=1, TX=2, result=4), checked across Host/Device/ranks;
+it does not consume ready-mode or poll-nop identity bits. The original base stays frozen.
+All variants run a four-generation `-x,-x,+x,+x` correctness check before warmup,
+reusing both banks without per-call flag clearing, then restoring the original inputs.
+This check is outside timing and catches stale values hidden by constant-input benchmarks.
 
-新组合不增加 UB，不改累加顺序、通知协议、QP 所有权和 CQ 回收。控制区 L2 仅覆盖 prepare/ready 的发布、轮询、清零；payload/data-with-flag/RDMA 暂存继续旁路。支持每机 4/16 rank 和四机 EP64。参考审计见 [TRANSFER_AB.md](TRANSFER_AB.md)。
+Schema 21 adds `data_l2_policy` to CSV/Perfetto without increasing the 272-word record.
+The compact `cache` line always reports M3 input/store/drain, group-ready load/check/calls,
+and M5 input/wait/compute/store for the representative P50 records; existing M4/RDMA/CQ/tail
+fields remain. These timings are not hardware cache hit/miss counters. Completion barriers,
+flag checks, math order, SDK and source-slot CQ ownership are unchanged. No NPU validation yet.
+Full matrix, policy scopes and analysis instructions: [L2 experiments](../ll_python_bench/README.md).
+
+Both machines must rebuild, e.g. `bash tests/ll_cpp_bench/build_all.sh --ranks-per-host 16`,
+then node 0 runs `bash tests/ll_cpp_bench/run_all.sh --ep 32 --ranks-per-host 16`;
+use its printed command on node 1. Omit topology options for the default dual-host EP8.
+Existing input6-remote/input6-l2-remote variants remain selectable via `--variants`.
+
 
 增加实验版后，C++ 紧凑回显按 BS 自动分成多个 `PASTE_BEGIN part=i/N` 块，每块不超过 62 KiB，完整保留表格、P50/worst 和拖尾计数。特别大的单个 BS 会在行边界续到下一块。无需删除异常样本或诊断字段；CSV 和 Perfetto 继续保存完整数据。
 

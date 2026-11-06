@@ -1,4 +1,5 @@
 #pragma once
+#include "combine_cache_policy.h"
 #include <cstdint>
 #ifndef DEEPEP_LL_COMBINE_READY
 #define DEEPEP_LL_COMBINE_READY 0

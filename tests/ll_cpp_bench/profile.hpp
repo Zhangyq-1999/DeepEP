@@ -272,6 +272,7 @@ inline void profile_header(std::ostream& out)
         "partial_vector_barriers",
         "partial_stream_steps",
         "partial_front_loads",
+        "data_l2_policy",
     };
     static_assert(sizeof(names) / sizeof(names[0]) == CombineProfile::Count, "profile CSV fields");
     for (uint32_t w = 0; w < CombineProfile::Count; ++w) out << (w ? "," : "") << names[w];

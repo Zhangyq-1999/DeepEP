@@ -138,6 +138,14 @@ void compact_record(const Record& r, bool brief = false)
                   << '/' << r[PartialLocalWaitTicks] << '/' << r[PartialGetWaitTicks]
                   << '/' << r[PartialComputeIssueTicks] << '/' << r[PartialOutputWaitTicks]
                   << '/' << r[PartialPackTicks] << '/' << r[PartialInputDrainTicks];
+    if (r[Level] >= 2 && !brief) {
+        std::cout << "\n  cache=" << r[DataL2Policy]
+                  << " m3=" << r[StageInputTicks] << '/' << r[StageStoreIssueTicks] << '/' << r[StageDrainTicks]
+                  << " g=" << r[ReadyPollLoadTicks] << '/' << r[ReadyPollCheckTicks]
+                  << '/' << r[ReadyPollCalls]
+                  << " m5=" << r[FinalInputIssueTicks] << '/' << r[FinalInputWaitTicks]
+                  << '/' << r[FinalComputeIssueTicks] << '/' << r[FinalStoreIssueTicks];
+    }
     if (brief) {
         std::cout << "\n  rdma=" << r[RdmaPackets] << '/' << r[RdmaDeferredPackets]
                   << '/' << r[RdmaDeferGapTicks] << '/' << r[RdmaStageIssueTicks] << '/' << r[RdmaStageWaitTicks]
@@ -328,6 +336,7 @@ void suite_report(const fs::path& root)
                  "IQR=candidates; WIDE=(max-min)/P50>20%; full samples/fields in CSV; '-'=absent.\n"
                  "e(S)=init/stage/core_notify/notify/direct_first/direct_last/direct_end/pipe\n"
                  "e(R)=init/stage_drained/core_notify/ready_begin/ready_observed/ready_end/partial_end/put_first/put_last/final_first/final_last/store/drain/pipe\n"
+                 "cache=mask(stage1/TX2/result4); m3=input/store_issue/drain; g=load/check/calls; m5=input_issue/input_wait/compute/store; ticks, NOT cache hits\n"
                  "m4=local_issue/get_issue/local_wait/get_wait/compute_issue/output_wait/pack/input_drain cumulative ticks\n"
                  "X=same-sample global maxima r/c:ticks; prep/drained=own-entry offsets, notify=local_wait/publish, group=W(wait)|O(observe)/missing_rank/core/count, inputwait=local/get; not additive\n"
                  "top4 cumulative ticks: s.=stage_, d.=direct_, m4.=partial_, m5.=final_, g.=ready_; overlapping costs are not additive.\n"

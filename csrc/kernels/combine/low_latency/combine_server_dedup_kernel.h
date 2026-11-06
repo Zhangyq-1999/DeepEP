@@ -107,7 +107,7 @@ public:
         table_.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t*>(assistInfoForCombine));
         types_.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t*>(tokenType));
         stage_.SetGlobalBuffer(reinterpret_cast<__gm__ uint16_t*>(args_->peerMems[args_->rank] + stageBase_));
-        if (LlTransport::Rdma(args_)) stage_.SetL2CacheHint(CacheMode::CACHE_MODE_DISABLE);
+        if (LlTransport::Rdma(args_) && !kCombineStageL2) stage_.SetL2CacheHint(CacheMode::CACHE_MODE_DISABLE);
         preparePublish_ = Allocate<float>(256U);
         prepareInput_ = Allocate<float>(kCombinePrepareRowBytes + 256U);
         prepareWork_ = Allocate<float>(512U);

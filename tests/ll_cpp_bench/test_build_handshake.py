@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 @pytest.mark.parametrize("mode", ["plain", "early", "local", "batch", "card-all", "card-row", "server-all", "server-row", "notify-simt", "notify-core", "ready-task", "ready-shared", "ready-fast", "ready-pipeline", "ready-snapshot", "stage-pair", "stage-prefetch", "stage-stream", "plan-compact", "ready-r32", "ready-r36", "wqe-prep", "mte-pack", "wqe-prefetch", "input6", "input-ready", "input-pair", "input-pipe", "input-stream", "input-front", "input-interleave", "input-l2", "input6-l2", "input6-l2-remote", "input6-r32", "input6-remote", "input6-fused", "input6-rpipe", "input6-rfull"])
 @pytest.mark.parametrize("profile", [False, True])
-def test_benchmark_build_handshake(tmp_path, mode, profile):
+def test_benchmark_build_handshake(tmp_path, mode, profile, data_l2=0):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
     if not zig:
         pytest.skip("Set DEEPEP_TEST_ZIG for CPU checks")
@@ -53,7 +53,7 @@ int main() {
     assert(rejected);
 }
 ''', encoding="utf-8")
-    flags = []
+    flags = [f"-DDEEPEP_LL_COMBINE_DATA_L2={data_l2}"]
     if mode.startswith("ready-r"): flags.append(f"-DDEEPEP_LL_COMBINE_RECV_CORES={mode[-2:]}")
     if mode in ("early", "local", "batch"):
         flags.append("-DDEEPEP_LL_COMBINE_" + ("EARLY_REDUCE" if mode == "early" else "LOCAL_FIRST") + "=1")
@@ -82,3 +82,9 @@ int main() {
     subprocess.run([zig, "c++", "-std=c++17", "-O1", "-UNDEBUG", *flags,
                     "-I" + str(ROOT / "csrc"), str(source), "-o", str(exe)], check=True, timeout=120)
     subprocess.run([str(exe)], check=True, timeout=30)
+
+
+@pytest.mark.parametrize("data_l2", [1,2,4,7])
+@pytest.mark.parametrize("profile", [False,True])
+def test_data_l2_identity(tmp_path,data_l2,profile):
+    test_benchmark_build_handshake(tmp_path,"input6-l2",profile,data_l2)

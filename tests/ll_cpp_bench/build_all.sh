@@ -12,7 +12,7 @@ while (($#)); do
             cat <<'USAGE'
 build_all.sh [--variants NAME[,NAME...]] [--ranks-per-host 4|16] [--jobs N] [--dry-run]
              [--cann-home DIR] [--mpi-home DIR] [--shmem-root DIR]
-Defaults: base/input6/input6-l2/input6-remote/input6-l2-remote, plus matching diagnostics.
+Defaults: base/input6/input6-l2/input6-l2-{stage,tx,rx,all}, plus matching diagnostics.
 Target BS32/48/64; BS72 is a neighboring case and BS256 checks regressions.
 base is the frozen original; ready-snapshot remains opt-in.
 wqe-prep prepares a private UB WQE while M4 payload staging runs, then publishes it.
@@ -80,7 +80,7 @@ IFS=, read -r -a names <<< "$variants"
 # Validate the complete selection before starting any build.
 for name in "${names[@]}"; do
     case "$name" in
-        input6-l2|input6-l2-profile|input6-l2-remote|input6-l2-remote-profile|input6-r32|input6-r32-profile|input6-remote|input6-remote-profile|input6-fused|input6-fused-profile|input6-rpipe|input6-rpipe-profile|input6-rfull|input6-rfull-profile) ;;
+        input6-l2-stage|input6-l2-stage-profile|input6-l2-tx|input6-l2-tx-profile|input6-l2-rx|input6-l2-rx-profile|input6-l2-all|input6-l2-all-profile|input6-l2|input6-l2-profile|input6-l2-remote|input6-l2-remote-profile|input6-r32|input6-r32-profile|input6-remote|input6-remote-profile|input6-fused|input6-fused-profile|input6-rpipe|input6-rpipe-profile|input6-rfull|input6-rfull-profile) ;;
         input-l2|input-l2-profile|input-interleave|input-interleave-profile|input-stream|input-stream-profile|input-front|input-front-profile|input-pair|input-pair-profile|input-pipe|input-pipe-profile|input6|input6-profile|input-ready|input-ready-profile|wqe-prep|wqe-prep-profile|wqe-prefetch|wqe-prefetch-profile|mte-pack|mte-pack-profile|plan-compact|plan-compact-profile|ready-r32|ready-r32-profile|ready-r36|ready-r36-profile) ;;
         stage-stream|stage-stream-profile|stage-prefetch|stage-prefetch-profile|stage-pair|stage-pair-profile|ready-snapshot|ready-snapshot-profile|ready-fast|ready-pipeline|ready-fast-profile|ready-pipeline-profile|ready-task|ready-shared|ready-task-profile|ready-shared-profile|notify-simt|notify-core|notify-simt-profile|notify-core-profile|card-all|card-row|server-all|server-row|card-all-profile|card-row-profile|server-all-profile|server-row-profile|batch|batch-profile|batch-pipeline|batch-pipeline-profile|local-first|local-first-profile|poll800|poll800-profile|meta|meta-profile|prefetch|prefetch-profile|prepare|flag|prepare-flag|prepare-profile|flag-profile|prepare-flag-profile|issue|probe|issue-probe|issue-profile|probe-profile|issue-probe-profile|base|remote|pipeline|return|ops-shmem-base|ref-profile|opt-profile|r36-profile|early-profile|remote-profile|pipeline-profile|return-profile) ;;
         *) fail "Unknown experiment: $name (see --help)";;
@@ -88,7 +88,7 @@ for name in "${names[@]}"; do
 done
 if ((!dry)); then ll_bench_environment "$cann" "$mpi" "$shmem"; fi
 for name in "${names[@]}"; do
-    ready=0 notify=0 coalesce=0 coalesce_rows=0
+    data_l2=0 ready=0 notify=0 coalesce=0 coalesce_rows=0
     variant=opt profile=OFF small=OFF early=OFF remote=OFF defer=OFF issue=OFF probe=OFF recv=0 simt_meta=OFF simt_flag=OFF prefetch_return=OFF poll_nop=0 local_first=OFF batch_final=OFF
     if [[ $name == *-profile ]]; then profile=ON; fi
     case "$name" in
@@ -103,6 +103,10 @@ for name in "${names[@]}"; do
         wqe-prefetch|wqe-prefetch-profile) ready=11;;
         input6|input6-profile) ready=12;;
         input6-l2|input6-l2-profile) ready=20;;
+        input6-l2-stage|input6-l2-stage-profile) ready=20; data_l2=1;;
+        input6-l2-tx|input6-l2-tx-profile) ready=20; data_l2=2;;
+        input6-l2-rx|input6-l2-rx-profile) ready=20; data_l2=4;;
+        input6-l2-all|input6-l2-all-profile) ready=20; data_l2=7;;
         input6-l2-remote|input6-l2-remote-profile) ready=20; remote=ON;;
         input6-r32|input6-r32-profile) ready=12; recv=32;;
         input6-remote|input6-remote-profile) ready=12; remote=ON;;
@@ -152,7 +156,7 @@ for name in "${names[@]}"; do
          --cann-home "$cann" --mpi-home "$mpi" --shmem-root "$shmem"
          --build-dir "$root/build/ll-cpp-$name" --jobs "$jobs"
          --variant "$variant" --profile "$profile" --small-batch "$small"
-         --ready "$ready" --notify "$notify" --coalesce "$coalesce" --coalesce-rows "$coalesce_rows"
+         --data-l2 "$data_l2" --ready "$ready" --notify "$notify" --coalesce "$coalesce" --coalesce-rows "$coalesce_rows"
          --recv-cores "$recv" --early-reduce "$early" --remote-first "$remote" --defer-return "$defer"
          --early-issue "$issue" --progress-probe "$probe" --simt-meta "$simt_meta" --simt-flag "$simt_flag"
          --prefetch-return "$prefetch_return" --local-first "$local_first" --batch-final "$batch_final" --poll-nop "$poll_nop" --ranks-per-host "$ranks_per_host")

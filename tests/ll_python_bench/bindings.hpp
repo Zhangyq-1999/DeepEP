@@ -121,6 +121,10 @@ public:
         d["recv_cores"] = CombineDedup::EpCombineRecvCoreCount(runtime_.cores);
         d["core_layout"] = CombineDedup::kCombineInterleavedCores ? "odd-send-even-receive" : "halves";
         d["control_l2"] = CombineDedup::kCombineControlL2;
+        const auto dataL2 = deepep_ll_combine_data_l2();
+        if (dataL2 != CombineDedup::kCombineDataL2)
+            throw std::runtime_error("Mismatched Host/device data L2 policy; rebuild variant");
+        d["data_l2"] = dataL2;
         d["ready_mode"] = DEEPEP_LL_COMBINE_READY;
         d["remote_first"] = bool(deepep_ll_combine_return_options() & 1U);
         d["rdma_qps"] = runtime_.rdmaQps;
@@ -252,6 +256,7 @@ public:
         collecting_ = false;
     }
 #endif
+    void flip_inputs() { hasCase(); py::gil_scoped_release release; sync(); case_->flipExpertSign(o_); }
     double precision() { hasCase(); py::gil_scoped_release release; sync(); return case_->precision(o_.dtype=="bf16"); }
     void close() {
         live();
@@ -269,7 +274,7 @@ public:
 }  // namespace llpython
 
 PYBIND11_MODULE(_ll_py_combine, m) {
-    m.attr("suite_api") = 2;
+    m.attr("suite_api") = 3;
     m.attr("ranks_per_host") = DispatchDedup::kLlPhysicalRanksPerHost;
     py::class_<llpython::Bench>(m, "Bench", py::module_local())
         .def(py::init<int,int,int,const std::vector<std::string>&,uintptr_t,const std::string&>())
@@ -279,6 +284,7 @@ PYBIND11_MODULE(_ll_py_combine, m) {
         .def("identity", &llpython::Bench::identity).def("prepare", &llpython::Bench::prepare)
         .def("dispatch", &llpython::Bench::dispatch).def("clear_flags", &llpython::Bench::clearFlags)
         .def("entry_sync", &llpython::Bench::entrySync).def("check_entry_sync", &llpython::Bench::checkEntrySync)
+        .def("flip_inputs", &llpython::Bench::flip_inputs)
         .def("sample", &llpython::Bench::sample).def("precision", &llpython::Bench::precision)
 #if DEEPEP_BENCH_PROFILE
         .def("begin_profile", &llpython::Bench::beginProfile).def("finish_profile", &llpython::Bench::finishProfile)

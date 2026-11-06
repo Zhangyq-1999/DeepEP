@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[2]
 @pytest.mark.parametrize("physical", [4, 16])
 @pytest.mark.parametrize("mode", [9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22])
 @pytest.mark.parametrize("profile", [False, True])
-def test_transfer_lifetimes(tmp_path, physical, mode, profile):
+def test_transfer_lifetimes(tmp_path, physical, mode, profile, data_l2=0):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
     if not zig:
         pytest.skip("Set DEEPEP_TEST_ZIG for asynchronous transport checks")
@@ -18,6 +18,7 @@ def test_transfer_lifetimes(tmp_path, physical, mode, profile):
     exe = tmp_path / "transfer.exe"
     subprocess.run([zig, "c++", "-std=c++17", "-O1", "-UNDEBUG",
                     f"-DDEEPEP_LL_COMBINE_READY={mode}", f"-DDEEPEP_LL_PHYSICAL_RANKS_PER_HOST={physical}",
+                    f"-DDEEPEP_LL_COMBINE_DATA_L2={data_l2}",
                     *(["-DDEEPEP_LL_COMBINE_PROFILE=1"] if profile else []),
                     "-I" + str(tmp_path), "-I" + str(ROOT / "tests/ll_rdma/stubs"),
                     "-I" + str(ROOT / "csrc"), str(Path(__file__).with_name("transfer_batch_test.cpp")),
@@ -254,3 +255,10 @@ def test_wide_input_m5_retirement(tmp_path, mode):
                     str(ROOT / "tests/ll_rdma/combine_early_reduce_test.cpp"), "-o", str(exe)],
                    check=True, timeout=120)
     subprocess.run([str(exe)], check=True, timeout=120)
+
+
+@pytest.mark.parametrize("data_l2", [1,2,4,7])
+@pytest.mark.parametrize("physical", [4,16])
+@pytest.mark.parametrize("profile", [False,True])
+def test_cache_transfer_lifetimes(tmp_path,data_l2,physical,profile):
+    test_transfer_lifetimes(tmp_path,physical,20,profile,data_l2)

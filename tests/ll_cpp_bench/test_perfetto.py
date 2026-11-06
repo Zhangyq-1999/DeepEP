@@ -37,6 +37,8 @@ def test_offline_trace_selection_precision_and_repeat(reporter, tmp_path):
         directory = tmp_path / ('perfetto-local' + suffix)
         median = read_trace(directory / 'bs32-p50-i2.perfetto.json')
         worst = read_trace(directory / 'bs32-worst-i1.perfetto.json')
+        bodies = [e for e in median['traceEvents'] if e.get('name') == 'profiled body']
+        assert bodies and all(e['args']['data_l2_policy'] == 7 for e in bodies)
         assert median['otherData']['sample_event_us'] == 13
         assert worst['otherData']['sample_event_us'] == 30
         assert 'coverage=2/2' in median['otherData']['selection']

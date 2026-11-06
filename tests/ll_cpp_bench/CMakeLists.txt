@@ -25,6 +25,13 @@ option(DEEPEP_LL_COMBINE_SIMT_META "SIMT stable task compaction and batch metada
 option(DEEPEP_LL_COMBINE_SIMT_FLAG "SIMT checks of complete UB flag snapshots" OFF)
 option(DEEPEP_LL_COMBINE_PREFETCH_RETURN "Post the previous return after issuing next input reads" OFF)
 set(DEEPEP_LL_COMBINE_READY "0" CACHE STRING "0=original, 4=snapshot, 9=WQE preparation, 10=MTE packing, 11=WQE preparation + input prefetch, 12=six input lanes, 13=ready contribution prefetch, 14=paired Cast/Muls, 15=six inputs + WQE pipeline, 16=streamed arithmetic, 17=anchor-first input issue, 18=odd-send/even-receive input6, 19=interleaved input6 with default-L2 controls, 20=input6 with default-L2 controls, 21=eager-edge input prefetch return, 22=eager-edge full reduction return")
+set(DEEPEP_LL_COMBINE_DATA_L2 "0" CACHE STRING "Data cache mask: stage=1, RDMA TX=2, result/flags=4")
+if(NOT DEEPEP_LL_COMBINE_DATA_L2 MATCHES "^[0-7]$")
+    message(FATAL_ERROR "DEEPEP_LL_COMBINE_DATA_L2 must be in [0,7]")
+endif()
+if(DEEPEP_LL_COMBINE_DATA_L2 AND NOT DEEPEP_LL_COMBINE_READY STREQUAL "20")
+    message(FATAL_ERROR "Data L2 experiments require ready=20")
+endif()
 if(NOT DEEPEP_LL_COMBINE_READY MATCHES "^([0-9]|1[0-9]|2[0-2])$")
     message(FATAL_ERROR "ready must be an integer in [0,22]")
 endif()
@@ -156,6 +163,7 @@ target_link_libraries(ll_bench_variant PRIVATE MPI::MPI_CXX ascendcl shmem deepe
     tiling_api platform unified_dlog ${CMAKE_DL_LIBS} pthread)
 target_compile_definitions(ll_bench_variant PRIVATE DEEPEP_LL_RDMA=1 DEEPEP_LL_METADATA_CORES=4
     DEEPEP_LL_COMBINE_READY=${DEEPEP_LL_COMBINE_READY}
+    DEEPEP_LL_COMBINE_DATA_L2=${DEEPEP_LL_COMBINE_DATA_L2}
     DEEPEP_LL_COMBINE_NOTIFY=${DEEPEP_LL_COMBINE_NOTIFY}
     DEEPEP_LL_COMBINE_COALESCE=${DEEPEP_LL_COMBINE_COALESCE}
     DEEPEP_LL_COMBINE_COALESCE_ROWS=${DEEPEP_LL_COMBINE_COALESCE_ROWS}
@@ -244,4 +252,4 @@ if(DEEPEP_LL_OPS_BASE)
         "implementation=ops-shmem-base\nupstream=${LL_OPS_REV}\ntransport=SHMEM QP Put; quiet at upstream batch boundary\n")
 endif()
 file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/bench-build.txt" CONTENT
-    "source=${_source_id}\noriginal=${DEEPEP_LL_COMBINE_ORIGINAL}\nbaseline_revision=${LL_COMBINE_BASELINE_REV}\ncombine_source=${DEEPEP_LL_COMBINE_SOURCE}\nsmall_batch=${DEEPEP_LL_COMBINE_SMALL_BATCH}\nrecv_cores=${DEEPEP_LL_COMBINE_RECV_CORES}\nearly_reduce=${DEEPEP_LL_COMBINE_EARLY_REDUCE}\nremote_first=${DEEPEP_LL_COMBINE_REMOTE_FIRST}\ndefer_return=${DEEPEP_LL_COMBINE_DEFER_RETURN}\nearly_issue=${DEEPEP_LL_COMBINE_EARLY_ISSUE}\nprogress_probe=${DEEPEP_LL_COMBINE_PROGRESS_PROBE}\nsimt_meta=${DEEPEP_LL_COMBINE_SIMT_META}\nsimt_flag=${DEEPEP_LL_COMBINE_SIMT_FLAG}\nlocal_first=${DEEPEP_LL_COMBINE_LOCAL_FIRST}\nbatch_final=${DEEPEP_LL_COMBINE_BATCH_FINAL}\npoll_nop=${DEEPEP_LL_COMBINE_POLL_NOP}\nprefetch_return=${DEEPEP_LL_COMBINE_PREFETCH_RETURN}\nready=${DEEPEP_LL_COMBINE_READY}\nnotify=${DEEPEP_LL_COMBINE_NOTIFY}\ncoalesce=${DEEPEP_LL_COMBINE_COALESCE}\ncoalesce_rows=${DEEPEP_LL_COMBINE_COALESCE_ROWS}\nranks_per_host=${DEEPEP_LL_PHYSICAL_RANKS_PER_HOST}\nprofile=${DEEPEP_LL_COMBINE_PROFILE}\nmpi=${MPI_CXX_COMPILER}\nshmem=${SHMEM_ROOT}\n")
+    "source=${_source_id}\noriginal=${DEEPEP_LL_COMBINE_ORIGINAL}\nbaseline_revision=${LL_COMBINE_BASELINE_REV}\ncombine_source=${DEEPEP_LL_COMBINE_SOURCE}\nsmall_batch=${DEEPEP_LL_COMBINE_SMALL_BATCH}\nrecv_cores=${DEEPEP_LL_COMBINE_RECV_CORES}\nearly_reduce=${DEEPEP_LL_COMBINE_EARLY_REDUCE}\nremote_first=${DEEPEP_LL_COMBINE_REMOTE_FIRST}\ndefer_return=${DEEPEP_LL_COMBINE_DEFER_RETURN}\nearly_issue=${DEEPEP_LL_COMBINE_EARLY_ISSUE}\nprogress_probe=${DEEPEP_LL_COMBINE_PROGRESS_PROBE}\nsimt_meta=${DEEPEP_LL_COMBINE_SIMT_META}\nsimt_flag=${DEEPEP_LL_COMBINE_SIMT_FLAG}\nlocal_first=${DEEPEP_LL_COMBINE_LOCAL_FIRST}\nbatch_final=${DEEPEP_LL_COMBINE_BATCH_FINAL}\npoll_nop=${DEEPEP_LL_COMBINE_POLL_NOP}\nprefetch_return=${DEEPEP_LL_COMBINE_PREFETCH_RETURN}\ndata_l2=${DEEPEP_LL_COMBINE_DATA_L2}\nready=${DEEPEP_LL_COMBINE_READY}\nnotify=${DEEPEP_LL_COMBINE_NOTIFY}\ncoalesce=${DEEPEP_LL_COMBINE_COALESCE}\ncoalesce_rows=${DEEPEP_LL_COMBINE_COALESCE_ROWS}\nranks_per_host=${DEEPEP_LL_PHYSICAL_RANKS_PER_HOST}\nprofile=${DEEPEP_LL_COMBINE_PROFILE}\nmpi=${MPI_CXX_COMPILER}\nshmem=${SHMEM_ROOT}\n")

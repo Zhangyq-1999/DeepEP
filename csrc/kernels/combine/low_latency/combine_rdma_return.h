@@ -31,6 +31,9 @@ __aicore__ inline void SendReturnPacket(ReturnBatch& batch,
 {
     batch.SubmitPending();
     if (LlTransport::RemoteWrite(args, peer)) batch.Enqueue(peer, offset, output, defer);
-    else LlTransport::Packet(args, peer, offset, output, bytes, 7U, false);
+    else if constexpr (kCombineResultL2) {
+        LlTransport::Check(args, peer, offset, bytes);
+        AscendC::DataCopy(LlTransport::Tensor(LlTransport::Address(args, peer, offset), false), output, bytes);
+    } else LlTransport::Packet(args, peer, offset, output, bytes, 7U, false);
 }
 }

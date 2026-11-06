@@ -79,6 +79,7 @@ namespace DispatchDedup {struct CommArgs {};}
 namespace CombineDedup {inline unsigned EpCombineRecvCoreCount(unsigned n) {return n/2;}}
 inline unsigned deepep_ll_combine_profile_enabled() {return DEEPEP_BENCH_PROFILE;}
 inline unsigned deepep_ll_combine_return_options() {return TEST_VARIANT;}
+inline unsigned deepep_ll_combine_data_l2() {return 0;}
 inline uint64_t shmemx_get_ffts_config() {return 42;}
 struct Event {int value=0; void record(void*) {}}
 ;
@@ -95,6 +96,7 @@ struct Case {
     unsigned bs,variant=0; int dispatch=0; Combine combine;
     Case(const llbench::Options&,unsigned n,unsigned,void*):bs(n) {++cases;combine.bs=n;}
     ~Case() {--cases;}
+    void flipExpertSign(const llbench::Options&) {}
     double precision(bool) {return 0;}
     template<class Peers> void exportProducers(const llbench::Options&,const Peers&,unsigned,unsigned,unsigned) {}
 };
@@ -181,7 +183,7 @@ PYBIND11_MODULE(_ll_py_debug,m) {
     owner.reset_workspace()
     profiled=profile.Bench(owner.share())
     assert profiled.identity()["profile_build"] and not owner.identity()["profile_build"]
-    assert not hasattr(owner,"begin_profile") and base.suite_api==profile.suite_api==2
+    assert not hasattr(owner,"begin_profile") and base.suite_api==profile.suite_api==3
     for bs in (32,48):
         profiled.prepare(bs)
         profiled.sample(lambda:None,True)  # warmup is not captured

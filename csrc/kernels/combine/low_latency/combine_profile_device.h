@@ -1,6 +1,7 @@
 #pragma once
 #include "kernel_operator.h"
 #include "combine_profile_layout.h"
+#include "combine_cache_policy.h"
 #ifdef DEEPEP_LL_COMBINE_PROFILE
 #include "shmem.h"
 #endif
@@ -21,6 +22,7 @@ public:
             for (uint32_t i = 0; i < kWords; ++i) values_[i] = 0U;
             values_[Entry] = entry;
             values_[Valid] = 1U;
+            values_[DataL2Policy] = CombineDedup::kCombineDataL2;
             Mark(ProfileInitEnd);
         }
 #endif

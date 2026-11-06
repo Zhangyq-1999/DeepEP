@@ -7,7 +7,7 @@
 | 参数 | 默认值 |
 | --- | --- |
 | 主机 | `90.90.93.84,90.90.93.184` |
-| 算子 | `base,input6,input6-l2,input6-remote,input6-l2-remote`，各有独立打点版 |
+| 算子 | `base,input6,input6-l2,input6-l2-stage,input6-l2-tx,input6-l2-rx,input6-l2-all`，各有独立打点版 |
 | BS | `32,48,64,72,256` |
 | Hidden / TopK / Experts | `3584 / 8 / 384` |
 | 数据和路由 | BF16、random、seed 0 |
@@ -29,7 +29,7 @@ bash tests/ll_python_bench/build_all.sh
 
 脚本自动激活 `py311_zyq`，用该环境的 Python 编译并安装测试扩展。扩展、对应 kernel 库和构建记录安装在 `py311_zyq/lib/python3.11/site-packages/deepep_ll_bench/base/`。运行脚本自动切换到同一环境，并加载这里的安装产物。
 
-默认编译五个干净版本及五个独立打点版本，复用已有 Dispatch 编译产物。`--variants base` 缩减为 base/ref-profile；编译和运行同时传 `--profile 0` 则只测干净版。脚本保留环境中的 Torch 和 torch-npu 版本，只在缺少构建工具时安装 pybind11 或 CMake。测试扩展独立安装，环境中原有的 `deep_ep` 包保持不变。
+默认编译七个干净版本及七个独立打点版本，复用已有 Dispatch 编译产物。`--variants base` 缩减为 base/ref-profile；编译和运行同时传 `--profile 0` 则只测干净版。脚本保留环境中的 Torch 和 torch-npu 版本，只在缺少构建工具时安装 pybind11 或 CMake。测试扩展独立安装，环境中原有的 `deep_ep` 包保持不变。
 
 编译和运行都会打印 `ENV=py311_zyq PYTHON=...`，安装完成后打印 `INSTALLED=...`。即使当前终端激活了 `base` 或其他环境，脚本也会切换到 `py311_zyq`；激活失败则退出。若 Conda 不在常见路径，可先设置 `CONDA_EXE=/实际路径/bin/conda`。
 
@@ -114,7 +114,7 @@ bash tests/ll_python_bench/run_all.sh \
 
 ## 参数和其他实验
 
-默认一次测试五个干净版本和对应的打点版本。只测原版可用 `--variant base`；要测聚合实验，两台机器都编译同一版本，然后在第一台启动，第二台粘贴输出的命令：
+默认一次测试七个干净版本和对应的打点版本。只测原版可用 `--variant base`；要测聚合实验，两台机器都编译同一版本，然后在第一台启动，第二台粘贴输出的命令：
 
 ```bash
 bash tests/ll_python_bench/build_all.sh --variants card-all
@@ -123,17 +123,35 @@ bash tests/ll_python_bench/run_all.sh --variant card-all
 
 可用 `--variants base,wqe-prefetch` 指定比较列表，或 `--variant base` 只选一个版本。版本各自独立安装、使用独立 kernel 库，原版 kernel 保持不变。版本切换在所有 rank 完成上一阶段后释放 case、清空共享工作区及注册暂存区，再准备下一版输入；SHMEM 通信资源保持到整个测试结束才释放。
 
-当前默认先测五个干净版本，再测相同策略的五个打点版本，只有一次 SHMEM 初始化：
+当前默认先测七个干净版本，再测相同策略的七个打点版本，只有一次 SHMEM 初始化：
 
 ```bash
 bash tests/ll_python_bench/build_all.sh
 ```
 
-默认对照为 `base,input6,input6-l2,input6-remote,input6-l2-remote`。新组合 input6-l2-remote 采用 input6 的 28/28 半区分工，启用 prepare/ready 控制区 L2 和跨机优先，继续立即提交回传。不改变 payload 缓存策略、累加顺序、通知格式、QP 所有权或 CQ 回收。
+默认对照为以下 7 个干净版和 7 个独立打点版。所有 input6 系列使用相同的 28/28 半区分工、6 个输入槽、遍历顺序和立即回传；跨机优先关闭，避免混淆调度和缓存收益。
 
-11 月 6 日 EP32/HCCL 实测 BS32 mean：input6=58.61、input6-l2=56.37、input6-remote=56.85 μs，故新一轮组合这两项。input6-r32、input6-rpipe、input6-rfull 对 BS32 没有稳定优势，移出默认但仍可用 `--variants` 选择。新组合尚待 NPU 实测。
+| 版本 | 控制区 L2 | 数据区新增 NORMAL 策略 | data_l2 |
+| --- | --- | --- | --- |
+| base | 原始策略 | 冻结原版 | 0 |
+| input6 | 旁路 | 无 | 0 |
+| input6-l2 | 开启 | 无 | 0 |
+| input6-l2-stage | 开启 | M3 机内暂存的写入和 M4 读取 | 1 |
+| input6-l2-tx | 开启 | RDMA 注册 GM 发送暂存写入 | 2 |
+| input6-l2-rx | 开启 | M5 结果 payload、flag 读取/清零及机内结果发布 | 4 |
+| input6-l2-all | 开启 | 上述三个数据区 | 7 |
 
-build_all.sh 自动安装到 py311_zyq，两台都需重编；run_all.sh 自动使用同一环境。ID 行保留 layout、control_l2、ready、recv、remote_first。干净版没有 profile 缓冲或核内采样分支；打点版是另一份 Device 库。base 对应 ref-profile，其余对应同名 `-profile`。扩展 suite_api=2，旧扩展会提示重编。
+`NORMAL` 是 GlobalTensor 默认策略；不是 persistent，也不代表所有内存强制命中 L2。专家输入、路由表和最终 output 原本就使用默认策略。SDK 的 WQE/SQ/CQ 缓存策略保持不变。发送暂存仍先完成 MTE3 再敲 DB，CQ 完成后才复用源槽；接收仍检查原有全部 flag，没有省略发布、清零或完成协议。
+
+每个 BS 正式预热前，所有版本都额外执行 4 次 `-x,-x,+x,+x` 正确性检查：只改变专家输出值，沿用同一套路由、地址、双 bank，不在调用之间强制清 flag。两个 bank 都必须读到新值；最后恢复原输入，检查不计入性能样本。开启接收/发送缓存的硬件一致性仍须目标 NPU 验证，不能用 CPU 模型通过代替。原有超时退出保留，失败不得作为有效性能结果。
+
+11 月 6 日 EP32/HCCL 实测 BS32 mean：input6=58.61、input6-l2=56.37 μs；此前只覆盖控制区，不能据此判断数据区缓存没有收益。新数据区实验尚待 NPU 实测。input6-remote、input6-l2-remote、input6-r32、input6-rpipe、input6-rfull 等旧实验仍可用 `--variants` 选择。
+
+build_all.sh 自动安装到 py311_zyq，两台都需重编；run_all.sh 自动使用同一环境。ID 行保留 layout、control_l2、data_l2、ready、recv、remote_first，Host/Device/全 rank 核对缓存身份。干净版没有 profile 缓冲或核内采样分支；打点版是另一份 Device 库。base 对应 ref-profile，其余对应同名 `-profile`。扩展 suite_api=3，旧扩展会提示重编。
+
+schema 21 的 CSV/Perfetto 新增 `data_l2_policy`，每核仍为 272 words。P50 代表记录固定打印 `cache=mask m3=input/store_issue/drain g=load/check/calls m5=input_issue/input_wait/compute/store`，配合原有 `m4`、`rdma`、first/last Put、最晚 flag 的来源分析。`g` 把 ready 读取及其同步与 Vector 判断拆开；它们是累计 ticks，包含流水等待，不是硬件 cache miss/hit 计数。不能把不同核最大值相加，或将不同卡的 core-entry 时间直接相减当作网络单程时延。完整字段继续写入 Perfetto `profiled body` 参数。
+
+先比较 input6 与 input6-l2 的控制区差异，再将三个单区域版本与 input6-l2 比较；all 用于观察组合与竞争效应。若关键等待下降但 clean mean/P50 不变，说明它可能不在关键路径，不能直接判为缓存无效。重点看 BS32/48/64，BS72/256 检查回退；保留 mean/min/max/P50/P99 和所有样本。缓存是否命中仍需硬件计数器确认。建议第二次反转 clean variants 的顺序复测以排除运行顺序影响。
 
 EP32 两台分别编译：
 

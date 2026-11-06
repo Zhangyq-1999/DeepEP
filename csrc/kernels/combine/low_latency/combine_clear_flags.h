@@ -1,4 +1,5 @@
 #pragma once
+#include "combine_cache_policy.h"
 #include "kernel_operator.h"
 #include "ep_memory_server_dedup_buffer_layout.h"
 // Only the shared bank constants are needed on device. The allocation/layout
@@ -22,7 +23,7 @@ __aicore__ inline void ClearResultFlags(__gm__ uint8_t* local, uint64_t blocks,
         AscendC::GlobalTensor<uint8_t> result;
         result.SetGlobalBuffer(local + uint64_t(bank) * DispatchDedup::kEpServerDedupWindowBytes +
                                COMBINE_DEDUP_EP_SERVER_DEDUP_SHARED_DATA_OFFSET);
-        result.SetL2CacheHint(AscendC::CacheMode::CACHE_MODE_DISABLE);
+        if constexpr (!kCombineResultL2) result.SetL2CacheHint(AscendC::CacheMode::CACHE_MODE_DISABLE);
         for (uint64_t done = 0U; done < count; done += kClearFlagBlocks) {
             const uint32_t chunk = count - done < kClearFlagBlocks ? uint32_t(count - done) : kClearFlagBlocks;
             AscendC::DataCopyPad(result[(begin + done) * 512U + 480U], zeros,

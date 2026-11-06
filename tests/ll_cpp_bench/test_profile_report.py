@@ -47,7 +47,7 @@ def fixture_data(path, ranks=(0, 1), level=2):
                 if level == 1:
                     for name in names[names.index("init_prefix_ticks"):names.index("rank")]:
                         row[name] = ""
-                row.update(iteration=iteration, device=6+rank, role="receive" if core else "send",
+                row.update(data_l2_policy=7,iteration=iteration, device=6+rank, role="receive" if core else "send",
                            profile_build=1, entry_tick=(1 << 60) + rank * 1000000 + core * 100,
                            flush_done=1000+rank*100+iteration*10+core,
                            profile_init_end=2, magic_end=3, init_end=5,
@@ -431,6 +431,7 @@ def test_default_suite_uses_bounded_pastes_and_keeps_each_case(reporter, tmp_pat
     assert "input=6/0/0 vec=0/192 arith=0/0" in out
     if extended:
         assert "input=6/0/0 vec=0/136 arith=56/0" in out
+    assert "  cache=" in out and " m3=" in out and " m5=" in out
     assert "  q=" in out and "  rdma=" in out and " stage=" in out
     assert " stream=9/1/123456" in out
     assert " compact=256/1024/123456" in out

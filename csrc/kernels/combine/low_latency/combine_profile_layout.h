@@ -265,10 +265,11 @@ enum Word : uint32_t {
     PartialVectorBarriers,
     PartialStreamSteps,
     PartialFrontLoads,
+    DataL2Policy,
     Count
 };
 constexpr uint32_t kWords = 272U;
-constexpr uint64_t kSchema = 20U;
+constexpr uint64_t kSchema = 21U;
 constexpr Word kDetailBegin = InitPrefixTicks;
 constexpr Word kDetailEnd = RouteCompactTicks;
 constexpr bool IsDetailWord(uint32_t word)

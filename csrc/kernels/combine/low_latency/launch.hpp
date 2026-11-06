@@ -30,3 +30,4 @@ extern "C" uint32_t deepep_ll_combine_small_batch_enabled();
 extern "C" int32_t deepep_ll_combine_recv_cores();
 extern "C" uint32_t deepep_ll_combine_early_reduce_enabled();
 extern "C" uint32_t deepep_ll_combine_return_options();
+extern "C" uint32_t deepep_ll_combine_data_l2();

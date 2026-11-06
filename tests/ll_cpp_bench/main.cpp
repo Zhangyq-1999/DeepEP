@@ -107,6 +107,7 @@ struct Case {
     std::vector<uint16_t> input;
     uint32_t variant = 0, bs = 0;
     Buffer* output = nullptr;
+    size_t expertBytes = 0;
     Buffer& allocate(size_t bytes)
     {
         allocations.emplace_back(std::make_unique<Buffer>(bytes));
@@ -145,7 +146,8 @@ struct Case {
         dispatch.expertScales = w.p;
         dispatch.commArgs = comm;
         dispatch.coreNum = cores;
-        dispatch.expandXOut = allocate(layout.expandXBytes).p;
+        expertBytes = layout.expandXBytes;
+        dispatch.expandXOut = allocate(expertBytes).p;
         dispatch.expertTokenNumsOut = allocate(layout.expertTokenNumsBytes).p;
         dispatch.sendCountsOut = allocate(layout.sendCountsBytes).p;
         dispatch.tokenTypeOut = allocate(layout.tokenTypeBytes).p;
@@ -191,6 +193,23 @@ struct Case {
         c.numMaxTokensPerRank = o.capacity;
         c.tilingKey = d.tilingKey;
         combine.tilingData = upload(c);
+    }
+    void flipExpertSign(const llbench::Options& o)
+    {
+        int32_t rows = 0;
+        check(aclrtMemcpy(&rows, sizeof(rows), dispatch.sendCountsOut + (o.experts - 1U) * 4U,
+                          sizeof(rows), ACL_MEMCPY_DEVICE_TO_HOST), "cache check row count");
+        const uint64_t bytes = rows < 0 ? UINT64_MAX : uint64_t(rows) * o.hidden * 2U;
+        if (bytes > expertBytes) throw std::runtime_error("Invalid cache check row count");
+        std::vector<uint16_t> experts(size_t(bytes / 2U));
+        if (bytes) {
+            check(aclrtMemcpy(experts.data(), bytes, dispatch.expandXOut, bytes, ACL_MEMCPY_DEVICE_TO_HOST),
+                  "cache check read experts");
+            for (auto& value : experts) value ^= uint16_t(0x8000U);
+            check(aclrtMemcpy(dispatch.expandXOut, expertBytes, experts.data(), bytes, ACL_MEMCPY_HOST_TO_DEVICE),
+                  "cache check write experts");
+        }
+        for (auto& value : input) value ^= uint16_t(0x8000U);
     }
     double precision(bool bf16)
     {
@@ -279,6 +298,9 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
         throw std::runtime_error("Unsupported receive-core count or mismatched Host/device build");
     const bool profileBuild = deepep_ll_combine_profile_enabled() != 0;
     const uint32_t returnOptions = deepep_ll_combine_return_options();
+    const uint32_t dataL2 = deepep_ll_combine_data_l2();
+    if (dataL2 != CombineDedup::kCombineDataL2)
+        throw std::runtime_error("Mismatched Host/device data L2 policy; rebuild variant");
     if (returnOptions != (DEEPEP_BENCH_REMOTE_FIRST | (DEEPEP_BENCH_DEFER_RETURN << 1) |
                           (DEEPEP_BENCH_EARLY_ISSUE << 2) | (DEEPEP_BENCH_PROGRESS_PROBE << 3) | (DEEPEP_BENCH_SIMT_META << 4) |
                           (DEEPEP_BENCH_SIMT_FLAG << 5) | (DEEPEP_BENCH_PREFETCH_RETURN << 6) | (DEEPEP_BENCH_LOCAL_FIRST << 7) |
@@ -291,7 +313,7 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
     identity << o.signature() << '/' << cores << '/' << DEEPEP_BENCH_SOURCE_ID << '/'
              << deepep_ll_combine_small_batch_enabled() << '/' << deepep_ll_combine_recv_cores() << '/'
              << deepep_ll_combine_early_reduce_enabled() << '/' << profileBuild << '/' << DEEPEP_LL_COMBINE_ORIGINAL
-             << '/' << returnOptions;
+             << '/' << returnOptions << '/' << dataL2;
     peers.verify(llbench::hash(identity.str()));
     session.synchronize("initial completion");
     peers.barrier();
@@ -325,11 +347,11 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
                    "aiv,recv_cores,small_batch,early_"
                    "reduce,remote_first,defer_return,early_issue,progress_probe,simt_meta,simt_flag,prefetch_return,local_first,batch_final,poll_nop,ranks_per_host,original,entry_sync,profile_build,profile_level,rank_max_mean_us,"
                    "rank_max_min_us,"
-                   "rank_max_max_us,p50_us,p99_us,coalesce,coalesce_rows,transport_cores,notify_mode,ready_mode,core_layout,control_l2\n";
+                   "rank_max_max_us,p50_us,p99_us,coalesce,coalesce_rows,transport_cores,notify_mode,ready_mode,core_layout,control_l2,data_l2\n";
     }
     std::cout << "rank=" << o.rank << " EP=" << o.world << " AIV=" << cores << " receive=" << recv
               << " core_layout=" << (CombineDedup::kCombineInterleavedCores ? "odd-send-even-receive" : "halves")
-              << " control_l2=" << CombineDedup::kCombineControlL2
+              << " control_l2=" << CombineDedup::kCombineControlL2 << " data_l2=" << dataL2
               << " small_batch=" << deepep_ll_combine_small_batch_enabled()
               << " early_reduce=" << deepep_ll_combine_early_reduce_enabled()
               << " remote_first=" << (returnOptions & 1U) << " defer_return=" << ((returnOptions >> 1) & 1U)
@@ -378,6 +400,17 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
         entry.complete("Combine correctness", bs);
         auto error = c.precision(o.dtype == "bf16");
         peers.barrier();
+        session.report("cache reuse correctness", bs);
+        // --,--,++,++ changes BOTH rotating banks. Alternating -,+ would reuse
+        // the same values in each bank and could hide a stale-cache read.
+        for (uint32_t generation = 0; generation < 4U; ++generation) {
+            if (generation % 2U == 0U) c.flipExpertSign(o);
+            peers.barrier();
+            entry.enqueue(launch);
+            entry.complete("cache reuse correctness", bs, generation);
+            error = std::max(error, c.precision(o.dtype == "bf16"));
+            peers.barrier();
+        }
         std::unique_ptr<Buffer> profileBuffer;
         std::vector<uint64_t> profileData;
         llbench::ProfileSamples selectedProfiles;
@@ -447,7 +480,7 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
                     << ',' << o.entrySync << ',' << profileBuild << ',' << o.profile << ',' << s.mean << ',' << s.min
                     << ',' << s.max << ',' << s.p50 << ',' << s.p99 << ',' << DEEPEP_BENCH_COALESCE << ','
                     << DEEPEP_BENCH_COALESCE_ROWS << ',' << (DEEPEP_BENCH_COALESCE?CombineCoalesce::kWorkers:0U) << ',' << DEEPEP_BENCH_NOTIFY << ',' << DEEPEP_BENCH_READY << ','
-                    << (CombineDedup::kCombineInterleavedCores ? "odd-send-even-receive" : "halves") << ',' << CombineDedup::kCombineControlL2 << '\n';
+                    << (CombineDedup::kCombineInterleavedCores ? "odd-send-even-receive" : "halves") << ',' << CombineDedup::kCombineControlL2 << ',' << dataL2 << '\n';
             summary.flush();
             std::cout << "BS=" << bs << " rank-MAX Event us: mean=" << s.mean << " range=[" << s.min << ',' << s.max
                       << "] p99=" << s.p99 << " rank0_max_abs_error=" << error << std::endl;

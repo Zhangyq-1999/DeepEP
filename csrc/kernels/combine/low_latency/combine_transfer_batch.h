@@ -1,4 +1,5 @@
 #pragma once
+#include "combine_cache_policy.h"
 #include "../../dispatch/low_latency/device/ll_transport.h"
 #include "combine_profile_device.h"
 #if DEEPEP_LL_COMBINE_READY == 9 || DEEPEP_LL_COMBINE_READY >= 11
@@ -161,7 +162,7 @@ public:
         const auto dst = Next(peer, offset);
         const uint64_t begin = profile_.DetailClock();
         profile_.MarkOnce(CombineProfile::RdmaFirstStage);
-        AscendC::DataCopy(LlTransport::Tensor(dst, true), packet, bytes_);
+        AscendC::DataCopy(LlTransport::Tensor(dst, !kCombineTxL2), packet, bytes_);
         profile_.Elapsed(CombineProfile::RdmaStageIssueTicks, begin);
         Submit(peer, offset, dst, packet, defer);
     }
@@ -170,7 +171,7 @@ public:
     {
         using namespace AscendC;
         const auto dst = Next(peer, offset);
-        auto gm = LlTransport::Tensor(dst, true);
+        auto gm = LlTransport::Tensor(dst, !kCombineTxL2);
         const uint32_t full = dataBytes / 480U, tail = dataBytes % 480U, blocks = bytes_ / 512U;
         const uint64_t begin = profile_.DetailClock();
         profile_.MarkOnce(CombineProfile::RdmaFirstStage);

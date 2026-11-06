@@ -142,17 +142,22 @@ private:
     }
     __aicore__ inline uint64_t ReadMask(uint64_t offset, uint32_t count, uint32_t expected)
     {
+        const uint64_t load = profile_.DetailClock();
         Sync<AscendC::HardEvent::V_MTE2>();
         AscendC::DataCopyPad(input_, Tensor(uint32_t(args_->rank), offset), {1U, count * 32U, 0U, 0U, 0U},
                              {false, 0U, 0U, uint32_t(0)});
         Sync<AscendC::HardEvent::MTE2_V>();
+        profile_.Elapsed(CombineProfile::ReadyPollLoadTicks, load);
+        const uint64_t check = profile_.DetailClock();
         AscendC::Duplicate(work_, int32_t(~expected), 64U);
         AscendC::PipeBarrier<PIPE_V>();
         AscendC::Gather(work_, input_.ReinterpretCast<int32_t>(), indices_, 0U, count);
         AscendC::PipeBarrier<PIPE_V>();
         AscendC::Compares(result_, work_, int32_t(expected), AscendC::CMPMODE::EQ, 64U);
         Sync<AscendC::HardEvent::V_S>();
-        return result_.ReinterpretCast<uint64_t>().GetValue(0U) & ((uint64_t(1) << count) - 1U);
+        const auto mask = result_.ReinterpretCast<uint64_t>().GetValue(0U) & ((uint64_t(1) << count) - 1U);
+        profile_.Elapsed(CombineProfile::ReadyPollCheckTicks, check);
+        return mask;
     }
     __aicore__ inline void Write(uint32_t peer, uint64_t offset)
     {

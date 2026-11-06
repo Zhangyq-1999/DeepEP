@@ -79,6 +79,7 @@ int main() {
 #ifdef DEEPEP_LL_COMBINE_PROFILE
             if (level) {
                 assert(row[Schema] == kSchema && row[Core] == core && row[StageRows] == 7);
+                assert(row[DataL2Policy] == 7);
                 assert(row[ProbeTicks] == (level == 2 ? 17U : 0U));
                 assert(row[ProbeCalls] == (level == 2 ? 3U : 0U));
                 assert(row[PartialPairGroups] == (level == 2 ? 4U : 0U));
@@ -174,7 +175,7 @@ int main() {
 }
 ''')
     exe = tmp_path / "profile.exe"
-    flags = ["-DDEEPEP_LL_COMBINE_PROFILE=1"] if enabled else []
+    flags = ["-DDEEPEP_LL_COMBINE_DATA_L2=7"] + (["-DDEEPEP_LL_COMBINE_PROFILE=1"] if enabled else [])
     subprocess.run([zig, "c++", "-std=c++17", "-O2", "-UNDEBUG", *flags,
                     "-I" + str(tmp_path), "-I" + str(ROOT / "csrc"),
                     "-I" + str(Path(__file__).parent), str(source), "-o", str(exe)],
