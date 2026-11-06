@@ -536,3 +536,62 @@ Python timing CSV 接入真实 C++ 紧凑报告及8/32/64P启动参数。
 最终缺失 flag 的 token/slot/block、producer 链路和重复拖尾频次仍保留。
 独立阶段最大值与累计计数不能相加当成一条跨 rank 流水；回显也不把 put 返回
 当作对端数据已到达。所有新增筛选发生在 Host 采样后，无新增 Device 热路径打点。
+
+
+## 2026-11-06：L2 结果筛选与两任务发送流水
+
+EP32/HCCL，H3584、TopK8、E384、BF16、random/seed0，warmup10，
+每个 clean 版本100次全局逐轮 rank-MAX Event 样本。单位微秒，不剔除样本。
+本轮数据来自用户两段完整回显；打点为独立10次，不混入性能表。
+
+| BS | base mean | input6 mean | stage mean | all mean | stage P50 | stage min–max |
+| --- | --- | --- | --- | --- | --- | --- |
+| 32 | 60.91 | 56.68 | 55.57 | 55.72 | 55.35 | 52.06–66.80 |
+| 48 | 69.40 | 65.45 | 64.03 | 64.09 | 63.07 | 60.17–78.27 |
+| 64 | 80.01 | 73.70 | 72.67 | 72.69 | 71.46 | 68.77–86.96 |
+| 72 | 83.32 | 77.22 | 76.45 | 77.51 | 75.92 | 72.01–89.23 |
+| 256 | 195.73 | 183.00 | 176.96 | 179.49 | 176.56 | 172.49–185.84 |
+
+stage/input6-l2-stage 在 EP32 更适合均值对照；BS48 control-only mean63.91
+略低于 stage64.03，这种小差异不能确认为稳定优势。all 的 BS32 P50=54.85
+低于 stage55.35，但 P95=65.09，高于 stage57.72。EP8 的 all 则在 BS32/48/64/72
+mean 为48.54/55.75/63.43/67.31，优于 stage48.80/56.50/63.51/67.40；
+BS256 stage153.48 优于 all154.65。保留两个不同规模的实测对照。
+
+默认编译和运行均改为 base、input6-l2-stage、input6-l2-all、input6-l2-pipe，
+以及各自的 profile（base 对应 ref-profile），总计8个，原为14个。
+input6、control-only、TX-only、RX-only 及历史实验仍可显式指定。
+原始基线源码不修改，已有输出/构建目录不删除，Dispatch 仍共享构建。
+
+小 BS 的主要线索仍在发送前：BS32 stage 的 P50 代表 R 核 rank1/core30
+发送2包，累计 MTE3 stage_wait=13926 ticks，put=1958 ticks，M4 compute_issue=498 ticks；
+BS64 stage rank14/core53 发送2包，对应12410/1208/317 ticks。
+这些是同一个 profile 核内的不同累计计数，不能当作 clean 分阶段耗时相加，
+compute_issue 也不是完整算术延迟。stage_wait 在敲 DB 之前，因此不是网络单程时延。
+小 BS stage/all 的10次 event-tail 样本均观察到 RDMA/partial 缺失 flag，
+producer 分散，现有数据不能区分注入晚、网络排队和接收观察晚的全部比例。
+优化后的 group-ready 经常是 O(observe including work)，不能把 ready_end-ready_begin
+解释为持续空转。BS32 stage 的实际3次 group load/check 累计仅188/907 ticks。
+
+新 input6-l2-pipe（ready23、data_l2=7）对照 input6-l2-all（ready20）：
+
+- 28/28 半区、6输入槽、任务次序、Vector累加、Notify/协议和所有缓存区域保持相同。
+- 当前包独立 GM 槽的 MTE3 发起后先构造私有128B WQE；下一条已就绪任务先取数/规约，
+  再等前包 MTE3 并发布，随后才打包当前结果。每次最多一个未提交 WQE。
+- 旧 ready21/22 保持首尾包立即下发，两任务批次没有重叠；新模式允许首包延后，
+  因而两任务即可覆盖一段暂存等待。单任务、单输出槽、末条仍立即提交。
+- 已就绪列表结束前排空待提交包，不能跨一次新的 ready Poll 或进入 M5 等对端。
+  两个输出槽互不覆盖；私有 WQE在发布前不重用；GM完整批次/CQ退休规则不变。
+  EP64 仍按真实远端 peer bitmap 退休，不假定只有另一个 server。
+
+代价是首包下发可能后移。这里只提供可证伪实验，不承诺降低5us；优先看 clean
+BS32/48/64 的 mean/P50/范围，再看 stage_wait、first/last Put、deferred/gap 和最终拖尾。
+`rdma` 和 `q` 已有 deferred/gap/pipeline_issue，CSV/Perfetto schema21不用扩展。
+保留现有 profile 以隔离本轮调度差异：BS32 stage profile mean70.66 对应clean55.57，
+不能忽略打点扰动；profile-only tail_inspect=6662 ticks（all 的代表核为17664 ticks）
+不能当作干净算子本身的工作。后续诊断瘦身应作为独立测量变更验证。
+
+Host 模型执行生产调度、真实 TransferBatch/PreparedWrite 的延迟 DMA/NIC 模型，
+覆盖两任务、单槽、空任务、UB环绕、SQ满回退、GM批次复用、4/16 ranks-per-host、
+2/4 hosts（包含EP64），以及干净/打点模板编译和构建身份。新增策略尚未做CANN编译
+或NPU正确性/性能验证；目标机器继续执行4代输入翻转校验与超时检查。

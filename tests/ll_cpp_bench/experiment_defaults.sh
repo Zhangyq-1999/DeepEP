@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Shared defaults for the two convenience entry points. Source from Bash.
-# BS32-64: fixed 28/28 halves and schedule; isolate control/stage/TX/result cache policies.
-ll_bench_clean_variants=base,input6,input6-l2,input6-l2-stage,input6-l2-tx,input6-l2-rx,input6-l2-all
-ll_bench_profiles=ref-profile,input6-profile,input6-l2-profile,input6-l2-stage-profile,input6-l2-tx-profile,input6-l2-rx-profile,input6-l2-all-profile
+# Keep the frozen base, measured L2 winners, and one small-batch pipeline experiment.
+ll_bench_clean_variants=base,input6-l2-stage,input6-l2-all,input6-l2-pipe
+ll_bench_profiles=ref-profile,input6-l2-stage-profile,input6-l2-all-profile,input6-l2-pipe-profile
 ll_bench_variants=$ll_bench_clean_variants,$ll_bench_profiles
 ll_bench_cann=${ASCEND_HOME_PATH:-/usr/local/Ascend/cann-9.2.T101}
 ll_bench_mpi=${MPI_HOME:-/usr/local/mpich-3.2.1}

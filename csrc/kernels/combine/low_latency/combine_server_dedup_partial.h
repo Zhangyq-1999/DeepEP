@@ -397,7 +397,8 @@ private:
         uint32_t completed = 0U, blockedMask = 0xffffffffU;
         const bool deferReady = CombineDeferReturn(outputLanes_) ||
             ((DEEPEP_LL_COMBINE_READY == 5 || DEEPEP_LL_COMBINE_READY == 6 ||
-              (DEEPEP_LL_COMBINE_READY == 11 || DEEPEP_LL_COMBINE_READY == 15)) && outputLanes_ > 1U);
+              (DEEPEP_LL_COMBINE_READY == 11 || DEEPEP_LL_COMBINE_READY == 15 ||
+               DEEPEP_LL_COMBINE_READY == 23)) && outputLanes_ > 1U);
         while (completed < count) {
             const uint32_t observed = ready_->Poll();
             profile_.Add(CombineProfile::ReadyTaskRounds);
@@ -447,7 +448,7 @@ private:
 #endif
                 if (dtype_ == DispatchDedup::DISPATCH_DEDUP_DATA_TYPE_FP16) Aggregate<half>(row, source, n + 1U);
                 else Aggregate<bfloat16_t>(row, source, n + 1U);
-#if DEEPEP_LL_COMBINE_READY == 22
+#if DEEPEP_LL_COMBINE_READY == 22 || DEEPEP_LL_COMBINE_READY == 23
                 // Current arithmetic is complete; the older packet and its
                 // private WQE still own separate output/GM/UB storage. Post
                 // before packing this result or reusing its output slot.
@@ -471,6 +472,10 @@ private:
                              index == 0U && LlTransport::RemoteWrite(args_, source) ? 1U : 0U);
                 Send(completed % outputLanes_, source, token, topk, defer);
 #else
+                // Mode 23 also overlaps the FIRST packet when another task
+                // is already ready. Unlike the eager-edge policy this helps
+                // two-task batches. A single task or lane stays immediate;
+                // never carry an unposted packet into another ready poll.
                 Send(completed % outputLanes_, source, token, topk,
                      deferReady && index + 1U < runnable);
 #endif

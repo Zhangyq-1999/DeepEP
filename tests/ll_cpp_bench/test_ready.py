@@ -8,7 +8,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
-@pytest.mark.parametrize("mode", [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22])
+@pytest.mark.parametrize("mode", [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23])
 def test_ready_lifecycle_and_vector_selection(tmp_path, mode):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
     if not zig:
@@ -23,7 +23,7 @@ def test_ready_lifecycle_and_vector_selection(tmp_path, mode):
     subprocess.run([str(exe)], check=True, timeout=30)
 
 
-@pytest.mark.parametrize("mode,pipeline", [(1, False), (3, False), (3, True), (4, False), (5, False), (6, False), (7, False), (8, False), (9, False), (10, False), (11, False), (12, False), (13, False), (14, False), (15, False), (16, False), (17, False), (18, False), (19, False), (20, False), (21, False), (22, False)])
+@pytest.mark.parametrize("mode,pipeline", [(1, False), (3, False), (3, True), (4, False), (5, False), (6, False), (7, False), (8, False), (9, False), (10, False), (11, False), (12, False), (13, False), (14, False), (15, False), (16, False), (17, False), (18, False), (19, False), (20, False), (21, False), (22, False), (23, False)])
 def test_production_dependency_scheduler(tmp_path, mode, pipeline):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
     if not zig:
@@ -62,7 +62,7 @@ template<uint32_t Group> struct Scheduler {
         std::vector<uint32_t> sequence;
         const bool* pending=nullptr;
         uint32_t Poll() {
-#if DEEPEP_LL_COMBINE_READY == 21 || DEEPEP_LL_COMBINE_READY == 22
+#if DEEPEP_LL_COMBINE_READY == 21 || DEEPEP_LL_COMBINE_READY == 22 || DEEPEP_LL_COMBINE_READY == 23
             assert(pending && !*pending); // No unposted packet across ready polling.
 #endif
             mask=sequence.empty() ? (round++ >= delay ? (1U<<Group)-1U : 1U) : sequence[std::min<size_t>(round++,sequence.size()-1)];return mask;
@@ -77,7 +77,7 @@ template<uint32_t Group> struct Scheduler {
         bool deferred=false;
         bool HasStaged()const{return pending;}
         void SubmitPending(){
-#if DEEPEP_LL_COMBINE_READY == 22
+#if DEEPEP_LL_COMBINE_READY == 22 || DEEPEP_LL_COMBINE_READY == 23
             if(pending && deferred)assert(*aggregateCount==deferredAt+1U);
 #endif
             if(pending){posted+=staged;staged=0;pending=false;deferred=false;}
@@ -293,7 +293,7 @@ void CacheAndPipeline() {
 #if DEEPEP_LL_COMBINE_READY >= 3
         assert(filterCalls-before==3U+(DEEPEP_LL_COMBINE_READY==13 && t.readyCached_ ? 1U:0U));
         assert(t.loads==(count<=EpCombineReadyCacheCapacity(k)?0U:count*2U));
-#if defined(DEEPEP_LL_COMBINE_DEFER_RETURN) || DEEPEP_LL_COMBINE_READY == 6 || (DEEPEP_LL_COMBINE_READY == 11 || DEEPEP_LL_COMBINE_READY == 15)
+#if defined(DEEPEP_LL_COMBINE_DEFER_RETURN) || DEEPEP_LL_COMBINE_READY == 6 || (DEEPEP_LL_COMBINE_READY == 11 || DEEPEP_LL_COMBINE_READY == 15 || DEEPEP_LL_COMBINE_READY == 23)
         assert(t.overlaps==(lanes>1U?count-1U:0U));
 #elif DEEPEP_LL_COMBINE_READY == 7 || DEEPEP_LL_COMBINE_READY == 21 || DEEPEP_LL_COMBINE_READY == 22
         assert(t.overlaps==(lanes>1U && count>2U?count-2U:0U));

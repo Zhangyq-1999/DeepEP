@@ -8,7 +8,8 @@
 namespace CombineDedup {
 // Match the reference Dispatch's default-L2 control views. Payload and
 // data-with-flag receive views are deliberately outside this policy.
-constexpr bool kCombineControlL2 = DEEPEP_LL_COMBINE_READY == 19 || DEEPEP_LL_COMBINE_READY == 20;
+constexpr bool kCombineControlL2 = DEEPEP_LL_COMBINE_READY == 19 || DEEPEP_LL_COMBINE_READY == 20 ||
+                                  DEEPEP_LL_COMBINE_READY == 23;
 // Host build identity: modes 0..3 retain their original two-bit encoding.
 // Modes 4..7 use the unused notify=3 tag; ready modes cannot enable notify.
 // This keeps the upper 16 bits available for the existing poll-nop value.
@@ -16,7 +17,8 @@ constexpr bool kCombineControlL2 = DEEPEP_LL_COMBINE_READY == 19 || DEEPEP_LL_CO
 // that combination is forbidden for coalescing, and ready excludes coalesce.
 constexpr uint32_t CombineReadyOptions(uint32_t mode)
 {
-    // ready20: control L2; ready21/22: eager-edge return pipelines.
+    // ready20: control L2; ready21/22: eager-edge return pipelines;
+    // ready23: L2 return pipeline that also overlaps the first packet.
     // notify=3/coalesce=1 is another unused tag; do not shift into poll-nop.
     if (mode >= 20U) return (3U << 12U) | (1U << 9U) | ((mode - 20U) << 14U);
     // coalesce=3 is reserved too: ready16..19 use that tag with notify=3.

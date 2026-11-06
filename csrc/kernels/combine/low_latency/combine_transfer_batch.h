@@ -21,7 +21,7 @@ class TransferBatch {
     AscendC::LocalTensor<uint8_t> privateUb_;
     bool partial_ = false;
 #endif
-#if DEEPEP_LL_COMBINE_READY == 11 || DEEPEP_LL_COMBINE_READY == 15 || DEEPEP_LL_COMBINE_READY == 21 || DEEPEP_LL_COMBINE_READY == 22
+#if DEEPEP_LL_COMBINE_READY == 11 || DEEPEP_LL_COMBINE_READY == 15 || DEEPEP_LL_COMBINE_READY == 21 || DEEPEP_LL_COMBINE_READY == 22 || DEEPEP_LL_COMBINE_READY == 23
     PreparedWrite pendingWrite_;
     AscendC::LocalTensor<uint8_t> pendingScratch_;
     GM_ADDR pendingStage_ = nullptr;
@@ -53,7 +53,7 @@ class TransferBatch {
     }
     __aicore__ inline GM_ADDR Next(uint32_t peer, uint64_t offset)
     {
-#if DEEPEP_LL_COMBINE_READY == 11 || DEEPEP_LL_COMBINE_READY == 15 || DEEPEP_LL_COMBINE_READY == 21 || DEEPEP_LL_COMBINE_READY == 22
+#if DEEPEP_LL_COMBINE_READY == 11 || DEEPEP_LL_COMBINE_READY == 15 || DEEPEP_LL_COMBINE_READY == 21 || DEEPEP_LL_COMBINE_READY == 22 || DEEPEP_LL_COMBINE_READY == 23
         if (staged_) { AscendC::Trap(); return nullptr; }
 #endif
         LlTransport::Check(args_, peer, offset, bytes_);
@@ -65,7 +65,7 @@ class TransferBatch {
         using namespace AscendC;
         SetFlag<HardEvent::MTE3_S>(7U);
         profile_.Mark(CombineProfile::RdmaLastStage);
-#if DEEPEP_LL_COMBINE_READY == 11 || DEEPEP_LL_COMBINE_READY == 15 || DEEPEP_LL_COMBINE_READY == 21 || DEEPEP_LL_COMBINE_READY == 22
+#if DEEPEP_LL_COMBINE_READY == 11 || DEEPEP_LL_COMBINE_READY == 15 || DEEPEP_LL_COMBINE_READY == 21 || DEEPEP_LL_COMBINE_READY == 22 || DEEPEP_LL_COMBINE_READY == 23
         pendingPeer_ = peer; pendingOffset_ = offset; pendingStage_ = src;
         pendingScratch_ = scratch; prepared_ = false; staged_ = true;
         if (partial_) {
@@ -127,7 +127,7 @@ public:
     { privateUb_ = scratch; partial_ = true; }
 #endif
     __aicore__ inline bool Pending() const { return count_ != 0U || HasStaged(); }
-#if DEEPEP_LL_COMBINE_READY == 11 || DEEPEP_LL_COMBINE_READY == 15 || DEEPEP_LL_COMBINE_READY == 21 || DEEPEP_LL_COMBINE_READY == 22
+#if DEEPEP_LL_COMBINE_READY == 11 || DEEPEP_LL_COMBINE_READY == 15 || DEEPEP_LL_COMBINE_READY == 21 || DEEPEP_LL_COMBINE_READY == 22 || DEEPEP_LL_COMBINE_READY == 23
     __aicore__ inline bool HasStaged() const { return staged_; }
     __aicore__ inline void SubmitPending()
     {

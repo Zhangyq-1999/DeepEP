@@ -27,19 +27,16 @@ git pull --ff-only origin perf/ll-combine-small-batch
 bash tests/ll_cpp_bench/build_all.sh
 ```
 
-`build_all.sh` 默认更新以下 14 个构建目录，每个构建使用 4 个编译任务。Dispatch 用于准备 Combine 的输入和路由，同一配置只编译一次，各版本复用它的目标文件。每个版本再单独编译 Combine，并链接成独立的 kernel 库。
+`build_all.sh` 默认更新以下 8 个构建目录，每个构建使用 4 个编译任务。Dispatch 用于准备 Combine 的输入和路由，同一配置只编译一次，各版本复用它的目标文件。每个版本再单独编译 Combine，并链接成独立的 kernel 库。
 
 已有目录继续用于增量编译。只修改 Combine 时，Dispatch 无需重编；修改 Dispatch 或它依赖的头文件时，构建系统自动重编受影响的部分。共享目标文件保存在 `build/ll-cpp-dispatch`，不同编译器、SDK 和每机 rank 数使用独立目录。更新代码后，两台机器都执行一次 `build_all.sh`，更新所有选中的版本。
 
 | 构建名 | 实验 | 打点 |
 | --- | --- | --- |
 | `base` | 冻结的上游原版 | 关闭 |
-| `input6` | wqe-prep + 最多 6 个 M4 输入槽 | 关闭 |
-| `input6-l2` | input6 原半区分核，prepare/ready 控制区使用默认 L2 | 关闭 |
 | `input6-l2-stage` | input6-l2 + M3 staging/M4 input L2 | OFF |
-| `input6-l2-tx` | input6-l2 + RDMA TX staging L2 | OFF |
-| `input6-l2-rx` | input6-l2 + M5 payload/flags/local publication L2 | OFF |
 | `input6-l2-all` | input6-l2 + all three data regions | OFF |
+| `input6-l2-pipe` | all + 首包 staging 与下一条已就绪任务规约重叠 | OFF |
 | `ref-profile` | base diagnostic counterpart | ON |
 | `input6*-profile` | same policy as the corresponding clean variant | ON |
 
@@ -49,9 +46,14 @@ EP32 收尾修复后的实测中，`wqe-prep` 在 BS48/64 的均值比 snapshot 
 
 最新 9b3d243 的 EP32/HCCL 实测 `input6` 的 BS32/48/64 均值为 57.28/65.49/74.26 μs，仍是小 BS 对照；`input-pair` 分别慢 1.41/0.69/0.43 μs，改为可选项。保留 `input-pipe`：它在 BS256 的均值为 174.94 μs，比同轮 input6 快 8.85 μs，但 BS32–64 尚无稳定收益。
 
-Current defaults isolate L2 policies at a fixed 28/28 core split and six input lanes:
-`base,input6,input6-l2,input6-l2-stage,input6-l2-tx,input6-l2-rx,input6-l2-all`,
-plus seven independent diagnostic builds. Existing remote-first/core-split experiments remain opt-in.
+Current defaults keep the original base, two measured L2 winners and one pipeline experiment:
+`base,input6-l2-stage,input6-l2-all,input6-l2-pipe`, plus four independent diagnostic builds.
+Build and run defaults both shrink from 14 to 8 phases. Input6/control-only/TX-only/RX-only
+and earlier remote-first/core-split experiments remain opt-in via `--variants`.
+All four default variants retain their original core split. Mode 23 changes only the all-L2
+return schedule: the first packet can overlap the next already-ready reduction, including
+two-task batches. Single-task/lane and final-packet cases remain immediate; pending work
+never crosses a readiness poll or M5. Details and validation: [TRANSFER_AB.md](TRANSFER_AB.md).
 The data policy is a separate mask (stage=1, TX=2, result=4), checked across Host/Device/ranks;
 it does not consume ready-mode or poll-nop identity bits. The original base stays frozen.
 All variants run a four-generation `-x,-x,+x,+x` correctness check before warmup,
@@ -62,7 +64,7 @@ Schema 21 adds `data_l2_policy` to CSV/Perfetto without increasing the 272-word 
 The compact `cache` line always reports M3 input/store/drain, group-ready load/check/calls,
 and M5 input/wait/compute/store for the representative P50 records; existing M4/RDMA/CQ/tail
 fields remain. These timings are not hardware cache hit/miss counters. Completion barriers,
-flag checks, math order, SDK and source-slot CQ ownership are unchanged. No NPU validation yet.
+flag checks, math order, SDK and source-slot CQ ownership are unchanged. The new pipeline still needs NPU validation.
 Full matrix, policy scopes and analysis instructions: [L2 experiments](../ll_python_bench/README.md).
 
 Both machines must rebuild, e.g. `bash tests/ll_cpp_bench/build_all.sh --ranks-per-host 16`,

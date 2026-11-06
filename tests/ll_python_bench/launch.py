@@ -13,9 +13,9 @@ import sys
 import sysconfig
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_VARIANTS = "base,input6,input6-l2,input6-l2-stage,input6-l2-tx,input6-l2-rx,input6-l2-all"
+DEFAULT_VARIANTS = "base,input6-l2-stage,input6-l2-all,input6-l2-pipe"
 CLEAN_VARIANTS = ("base", "ready-snapshot", "wqe-prep", "wqe-prefetch", "input6", "input-ready", "input-pair", "input-pipe", "input-stream", "input-front", "input-interleave", "input-l2", "input6-l2", "input6-r32", "input6-remote", "input6-fused", "input6-rpipe", "input6-rfull", "mte-pack",
-                  "card-all", "card-row", "server-all", "server-row", "input6-l2-remote", "input6-l2-stage", "input6-l2-tx", "input6-l2-rx", "input6-l2-all")
+                  "card-all", "card-row", "server-all", "server-row", "input6-l2-remote", "input6-l2-stage", "input6-l2-tx", "input6-l2-rx", "input6-l2-all", "input6-l2-pipe")
 
 
 def phase_names(a):
