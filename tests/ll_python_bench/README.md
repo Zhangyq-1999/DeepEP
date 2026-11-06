@@ -7,7 +7,7 @@
 | 参数 | 默认值 |
 | --- | --- |
 | 主机 | `90.90.93.84,90.90.93.184` |
-| 算子 | 干净的 `base,input6,input-stream,input-front,input-pipe` |
+| 算子 | 干净的 `base,input6,input-interleave,input-l2` |
 | BS | `32,48,64,72,256` |
 | Hidden / TopK / Experts | `3584 / 8 / 384` |
 | 数据和路由 | BF16、random、seed 0 |
@@ -131,7 +131,7 @@ bash tests/ll_python_bench/run_all.sh --variant card-all
 bash tests/ll_python_bench/build_all.sh
 ```
 
-默认安装 `base,input6,input-stream,input-front,input-pipe`，可用 `--variants` 缩减。input6 保留为 BS32–64 对照，input-pipe 保留作 BS256 对照。新增 input-stream：交替使用两块 FP32 缓冲，把下一项 Cast 与上一项累加共用一次屏障，不等待第二项才发起第一项乘权重。新增 input-front：先发起本卡首项乘权重，再提交其余输入读取，以测试首项前移与其他读取延后的取舍。二者均保留原累加序，不增加 UB；数据完成后才发布 WQE，末尾 quiet 保留。尚无新实验的 NPU 数据。input-pair、wqe-prefetch 等仍可通过 --variants 选择。详见 [实验记录](../ll_cpp_bench/TRANSFER_AB.md)。
+默认安装 `base,input6,input-interleave,input-l2`，共用一次初始化。input6 保留为 BS32–64 对照；input-interleave 仅将其原发送组映射到奇数物理 AIV、接收组映射到偶数物理 AIV，任务所属逻辑核及计算/通信协议保持不变。它与 input6 使用相同 UB 和累加序，56 核仍为 28/28 个角色。所有核仍参与本卡准备，接收组也执行规约后 RDMA 回传；并非按 RDMA 读写指令重新划分角色。build_all.sh 自动安装到 py311_zyq，两个节点都需重编；回显 ID 的 layout 标明物理布局，control_l2 标明控制区缓存策略。input-l2 在 input-interleave 上将 prepare/ready 的发布、读取和清零改为默认 L2 视图，payload/RDMA 暂存继续旁路。此实验尚无 NPU 实测，input-stream、input-front、input-pipe 等旧版可用 --variants 选择。详见 [实验记录](../ll_cpp_bench/TRANSFER_AB.md)。
 
 EP32 两台分别编译：
 

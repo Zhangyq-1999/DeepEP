@@ -8,7 +8,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
-@pytest.mark.parametrize("mode", [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17])
+@pytest.mark.parametrize("mode", [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19])
 def test_ready_lifecycle_and_vector_selection(tmp_path, mode):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
     if not zig:
@@ -23,7 +23,7 @@ def test_ready_lifecycle_and_vector_selection(tmp_path, mode):
     subprocess.run([str(exe)], check=True, timeout=30)
 
 
-@pytest.mark.parametrize("mode,pipeline", [(1, False), (3, False), (3, True), (4, False), (5, False), (6, False), (7, False), (8, False), (9, False), (10, False), (11, False), (12, False), (13, False), (14, False), (15, False), (16, False), (17, False)])
+@pytest.mark.parametrize("mode,pipeline", [(1, False), (3, False), (3, True), (4, False), (5, False), (6, False), (7, False), (8, False), (9, False), (10, False), (11, False), (12, False), (13, False), (14, False), (15, False), (16, False), (17, False), (18, False), (19, False)])
 def test_production_dependency_scheduler(tmp_path, mode, pipeline):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
     if not zig:
@@ -204,7 +204,7 @@ template<uint32_t Group> struct Scheduler {
 ''' + load + method + ('\n' + preload if mode >= 4 else '') + ('\n' + process if mode >= 4 else '') + r'''
     uint32_t Run(uint32_t servers,uint32_t own) {
 #if DEEPEP_LL_COMBINE_READY >= 4
-        cores=2;core=1; // One receiver owns every FIRST_HOP in this fixture.
+        cores=2;core=DEEPEP_LL_COMBINE_READY>=18?0:1; // One receiver owns every FIRST_HOP in this fixture.
         for(uint32_t lane=0;lane<outputLanes_;++lane)SetFlag<HardEvent::MTE3_V>(lane);
         const auto result=Process();
         for(uint32_t lane=0;lane<outputLanes_;++lane)WaitFlag<HardEvent::MTE3_V>(lane);

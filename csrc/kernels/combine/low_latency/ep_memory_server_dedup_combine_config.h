@@ -9,6 +9,7 @@
 #include "../../dispatch/low_latency/common/ll_core_config.h"
 #include "combine_notify_layout.h"
 #include "combine_ready_layout.h"
+#include "combine_core_layout.h"
 #if DEEPEP_LL_COMBINE_READY > 0 && (DEEPEP_LL_COMBINE_NOTIFY > 0 || defined(DEEPEP_LL_COMBINE_SMALL_BATCH) || defined(DEEPEP_LL_COMBINE_SIMT_META))
 #error "Test ready modes separately from notify, small-batch and SIMT metadata"
 #endif
@@ -71,7 +72,7 @@ COMBINE_DEDUP_EP_COMBINE_CONSTEXPR uint32_t EpCombineAlign(uint32_t n, uint32_t 
 }
 // 0 keeps the original half/half split. The count is fixed across ranks,
 // including launches with different local BS, so ready-row coverage agrees.
-// The last eight cores still publish group readiness. An explicit receive count
+// The last eight logical cores still publish group readiness. An explicit receive count
 // may exceed half the active cores, within the existing ready-row capacity.
 // Keep at least one DIRECT sender; zero return means an unsupported launch.
 #ifndef DEEPEP_LL_COMBINE_RECV_CORES
@@ -79,6 +80,11 @@ COMBINE_DEDUP_EP_COMBINE_CONSTEXPR uint32_t EpCombineAlign(uint32_t n, uint32_t 
 #endif
 COMBINE_DEDUP_EP_COMBINE_CONSTEXPR uint32_t EpCombineRecvCoreCount(uint32_t cores)
 {
+#if DEEPEP_LL_COMBINE_READY == 18 || DEEPEP_LL_COMBINE_READY == 19
+    // Strict odd-send/even-receive placement requires equal role populations.
+    if (cores % 2U || (DEEPEP_LL_COMBINE_RECV_CORES != 0 &&
+                      DEEPEP_LL_COMBINE_RECV_CORES != cores / 2U)) return 0U;
+#endif
 #if DEEPEP_LL_COMBINE_RECV_CORES > 0
     return DEEPEP_LL_COMBINE_RECV_CORES >= DispatchDedup::kLlNotifyCoreNum &&
            DEEPEP_LL_COMBINE_RECV_CORES <= kCombineNotifyRows &&

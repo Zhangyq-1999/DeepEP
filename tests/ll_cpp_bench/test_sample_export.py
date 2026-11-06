@@ -9,8 +9,8 @@ import pytest
 
 
 @pytest.mark.parametrize("world", [4, 64])
-@pytest.mark.parametrize("coalesce", [False, True])
-def test_global_sample_export(tmp_path, world, coalesce):
+@pytest.mark.parametrize("coalesce,interleave", [(False, False), (True, False), (False, True)])
+def test_global_sample_export(tmp_path, world, coalesce, interleave):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
     if not zig:
         pytest.skip("Set DEEPEP_TEST_ZIG for CPU C++ checks")
@@ -101,6 +101,7 @@ int main(int argc,char** argv) {
     subprocess.run([zig, "c++", "-std=c++17", "-O2", "-UNDEBUG",
                     "-DTEST_WORLD=" + str(world),
                     "-DTEST_COALESCE=" + str(int(coalesce)),
+                    "-DDEEPEP_LL_COMBINE_READY=" + str(18 if interleave else 0),
                     "-I" + str(tmp_path), "-I" + str(here), str(tmp_path / "test.cpp"), "-o", str(exe)],
                    check=True, timeout=180)
     subprocess.run([str(exe), str(tmp_path)], check=True, timeout=30)
@@ -114,7 +115,9 @@ int main(int argc,char** argv) {
     assert {int(r["rank"]) for r in records} == set(range(world))
     assert {int(r["iteration"]) for r in records} == {0, 1, 2}
     for row in records:
-        assert int(row["core"]) in ((0, 1, 2, 5) if coalesce else (1, 2, 5))
+        core = int(row["core"])
+        assert core in ((0, 1, 2, 5) if coalesce else (1, 4, 5) if interleave else (1, 2, 5))
+        assert row["role"] == ("receive" if (core % 2 == 0 if interleave else core >= 3) else "send")
         rank = int(row["rank"])
         assert int(row["device"]) == (rank + 8 if world == 4 else rank % 16)
         assert int(row["stage_rows"]) == int(row["iteration"]) * 10 + int(row["core"])
@@ -129,3 +132,8 @@ int main(int argc,char** argv) {
         iteration = trace["otherData"]["iteration"]
         assert iteration in (1, 2)
         assert all(e["args"]["stage_rows"] == iteration * 10 + e["args"]["core"] for e in bodies)
+        labels = [e["args"]["name"] for e in trace["traceEvents"] if e["name"] == "thread_name"]
+        if interleave:
+            for core in range(6):
+                role = "RECEIVE" if core % 2 == 0 else "SEND"
+                assert any(label.startswith(f"AIV {core} {role} / stages") for label in labels)

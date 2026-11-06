@@ -5,6 +5,9 @@
 #endif
 
 namespace CombineDedup {
+// Match the reference Dispatch's default-L2 control views. Payload and
+// data-with-flag receive views are deliberately outside this policy.
+constexpr bool kCombineControlL2 = DEEPEP_LL_COMBINE_READY == 19;
 // Host build identity: modes 0..3 retain their original two-bit encoding.
 // Modes 4..7 use the unused notify=3 tag; ready modes cannot enable notify.
 // This keeps the upper 16 bits available for the existing poll-nop value.

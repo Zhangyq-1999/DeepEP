@@ -410,7 +410,7 @@ void report(const fs::path& directory, uint64_t traceFrequency = 0)
             std::cout << "CONFIG";
             for (const char* key : {"tokens", "hidden", "topk", "experts", "dtype", "route", "seed", "warmup",
                                     "small_batch", "early_reduce", "local_first", "batch_final", "recv_cores", "remote_first", "defer_return",
-                                    "entry_sync", "source_id"})
+                                    "entry_sync", "core_layout", "control_l2", "source_id"})
                 if (csv.column(key) >= 0) std::cout << ' ' << key << '=' << csv.get(key);
             std::cout << '\n';
         }

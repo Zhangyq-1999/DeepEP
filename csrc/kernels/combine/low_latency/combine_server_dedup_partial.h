@@ -117,7 +117,7 @@ public:
     {
         planned_ = plan_.Prepare(planScratch_, planScratchBytes_, rows_, types_, table2_, tokens_,
                                  uint32_t(args_->rankSize), uint32_t(args_->rank),
-                                 GetBlockIdx() - (GetBlockNum() - recvCores_), recvCores_);
+                                 CombineReceiveCoreIndex(GetBlockIdx(), GetBlockNum(), recvCores_), recvCores_);
     }
 #endif
 
@@ -134,7 +134,7 @@ public:
         profile_.Set(CombineProfile::RouteSnapshotCapacity, planScratchBytes_);
         planned_ = plan_.Prepare(planScratch_, planScratchBytes_, rows_, types_, table2_, tokens_,
                                 uint32_t(args_->rankSize), uint32_t(args_->rank),
-                                GetBlockIdx() - (GetBlockNum() - recvCores_), recvCores_);
+                                CombineReceiveCoreIndex(GetBlockIdx(), GetBlockNum(), recvCores_), recvCores_);
         if (!planned_) profile_.Add(CombineProfile::RouteSnapshotFallbacks);
         // Hand Vector scratch back to MTE2 before any input lane can overwrite
         // it. Preserve the caller's seeded MTE3_V output events.
@@ -495,7 +495,7 @@ private:
     __aicore__ inline uint32_t SelectServer(uint32_t server, uint32_t& owner, bool validateRanks, uint32_t append = 0U)
     {
         uint32_t count = append;
-        const uint32_t localCore = GetBlockIdx() - (GetBlockNum() - recvCores_);
+        const uint32_t localCore = CombineReceiveCoreIndex(GetBlockIdx(), GetBlockNum(), recvCores_);
         const uint32_t vectorBytes = EpCombineAlign(scanRows_ * 4U, 256U);
         const uint32_t maskBytes = EpCombineAlign((scanRows_ + 7U) / 8U, 32U);
         auto table = scan_.ReinterpretCast<int32_t>();

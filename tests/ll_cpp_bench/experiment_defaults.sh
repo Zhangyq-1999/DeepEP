@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Shared defaults for the two convenience entry points. Source from Bash.
-# Prioritize BS32/48/64: retain base/input6 and the measured large-BS input-pipe.
-ll_bench_clean_variants=base,input6,input-stream,input-front,input-pipe
-ll_bench_profiles=ref-profile,input6-profile,input-stream-profile,input-front-profile,input-pipe-profile
+# Isolate physical AIV placement against the original and unchanged input6.
+ll_bench_clean_variants=base,input6,input-interleave,input-l2
+ll_bench_profiles=ref-profile,input6-profile,input-interleave-profile,input-l2-profile
 ll_bench_variants=$ll_bench_clean_variants,$ll_bench_profiles
 ll_bench_cann=${ASCEND_HOME_PATH:-/usr/local/Ascend/cann-9.2.T101}
 ll_bench_mpi=${MPI_HOME:-/usr/local/mpich-3.2.1}

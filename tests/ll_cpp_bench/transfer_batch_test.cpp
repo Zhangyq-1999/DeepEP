@@ -13,6 +13,7 @@ int main()
     unsigned cases=0;
     for(unsigned world:{2U*host,4U*host}) for(unsigned rank:{0U,world-1U})
     for(unsigned dataBytes:{32U,480U,512U,7168U,14336U}) for(bool partial:{false,true}) {
+        if constexpr (DEEPEP_LL_COMBINE_READY >= 18) core = partial ? 40U : 1U;
         const unsigned bytes=(dataBytes+479U)/480U*512U, capacity=LlRdma::kCoreBytes/bytes, n=capacity+5U;
         const uint64_t stride=bytes+world*1024U;
         std::vector<uint8_t> local((n+1U)*stride),remote(local.size()),stage(cores*LlRdma::kCoreBytes);

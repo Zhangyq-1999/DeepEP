@@ -322,9 +322,11 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
                    "aiv,recv_cores,small_batch,early_"
                    "reduce,remote_first,defer_return,early_issue,progress_probe,simt_meta,simt_flag,prefetch_return,local_first,batch_final,poll_nop,ranks_per_host,original,entry_sync,profile_build,profile_level,rank_max_mean_us,"
                    "rank_max_min_us,"
-                   "rank_max_max_us,p50_us,p99_us,coalesce,coalesce_rows,transport_cores,notify_mode,ready_mode\n";
+                   "rank_max_max_us,p50_us,p99_us,coalesce,coalesce_rows,transport_cores,notify_mode,ready_mode,core_layout,control_l2\n";
     }
     std::cout << "rank=" << o.rank << " EP=" << o.world << " AIV=" << cores << " receive=" << recv
+              << " core_layout=" << (CombineDedup::kCombineInterleavedCores ? "odd-send-even-receive" : "halves")
+              << " control_l2=" << CombineDedup::kCombineControlL2
               << " small_batch=" << deepep_ll_combine_small_batch_enabled()
               << " early_reduce=" << deepep_ll_combine_early_reduce_enabled()
               << " remote_first=" << (returnOptions & 1U) << " defer_return=" << ((returnOptions >> 1) & 1U)
@@ -441,7 +443,8 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
                     << ((returnOptions >> 8) & 1U) << ',' << (returnOptions >> 16U) << ',' << o.ranksPerHost << ',' << DEEPEP_LL_COMBINE_ORIGINAL
                     << ',' << o.entrySync << ',' << profileBuild << ',' << o.profile << ',' << s.mean << ',' << s.min
                     << ',' << s.max << ',' << s.p50 << ',' << s.p99 << ',' << DEEPEP_BENCH_COALESCE << ','
-                    << DEEPEP_BENCH_COALESCE_ROWS << ',' << (DEEPEP_BENCH_COALESCE?CombineCoalesce::kWorkers:0U) << ',' << DEEPEP_BENCH_NOTIFY << ',' << DEEPEP_BENCH_READY << '\n';
+                    << DEEPEP_BENCH_COALESCE_ROWS << ',' << (DEEPEP_BENCH_COALESCE?CombineCoalesce::kWorkers:0U) << ',' << DEEPEP_BENCH_NOTIFY << ',' << DEEPEP_BENCH_READY << ','
+                    << (CombineDedup::kCombineInterleavedCores ? "odd-send-even-receive" : "halves") << ',' << CombineDedup::kCombineControlL2 << '\n';
             summary.flush();
             std::cout << "BS=" << bs << " rank-MAX Event us: mean=" << s.mean << " range=[" << s.min << ',' << s.max
                       << "] p99=" << s.p99 << " rank0_max_abs_error=" << error << std::endl;

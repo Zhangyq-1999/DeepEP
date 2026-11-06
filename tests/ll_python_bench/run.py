@@ -71,7 +71,7 @@ def format_report(config, identity, results, run_id, status="RUNNING"):
              "SYNC host=Gloo device=SHMEM-mixed-71a2154 hccl=HCCL-all_reduce; device gates use local ACL Notify",
              "Event_us=per-iteration rank-MAX; no samples removed; worst iteration is 1-based", TABLE_HEADER]
     lines += [result_row(r) for r in results]
-    lines += [f"ID {v} aiv={i['active_aiv']} recv={i['recv_cores']} qps={i['rdma_qps']} options={i['return_options']}"
+    lines += [f"ID {v} aiv={i['active_aiv']} recv={i['recv_cores']} qps={i['rdma_qps']} options={i['return_options']} layout={i.get('core_layout','halves')} control_l2={int(i.get('control_l2',False))}"
               for v,i in identity.items()]
     lines += [diagnostic_row(r) for r in results]
     for variant,bs in dict.fromkeys((r["variant"],r["tokens"]) for r in results):

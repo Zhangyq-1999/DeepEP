@@ -277,3 +277,70 @@ CPU检查执行实际Aggregate的FP16/BF16顺序规约、1–6输入槽环形复
 Vector RAW/WAR/WAW检查，并断言首项Muls发生在第二项输入等待之前。
 front版还检查其他输入在首项Muls后发起。异步DMA/NIC测试验证源数据
 生命周期，调度覆盖四机EP64。没有本地CANN/NPU，实际编译与收益待测。
+
+
+## 2026-11-06：input-interleave（ready18）
+
+本轮默认覆盖前一节的 5+5 列表，改为 base/input6/input-interleave/input-l2 与对应
+C++ 打点版，Python 为四个干净版。保留 input6 的六输入槽、八输出槽、
+快照建表、就绪筛选、预构造 WQE、原算术顺序和 CQ 回收。
+唯一算子策略差异为物理 AIV 放置：logical = physical/2 +
+(physical 为奇数 ? 0 : active/2)。原逻辑半区和 notify 索引不变。
+
+56 AIV 的发送组是 1,3,...,55，接收组是 0,2,...,54；通知任务由
+40,42,...,54 执行。M2 仍由全体核准备，M4 的规约后跨机回传仍属于
+接收组。SDK QP、每核 GM 源暂存、magic 和 profile 原始地址全部保持
+物理 GetBlockIdx，防止错用逻辑核导致其他核提前复用源数据。拖尾
+producer map 和缺失准备标记诊断也转换为物理核号。
+
+ready18 仅允许偶数核等分，不等分 receive 配置会拒绝执行。无新的
+两机/唯一远端假设，覆盖 Group2/4/16 和每机4/16 rank 的多server索引。
+CPU 检查验证任务唯一覆盖、通知覆盖、正逆核映射、物理 QP 暂存隔离、
+FP16/BF16 累加序、异步DMA/NIC源生命周期和CSV/Perfetto角色。
+此环境没有 CANN/NPU；OS/编译器检查不能证明 OSTD 改善或实际提速。
+
+### L2 与最新 Dispatch 参考审计
+
+2026-11-06 读取 liyang1384/DeepEP 的 kernel/ll-ndr-ab-per-core-qp，
+当前提交 cde48af。该分支 33cc038 将接收任务按行跨 source 交错分配；
+这属于任务均衡，与本轮物理 AIV 奇偶放置是两个独立维度。
+5aff591/f6699a3 保留 count/cumsum 默认 L2 读视图；5ffcd2a 的 payload
+默认 L2 读实验已由 f00fa1c 回退，不能当成已采纳方案照搬。
+
+原有 Combine 版本没有在构建/启动代码发现全局关闭 L2 的设置。L2_CACHE_HINT
+是编译定义，不等于全局禁用。通信 stage、ready控制、同机peer读取及
+回包 payload/flag 通过 SetL2CacheHint(CACHE_MODE_DISABLE) 使用旁路；
+expertOut、路由表、权重和最终output未在这些位置禁用。Dispatch 的
+count/scoreboard 写者与 Combine ready 的写者、清零路径不同，不能仅
+删除读侧cache hint就声称修复。以下将cache策略独立成A/B，
+不混入input-interleave。以上为源码配置，不是用户机器硬件cache状态的测量。
+
+Combine 可复用 Dispatch 表，减少 count/route metadata，但仍有 M2 准备、
+ready依赖、M4跨卡取数与加权规约、回传及M5最终规约。当前 M4 也会从
+assist表生成本核任务计划，因此不是完全零metadata。分层减少跨机字节
+却增加依赖阶段，Dispatch 的 metadata 又可能被payload传输掩盖。
+两者总时延相差约10us不能单独定位为meta、L2或RDMA耗时；须同shape、
+路由、dtype、entry sync和计时范围比较，并沿最慢rank的关联包路径查因。
+
+
+### 同轮追加 input-l2（ready19）
+
+用户要求与该 Dispatch 分支保留的 L2 策略一致。input-l2 继承
+input-interleave，只将控制区改为默认 L2；保持原有发布、观察、清零的
+同步顺序。CopyLocalPendingTokens 的 prepare 发布、NotifyServerCard
+的 prepare 轮询/清零/ready发布、CombineGroupReady 的读取/退休清零
+全部保持默认视图。不能只改读侧而遗漏通知通过 LlTransport::Records
+强制旁路；此版用相同32B记录与512B目的步长的 MTE 写默认控制视图，
+并检查目标属于本物理host。共享epoch/ACK辅助Tensor也遵循同一策略，
+但ready19实际仍使用原private-ready协议，不新增ACK等待。
+
+payload与data-with-flag不跟随开启：M2 stage写、peer读取、RDMA暂存、
+M5回包数据及块尾flag仍旁路；原先默认缓存的expertOut/路由/权重/output
+保持。对照参考仓5aff591与f6699a3的控制策略，不迁入已回退的5ffcd2a。
+改变控制视图的cache一致性/可见延迟必须在目标NPU验证，CPU模型不模拟
+硬件coherence。正式性能比较使用相同输入/同步/计时范围和干净版。
+
+ready18与ready19分别用于分核、控制区L2的单变量对照，冻结base及input6
+保持，所有开关编译期固定。构建身份扩展到ready19，不占poll-nop位。
+summary.csv写core_layout/control_l2，Python ID也输出，原诊断和Perfetto
+继续提供physical AIV核号、notify/group wait与RDMA尾部时间。

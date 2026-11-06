@@ -311,7 +311,8 @@ def test_local_first_fields_in_reports(reporter, tmp_path, batch_mode):
         assert f"batch group_checks/whole_tokens/route_ticks={group}/{whole}/12" in compact
 
 
-def test_default_suite_fits_one_paste_and_keeps_each_case(reporter, tmp_path):
+@pytest.mark.parametrize("extended", [False, True])
+def test_default_suite_fits_one_paste_and_keeps_each_case(reporter, tmp_path, extended):
     # Five BS, actual default clean/profile variants; full and worst excerpts.
     # Exercise long counters and eight tail slots rather than mostly-zero rows.
     names = re.findall(r'"([a-z0-9_]+)"',
@@ -320,6 +321,9 @@ def test_default_suite_fits_one_paste_and_keeps_each_case(reporter, tmp_path):
     default_text = (HERE / "experiment_defaults.sh").read_text()
     clean = re.search(r"^ll_bench_clean_variants=(.+)$", default_text, re.M)[1].split(",")
     profiles = re.search(r"^ll_bench_profiles=(.+)$", default_text, re.M)[1].split(",")
+    if extended:
+        clean += ["input-stream"]
+        profiles += ["input-stream-profile"]
     variants = clean + profiles
     first_profile = len(clean)
     defaults = (32, 48, 64, 72, 256)
@@ -355,8 +359,8 @@ def test_default_suite_fits_one_paste_and_keeps_each_case(reporter, tmp_path):
                                    tail_missing_blocks=120, tail_observations=10,
                                    ready_task_rounds=50 if phase > first_profile else 0,
                                    ready_snapshot_ticks=12000 if phase > first_profile else 0,
-                                   partial_packed_submit_calls=9 if phase == 6 else 0,
-                                   partial_eager_packets=1 if phase == 6 else 0,
+                                   partial_packed_submit_calls=9 if phase == first_profile + 1 else 0,
+                                   partial_eager_packets=1 if phase == first_profile + 1 else 0,
                                    early_issue_ticks=0, metadata_batches=0, poll_pause_calls=0,
                                    local_contributions=0, remote_contributions=0,
                                    batch_group_calls=0, batch_whole_tokens=0,
@@ -365,12 +369,12 @@ def test_default_suite_fits_one_paste_and_keeps_each_case(reporter, tmp_path):
                                    route_load_bytes=32768 if phase > first_profile else 131072, route_select_passes=4 if phase > first_profile else 16,
                                    route_snapshot_bytes=41728 if phase > first_profile else 0,
                                    route_snapshot_capacity=181888 if phase > first_profile else 0, route_snapshot_fallbacks=0,
-                                   route_first_hop_rows=256, route_filter_rows=1024 if phase == 7 else 8192,
-                                   route_compact_ticks=123456 if phase == 7 else 0,
-                                   wqe_prepare_ticks=12345 if phase == 6 else 0,
-                                   wqe_prepared_packets=15 if phase == 6 else 0,
-                                   wqe_fallback_packets=1 if phase == 6 else 0,
-                                   mte_pack_packets=16 if phase == 7 else 0,
+                                   route_first_hop_rows=256, route_filter_rows=1024 if phase == first_profile + 2 else 8192,
+                                   route_compact_ticks=123456 if phase == first_profile + 2 else 0,
+                                   wqe_prepare_ticks=12345 if phase == first_profile + 1 else 0,
+                                   wqe_prepared_packets=15 if phase == first_profile + 1 else 0,
+                                   wqe_fallback_packets=1 if phase == first_profile + 1 else 0,
+                                   mte_pack_packets=16 if phase == first_profile + 2 else 0,
                                    partial_input_lanes=6 if variant.startswith("input") else 3,
                                    ready_input_issued=16 if variant.startswith("input-ready") else 0,
                                    ready_input_used=12 if variant.startswith("input-ready") else 0,
@@ -409,7 +413,9 @@ def test_default_suite_fits_one_paste_and_keeps_each_case(reporter, tmp_path):
     assert size < 62 * 1024, f"Default report is {size} bytes"
     assert "LL_COMBINE END cases=8" in out
     assert "  e=" in out and "'-'=absent" in out
-    assert "input=6/0/0 vec=0/136 arith=56/0" in out
+    assert "input=6/0/0 vec=0/192 arith=0/0" in out
+    if extended:
+        assert "input=6/0/0 vec=0/136 arith=56/0" in out
     assert "  q=" in out and "  rdma=" in out and " stage=" in out
     assert " stream=9/1/123456" in out
     assert " compact=256/1024/123456" in out

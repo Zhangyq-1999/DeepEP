@@ -4,6 +4,7 @@
 #include <stdexcept>
 #include <vector>
 #include "../../csrc/kernels/common/ep_server_order.h"
+#include "../../csrc/kernels/combine/low_latency/combine_core_layout.h"
 
 namespace llbench {
 // Decode the actual Dispatch tables, not a reconstructed random route. The
@@ -32,7 +33,8 @@ inline std::vector<uint64_t> return_producers(const std::vector<int32_t>& types,
             const uint32_t slot = uint32_t(table[row * 3 + 2]);
             if (source >= world || token >= bs || slot >= k) throw std::runtime_error("Invalid producer routing triple");
             if (source / group != server) continue;
-            const uint32_t core = type == 1 ? directOrdinal++ % (cores - recv - transportCores) : cores - recv + partialOrdinal++ % recv;
+            const uint32_t logical = type == 1 ? directOrdinal++ % (cores - recv - transportCores) : cores - recv + partialOrdinal++ % recv;
+            const uint32_t core = CombineDedup::CombinePhysicalCore(logical, cores);
             auto& value = result[(size_t(source) * bs + token) * k + slot];
             if (value) throw std::runtime_error("Duplicate local return producer");
             value = uint64_t(rank + 1U) | (uint64_t(core) << 16U) | (uint64_t(type) << 24U) | (uint64_t(row) << 32U);

@@ -13,8 +13,8 @@ import sys
 import sysconfig
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_VARIANTS = "base,input6,input-stream,input-front,input-pipe"
-CLEAN_VARIANTS = ("base", "ready-snapshot", "wqe-prep", "wqe-prefetch", "input6", "input-ready", "input-pair", "input-pipe", "input-stream", "input-front", "mte-pack",
+DEFAULT_VARIANTS = "base,input6,input-interleave,input-l2"
+CLEAN_VARIANTS = ("base", "ready-snapshot", "wqe-prep", "wqe-prefetch", "input6", "input-ready", "input-pair", "input-pipe", "input-stream", "input-front", "input-interleave", "input-l2", "mte-pack",
                   "card-all", "card-row", "server-all", "server-row")
 
 

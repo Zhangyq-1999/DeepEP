@@ -22,12 +22,15 @@ public:
         if (!recv || recv >= cores || data.size() != size_t(cores) * kWords)
             throw std::runtime_error("Invalid profile sample dimensions");
         if (trace) full_.insert(full_.end(), data.begin(), data.end());
-        uint32_t selected[4] = {0, cores - recv, 0, 0};
-        for (uint32_t c=0;c<cores-recv;++c)
-            if (!data[c*kWords+CoalesceWorker]) { selected[0]=c; break; }
+        uint32_t selected[4] = {CombineDedup::kCombineInterleavedCores ? 1U : 0U,
+                               CombineDedup::kCombineInterleavedCores ? 0U : cores - recv, 0, 0};
+        for (uint32_t c=0;c<cores;++c)
+            if (!CombineDedup::CombineIsReceiveCore(c, cores, recv) && !data[c*kWords+CoalesceWorker]) {
+                selected[0]=c; break;
+            }
         for (uint32_t c = 0; c < cores; ++c) {
             const auto* row = data.data() + c * kWords;
-            const auto role = c < cores - recv ? 0U : 1U;
+            const auto role = CombineDedup::CombineIsReceiveCore(c, cores, recv) ? 1U : 0U;
             if (!row[CoalesceWorker] && profile_interval(row, Entry, FlushDone) >
                 profile_interval(data.data() + selected[role] * kWords, Entry, FlushDone)) selected[role] = c;
             if (profile_interval(row, Entry, RdmaLastPut) >
@@ -96,7 +99,8 @@ public:
                 std::memcpy(send.data(), all.data() + size_t(rank) * send.size() * sizeof(uint64_t),
                             send.size() * sizeof(uint64_t));
                 for (uint32_t core = 0; core < cores; ++core)
-                    rows.push_back(trace_row(send.data() + 1 + core * kWords, uint32_t(send[0]), core >= cores - recv));
+                    rows.push_back(trace_row(send.data() + 1 + core * kWords, uint32_t(send[0]),
+                                             CombineDedup::CombineIsReceiveCore(core, cores, recv)));
             }
             const std::string label = iteration == median ? (median == worst ? "p50-worst" : "p50") : "worst";
             const auto filename = "bs" + std::to_string(bs) + "-" + label + "-i" + std::to_string(iteration) + ".perfetto.json";

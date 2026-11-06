@@ -107,6 +107,8 @@ public:
         d["ranks_per_host"] = o_.ranksPerHost;
         d["active_aiv"] = runtime_.cores;
         d["recv_cores"] = CombineDedup::EpCombineRecvCoreCount(runtime_.cores);
+        d["core_layout"] = CombineDedup::kCombineInterleavedCores ? "odd-send-even-receive" : "halves";
+        d["control_l2"] = CombineDedup::kCombineControlL2;
         d["rdma_qps"] = runtime_.rdmaQps;
         d["return_options"] = deepep_ll_combine_return_options();
         d["case_signature"] = o_.signature();

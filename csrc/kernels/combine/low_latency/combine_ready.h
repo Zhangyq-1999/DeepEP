@@ -137,7 +137,7 @@ private:
         }
         AscendC::GlobalTensor<uint32_t> t;
         t.SetGlobalBuffer(reinterpret_cast<__gm__ uint32_t*>(args_->peerMems[peer] + control_ + offset));
-        t.SetL2CacheHint(AscendC::CacheMode::CACHE_MODE_DISABLE);
+        if constexpr (!kCombineControlL2) t.SetL2CacheHint(AscendC::CacheMode::CACHE_MODE_DISABLE);
         return t;
     }
     __aicore__ inline uint64_t ReadMask(uint64_t offset, uint32_t count, uint32_t expected)

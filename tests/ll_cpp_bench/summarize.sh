@@ -14,6 +14,8 @@ if [[ ! -x "$binary" || "$source_file" -nt "$binary" ||
       "$root/tests/ll_cpp_bench/profile.hpp" -nt "$binary" ||
       "$root/tests/ll_cpp_bench/perfetto.hpp" -nt "$binary" ||
       "$root/tests/ll_cpp_bench/compact_report.hpp" -nt "$binary" ||
+      "$root/csrc/kernels/combine/low_latency/combine_core_layout.h" -nt "$binary" ||
+      "$root/csrc/kernels/combine/low_latency/combine_ready_layout.h" -nt "$binary" ||
       "$root/csrc/kernels/combine/low_latency/combine_profile_layout.h" -nt "$binary" ]]; then
     # Use a Host compiler, independent of the CANN/Conda/MPI environment.
     compiler=${HOST_CXX:-g++}

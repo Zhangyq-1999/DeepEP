@@ -40,10 +40,12 @@ public:
     {
         (void)quantMode;
 
-        core_ = GetBlockIdx();
         coreNum_ = GetBlockNum();
         recvCores_ = EpCombineRecvCoreCount(coreNum_);
         if (recvCores_ == 0U) { Trap(); return; }
+        // All task partitions and control rows below use the old logical
+        // numbering. Ready18/19 interleave their physical AIV placement.
+        core_ = CombineLogicalCore(GetBlockIdx(), coreNum_);
         sendCores_ = coreNum_ - recvCores_;
         notifyBegin_ = coreNum_ - DispatchDedup::kLlNotifyCoreNum;
         args_ = reinterpret_cast<const __gm__ DispatchDedup::CommArgs*>(commArgs);
@@ -280,7 +282,8 @@ private:
     {
         GlobalTensor<float> result;
         result.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(args_->peerMems[rank] + control_ + offset));
-        if (LlTransport::Rdma(args_)) result.SetL2CacheHint(CacheMode::CACHE_MODE_DISABLE);
+        if constexpr (!kCombineControlL2)
+            if (LlTransport::Rdma(args_)) result.SetL2CacheHint(CacheMode::CACHE_MODE_DISABLE);
         return result;
     }
     __aicore__ inline void SelectRows(int32_t type)
@@ -684,10 +687,11 @@ private:
         if (incoming) {
             profile_.Set(CombineProfile::ReadyMissingRank, uint32_t(args_->rank) / Group * Group +
                          (dense ? first / kCoreReadyPeerWords : first));
-            profile_.Set(CombineProfile::ReadyMissingCore, dense ? first % kCoreReadyPeerWords : 0xffffffffU);
+            profile_.Set(CombineProfile::ReadyMissingCore, dense && count ?
+                         CombinePhysicalCore(first % kCoreReadyPeerWords, coreNum_) : 0xffffffffU);
             profile_.Set(CombineProfile::ReadyMissingCount, count);
         } else {
-            profile_.Set(CombineProfile::NotifyMissingCore, first);
+            profile_.Set(CombineProfile::NotifyMissingCore, count ? CombinePhysicalCore(first, coreNum_) : 0xffffffffU);
             profile_.Set(CombineProfile::NotifyMissingCount, count);
         }
         profile_.Elapsed(incoming ? CombineProfile::ReadyInspectTicks : CombineProfile::NotifyInspectTicks, begin);
@@ -752,11 +756,22 @@ private:
         const uint32_t groupBase = uint32_t(args_->rank) / Group *
                                    Group;
         for (uint32_t local = core_ - notifyBegin_; local < Group; local += 8U) {
-            LlTransport::Records(args_, groupBase + local,
-                control_ + COMBINE_DEDUP_EP_SERVER_DEDUP_COMBINE_SERVER_READY_OFFSET +
-                (uint32_t(args_->rank) % Group) * 32U,
-                notifyUb_.ReinterpretCast<uint8_t>(), recvCores_, 512U, false,
-                prepareInput_.ReinterpretCast<uint8_t>());
+            if constexpr (kCombineControlL2) {
+                // Keep publication, polling and clearing on the same default
+                // L2 view. This ready table never crosses a physical host.
+                if (!LlTransport::SameHost(args_, groupBase + local) || !args_->peerMems[groupBase + local]) {
+                    Trap(); return;
+                }
+                DataCopyPad(Control(groupBase + local,
+                    COMBINE_DEDUP_EP_SERVER_DEDUP_COMBINE_SERVER_READY_OFFSET + (uint32_t(args_->rank) % Group) * 32U),
+                    notifyUb_, {uint16_t(recvCores_), 32U, 0U, 480U, 0U});
+            } else {
+                LlTransport::Records(args_, groupBase + local,
+                    control_ + COMBINE_DEDUP_EP_SERVER_DEDUP_COMBINE_SERVER_READY_OFFSET +
+                    (uint32_t(args_->rank) % Group) * 32U,
+                    notifyUb_.ReinterpretCast<uint8_t>(), recvCores_, 512U, false,
+                    prepareInput_.ReinterpretCast<uint8_t>());
+            }
         }
 #endif
         profile_.Elapsed(CombineProfile::NotifyPublishTicks, publishStart);

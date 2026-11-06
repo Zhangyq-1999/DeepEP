@@ -4,6 +4,7 @@
 #include <stdexcept>
 #include <vector>
 #include "../../csrc/kernels/combine/low_latency/combine_profile_layout.h"
+#include "../../csrc/kernels/combine/low_latency/combine_core_layout.h"
 
 namespace llbench {
 inline void profile_header(std::ostream& out)
@@ -301,7 +302,8 @@ inline void profile_rows(std::ostream& out, const std::vector<uint64_t>& data, u
         if (row[Schema] != kSchema || row[Complete] != 1 || row[Rank] != rank || row[Core] != core ||
             row[Tokens] != bs || row[World] != world || row[Level] != level || (row[Valid] & required) != required)
             throw std::runtime_error("Incomplete or mismatched Combine profile record");
-        out << iteration << ',' << device << ',' << (core < cores - recv ? "send" : "receive") << ",1,";
+        out << iteration << ',' << device << ','
+            << (CombineDedup::CombineIsReceiveCore(core, cores, recv) ? "receive" : "send") << ",1,";
         for (uint32_t w = 0; w < Count; ++w) {
             if (w) out << ',';
             if (w < StageRows) {
