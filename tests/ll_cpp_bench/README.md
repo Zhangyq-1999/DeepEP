@@ -27,7 +27,7 @@ git pull --ff-only origin perf/ll-combine-small-batch
 bash tests/ll_cpp_bench/build_all.sh
 ```
 
-`build_all.sh` 默认更新以下 10 个构建目录，每个构建使用 4 个编译任务。Dispatch 用于准备 Combine 的输入和路由，同一配置只编译一次，各版本复用它的目标文件。每个版本再单独编译 Combine，并链接成独立的 kernel 库。
+`build_all.sh` 默认更新以下 14 个构建目录，每个构建使用 4 个编译任务。Dispatch 用于准备 Combine 的输入和路由，同一配置只编译一次，各版本复用它的目标文件。每个版本再单独编译 Combine，并链接成独立的 kernel 库。
 
 已有目录继续用于增量编译。只修改 Combine 时，Dispatch 无需重编；修改 Dispatch 或它依赖的头文件时，构建系统自动重编受影响的部分。共享目标文件保存在 `build/ll-cpp-dispatch`，不同编译器、SDK 和每机 rank 数使用独立目录。更新代码后，两台机器都执行一次 `build_all.sh`，更新所有选中的版本。
 
@@ -38,11 +38,15 @@ bash tests/ll_cpp_bench/build_all.sh
 | `input6-l2` | input6 原半区分核，prepare/ready 控制区使用默认 L2 | 关闭 |
 | `input6-r32` | input6 改为 24 个 DIRECT 核、32 个接收核（56 AIV 时） | 关闭 |
 | `input6-remote` | input6 将跨机优先前移到 DIRECT 遍历和 M4 建表/任务分配 | 关闭 |
+| `input6-rpipe` | input6-remote + 首末包立即提交，中间包在下一任务输入读取发起后提交 | 关闭 |
+| `input6-rfull` | input6-remote + 首末包立即提交，中间包在下一任务规约完成、打包前提交 | 关闭 |
 | `ref-profile` | 实验开关全部关闭 | 开启 |
 | `input6-profile` | 与 input6 相同 | 开启 |
 | `input6-l2-profile` | 与 input6-l2 相同 | 开启 |
 | `input6-r32-profile` | 与 input6-r32 相同 | 开启 |
 | `input6-remote-profile` | 与 input6-remote 相同 | 开启 |
+| `input6-rpipe-profile` | 与 input6-rpipe 相同 | 开启 |
+| `input6-rfull-profile` | 与 input6-rfull 相同 | 开启 |
 
 优化和验收以 **BS32、48、64** 为主，BS72 作邻近对照，BS256 只检查回退。上一轮 EP8 干净版 ready-snapshot 的三个 BS 的 P50 分别为 57.11、63.56、70.19 μs，增加接收核没有持续改善这三个场景。ready-r32、ready-r36、stage-stream、plan-compact 保留为可选实验，不再默认编译运行。
 
@@ -54,7 +58,11 @@ EP32 收尾修复后的实测中，`wqe-prep` 在 BS48/64 的均值比 snapshot 
 
 参考 zzh 分支 fb97fbf 的跨机优先与接收核配比策略，本轮增加 input6-r32 和 input6-remote。input6 原就绪调度已经优先选可运行的跨机任务；remote 版进一步改变前面的遍历/建表顺序及任务分配，不能称为首次跨机优先。32 接收核可使 BS32 的 M5 每核最多处理 1 个 token、BS64 最多 2 个，但 DIRECT 核减少，收益需实测。已有 ready-r32 使用较早的 ready4 路径，与本轮 input6 组合不同；此前无稳定收益，不能作为这次的提速证据。
 
-默认共 5 个干净版 + 5 个打点版，冻结 base 和 input6 的执行策略不变。`input6-fused` / `input6-fused-profile` 可选地叠加控制 L2、32 接收核、跨机优先；默认先测三个单项以便归因。input6-l2（ready20）与旧 input-l2（ready19）不同：前者保留半区分核，后者为奇偶分核。控制 L2 同时覆盖 prepare/ready 的发布、轮询、清零；payload、data-with-flag、RDMA 暂存继续旁路。不增加 UB 预算，不改累加顺序、通知协议、QP 所有权和 CQ 回收。summary.csv/Python ID 保留核布局、接收核数和控制 L2 信息，原有阶段打点、拖尾诊断和 Perfetto 导出继续可用；Python ID 另列 ready_mode 和 remote_first。每机 4/16 rank、四机 EP64 的任务覆盖已做 CPU 检查，真实 CANN/NPU 编译、缓存可见性和性能仍待设备验证。参考审计和实验判据见 [TRANSFER_AB.md](TRANSFER_AB.md)。
+默认共 7 个干净版 + 7 个打点版，冻结 base 和 input6 的执行策略不变。`input6-fused` / `input6-fused-profile` 可选地叠加控制 L2、32 接收核、跨机优先；默认先测三个单项以便归因。input6-l2（ready20）与旧 input-l2（ready19）不同：前者保留半区分核，后者为奇偶分核。控制 L2 同时覆盖 prepare/ready 的发布、轮询、清零；payload、data-with-flag、RDMA 暂存继续旁路。不增加 UB 预算，不改累加顺序、通知协议、QP 所有权和 CQ 回收。summary.csv/Python ID 保留核布局、接收核数和控制 L2 信息，原有阶段打点、拖尾诊断和 Perfetto 导出继续可用；Python ID 另列 ready_mode 和 remote_first。每机 4/16 rank、四机 EP64 的任务覆盖已做 CPU 检查，真实 CANN/NPU 编译、缓存可见性和性能仍待设备验证。参考审计和实验判据见 [TRANSFER_AB.md](TRANSFER_AB.md)。
+
+新增 input6-rpipe（ready21）和 input6-rfull（ready22）在 input6-remote 上比较两种提交时机：前者用下一条就绪任务的输入 MTE2 覆盖上一包暂存等待，后者等下一条完整规约完成、打包前再提交。每轮已就绪任务集合的首包和末包都立即提交，只有中间包可延后；不足三条任务或只有一个输出槽时不延后。两版保持 28 接收核、半区布局和控制区旁路，不把 L2/核数混入流水实验。private WQE、GM 源和输出槽生命周期、最终 CQ 回收不变。重点看 BS32–64 的干净 mean/P50/min/max，以及打点中的 first/last Put、剩余 stage_wait、deferred/gap、prefetch_calls 和 q 的 pipeline_issue；任务太少时可能没有延后包，不能预设会加速。
+
+增加实验版后，C++ 紧凑回显按 BS 自动分成多个 `PASTE_BEGIN part=i/N` 块，每块不超过 62 KiB，完整保留表格、P50/worst 和拖尾计数。特别大的单个 BS 会在行边界续到下一块。无需删除异常样本或诊断字段；CSV 和 Perfetto 继续保存完整数据。
 
 打点 schema 18 新增 `input=lanes/early_reads/used_reads`，分别为 M4 输入槽数、就绪后提前读取的贡献数、实际消费的提前读取数；两者之差是已安全释放但未使用的读。新增计数也写入 CSV/Perfetto。schema 19 增加 `vec=pair_groups/barriers`（M4 两项配对次数/显式 Vector 屏障次数，含最终 Cast 屏障），每核记录从 256 words 扩为 272 words；需重新编译打点库，旧 CSV 仍可读取。最慢样本回显保留接收核流水、RDMA 和拖尾，完整计数留在 CSV/Perfetto，P50 样本仍完整展示。
 

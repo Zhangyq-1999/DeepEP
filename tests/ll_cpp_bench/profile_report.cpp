@@ -1,6 +1,7 @@
 // Offline Host-only report. Reading existing CSVs never starts an NPU or MPI job.
 #include "profile.hpp"
 #include "perfetto.hpp"
+#include "paste_report.hpp"
 #include <algorithm>
 #include <array>
 #include <bitset>
@@ -472,7 +473,20 @@ int main(int argc, char** argv)
         return argc == 2 ? 0 : 2;
     }
     try {
-        if (suite) suite_report(argv[2]);
+        if (suite) {
+            std::ostringstream rendered;
+            // All existing renderer helpers write to cout. Restore it even
+            // when malformed/incomplete input aborts rendering.
+            {
+                struct Capture {
+                    std::streambuf* previous;
+                    explicit Capture(std::ostream& sink) : previous(std::cout.rdbuf(sink.rdbuf())) {}
+                    ~Capture() { std::cout.rdbuf(previous); }
+                } capture(rendered);
+                suite_report(argv[2]);
+            }
+            WritePasteReport(std::cout, rendered.str());
+        }
         else if (trace) {
             const auto frequency = argc == 4 ? integer(argv[3]) : 1000000000ULL;
             if (!frequency) throw std::runtime_error("Perfetto frequency must be positive");

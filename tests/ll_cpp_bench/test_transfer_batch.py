@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.mark.parametrize("physical", [4, 16])
-@pytest.mark.parametrize("mode", [9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20])
+@pytest.mark.parametrize("mode", [9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22])
 @pytest.mark.parametrize("profile", [False, True])
 def test_transfer_lifetimes(tmp_path, physical, mode, profile):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
@@ -52,7 +52,7 @@ int main(){
 }
 ''')
     layouts = []
-    for mode in (4, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20):
+    for mode in (4, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22):
         exe = tmp_path / f"layout-{mode}.exe"
         subprocess.run([zig, "c++", "-std=c++17", "-O1", "-UNDEBUG",
                         f"-DDEEPEP_LL_COMBINE_READY={mode}", f"-DTEST_RECV={recv}", "-I" + str(ROOT / "csrc"),
@@ -63,7 +63,7 @@ int main(){
     assert all(value == layouts[0] for value in layouts[:4])  # no lost payload lanes at the target H/K
 
 
-@pytest.mark.parametrize("mode", [11, 15])
+@pytest.mark.parametrize("mode", [11, 15, 21, 22])
 def test_production_aggregate_prefetches_before_previous_submit(tmp_path, mode):
     """Execute the real Aggregate body, including its input-ring events."""
     zig = os.environ.get("DEEPEP_TEST_ZIG")
@@ -76,7 +76,7 @@ def test_production_aggregate_prefetches_before_previous_submit(tmp_path, mode):
     source = arithmetic + r'''
 #include "kernels/combine/low_latency/combine_profile_device.h"
 using namespace AscendC;
-constexpr unsigned kInputs=DEEPEP_LL_COMBINE_READY==15?6U:3U;
+constexpr unsigned kInputs=DEEPEP_LL_COMBINE_READY>=12?6U:3U;
 unsigned loaded=0, expected=0, submits=0;
 struct Batch {
     bool pending;
@@ -110,7 +110,13 @@ int main(){
         Batch batch{pending};Partial partial{&batch};
         for(unsigned lane=0;lane<kInputs;++lane)SetFlag<HardEvent::V_MTE2>(lane);
         partial.Aggregate<uint16_t>(0,0,n);
+        #if DEEPEP_LL_COMBINE_READY == 22
+        // The full-reduction variant must not publish during Aggregate;
+        // ProcessReadyTasks owns the post-Aggregate/pre-pack submission.
+        assert(batch.pending==pending && submits==0U && loaded==n);
+#else
         assert(!batch.pending && submits==unsigned(pending) && loaded==n);
+#endif
         for(unsigned lane=0;lane<kInputs;++lane)WaitFlag<HardEvent::V_MTE2>(lane);
         for(auto& direction:events)for(bool live:direction)assert(!live);
     }
@@ -125,7 +131,7 @@ int main(){
     subprocess.run([str(exe)],check=True,timeout=30)
 
 
-@pytest.mark.parametrize("mode", [12, 13, 14, 15, 16, 17, 18, 19, 20])
+@pytest.mark.parametrize("mode", [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22])
 def test_wide_input_aggregate_order_and_ring_reuse(tmp_path, mode):
     """Execute production preload/weighted reduction with sparse early reads."""
     zig = os.environ.get("DEEPEP_TEST_ZIG")
@@ -234,7 +240,7 @@ int main() {
     subprocess.run([str(exe)], check=True, timeout=60)
 
 
-@pytest.mark.parametrize("mode", [12, 13, 14, 15, 16, 17, 18, 19, 20])
+@pytest.mark.parametrize("mode", [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22])
 def test_wide_input_m5_retirement(tmp_path, mode):
     """Shifted M4 output lanes must retire before M5 reuses their UB."""
     zig = os.environ.get("DEEPEP_TEST_ZIG")

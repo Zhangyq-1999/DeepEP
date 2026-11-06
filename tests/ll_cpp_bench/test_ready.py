@@ -8,7 +8,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
-@pytest.mark.parametrize("mode", [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20])
+@pytest.mark.parametrize("mode", [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22])
 def test_ready_lifecycle_and_vector_selection(tmp_path, mode):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
     if not zig:
@@ -23,7 +23,7 @@ def test_ready_lifecycle_and_vector_selection(tmp_path, mode):
     subprocess.run([str(exe)], check=True, timeout=30)
 
 
-@pytest.mark.parametrize("mode,pipeline", [(1, False), (3, False), (3, True), (4, False), (5, False), (6, False), (7, False), (8, False), (9, False), (10, False), (11, False), (12, False), (13, False), (14, False), (15, False), (16, False), (17, False), (18, False), (19, False), (20, False)])
+@pytest.mark.parametrize("mode,pipeline", [(1, False), (3, False), (3, True), (4, False), (5, False), (6, False), (7, False), (8, False), (9, False), (10, False), (11, False), (12, False), (13, False), (14, False), (15, False), (16, False), (17, False), (18, False), (19, False), (20, False), (21, False), (22, False)])
 def test_production_dependency_scheduler(tmp_path, mode, pipeline):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
     if not zig:
@@ -60,14 +60,28 @@ template<uint32_t Group> struct Scheduler {
     struct Ready {
         uint32_t round=0,mask=0,delay=1;
         std::vector<uint32_t> sequence;
-        uint32_t Poll() {mask=sequence.empty() ? (round++ >= delay ? (1U<<Group)-1U : 1U) : sequence[std::min<size_t>(round++,sequence.size()-1)];return mask;}
+        const bool* pending=nullptr;
+        uint32_t Poll() {
+#if DEEPEP_LL_COMBINE_READY == 21 || DEEPEP_LL_COMBINE_READY == 22
+            assert(pending && !*pending); // No unposted packet across ready polling.
+#endif
+            mask=sequence.empty() ? (round++ >= delay ? (1U<<Group)-1U : 1U) : sequence[std::min<size_t>(round++,sequence.size()-1)];return mask;
+        }
         bool All(){return mask==((1U<<Group)-1U);}
     } ready;
     struct Batch {
         bool pending=false;uint32_t lane=0,posted=0;
         void Init(DispatchDedup::CommArgs*,uint32_t){}
-        uint32_t staged=0;
-        void SubmitPending(){if(pending){posted+=staged;staged=0;pending=false;}}
+        uint32_t staged=0, deferredAt=0;
+        uint32_t* aggregateCount=nullptr;
+        bool deferred=false;
+        bool HasStaged()const{return pending;}
+        void SubmitPending(){
+#if DEEPEP_LL_COMBINE_READY == 22
+            if(pending && deferred)assert(*aggregateCount==deferredAt+1U);
+#endif
+            if(pending){posted+=staged;staged=0;pending=false;deferred=false;}
+        }
     } batch;
     Batch* rdmaBatch_=&batch;
     Ready* ready_=&ready;
@@ -105,6 +119,8 @@ template<uint32_t Group> struct Scheduler {
     uint32_t planScratchBytes_=0,tokens_=0,recvCores_=1,inputLanes_=kEpServerDedupCombineM4MaxInputLanes,blocks_=15,packetBytes_=7680;
 #endif
     explicit Scheduler(std::vector<Task> tasks,uint32_t world=2*Group,uint32_t rank=0,uint32_t topk=8):k_(topk),input(std::move(tasks)) {
+        batch.aggregateCount=&aggregated;
+        ready.pending=&batch.pending;
         args.rank=rank;args.rankSize=world;args.reserved0=Group;args.reservedConfig[0]=LlRdma::kBackend;
         dtype_=DispatchDedup::DISPATCH_DEDUP_DATA_TYPE_FP16;
 #if DEEPEP_LL_COMBINE_READY >= 4
@@ -176,7 +192,7 @@ template<uint32_t Group> struct Scheduler {
 #endif
         for(uint32_t previous:sent) assert(previous!=row);
         if(batch.pending) {assert(batch.lane!=sent.size()%outputLanes_);++overlaps;}
-#if DEEPEP_LL_COMBINE_READY == 6 || (DEEPEP_LL_COMBINE_READY == 11 || DEEPEP_LL_COMBINE_READY == 15)
+#if DEEPEP_LL_COMBINE_READY == 6 || DEEPEP_LL_COMBINE_READY == 11 || DEEPEP_LL_COMBINE_READY == 15 || DEEPEP_LL_COMBINE_READY == 21
         batch.SubmitPending(); // Production Aggregate submits after input preload.
 #endif
         ++aggregated;
@@ -195,6 +211,7 @@ template<uint32_t Group> struct Scheduler {
         sent.push_back(token);
         if(LlTransport::RemoteWrite(args_,source)) {
             batch.pending=true;batch.lane=lane;++batch.staged;
+            batch.deferred=defer;batch.deferredAt=aggregated;
 #if DEEPEP_LL_COMBINE_READY == 5
             if(batch.staged==2)batch.SubmitPending();
 #endif
@@ -266,7 +283,7 @@ void CacheAndPipeline() {
     assert(fallback.sent==snapshot.sent);
     NoLiveEvents();
 #endif
-    for(uint32_t k:{2U,3U,8U,32U}) for(uint32_t count:{1U,8U,12U,13U,65U}) for(uint32_t lanes:{1U,2U,8U}) {
+    for(uint32_t k:{2U,3U,8U,32U}) for(uint32_t count:{1U,2U,3U,8U,12U,13U,65U}) for(uint32_t lanes:{1U,2U,8U}) {
         std::vector<Scheduler<16>::Task> tasks;
         for(uint32_t i=0;i<count;++i) tasks.push_back({2U,((i%3U)+1U)*16U+15U});
         Scheduler<16> t(tasks,64,0,k);t.outputLanes_=lanes;t.ready.delay=5;
@@ -278,7 +295,7 @@ void CacheAndPipeline() {
         assert(t.loads==(count<=EpCombineReadyCacheCapacity(k)?0U:count*2U));
 #if defined(DEEPEP_LL_COMBINE_DEFER_RETURN) || DEEPEP_LL_COMBINE_READY == 6 || (DEEPEP_LL_COMBINE_READY == 11 || DEEPEP_LL_COMBINE_READY == 15)
         assert(t.overlaps==(lanes>1U?count-1U:0U));
-#elif DEEPEP_LL_COMBINE_READY == 7
+#elif DEEPEP_LL_COMBINE_READY == 7 || DEEPEP_LL_COMBINE_READY == 21 || DEEPEP_LL_COMBINE_READY == 22
         assert(t.overlaps==(lanes>1U && count>2U?count-2U:0U));
 #endif
 #else

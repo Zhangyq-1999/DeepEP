@@ -312,7 +312,7 @@ def test_local_first_fields_in_reports(reporter, tmp_path, batch_mode):
 
 
 @pytest.mark.parametrize("extended", [False, True])
-def test_default_suite_fits_one_paste_and_keeps_each_case(reporter, tmp_path, extended):
+def test_default_suite_uses_bounded_pastes_and_keeps_each_case(reporter, tmp_path, extended):
     # Five BS, actual default clean/profile variants; full and worst excerpts.
     # Exercise long counters and eight tail slots rather than mostly-zero rows.
     names = re.findall(r'"([a-z0-9_]+)"',
@@ -322,8 +322,7 @@ def test_default_suite_fits_one_paste_and_keeps_each_case(reporter, tmp_path, ex
     clean = re.search(r"^ll_bench_clean_variants=(.+)$", default_text, re.M)[1].split(",")
     profiles = re.search(r"^ll_bench_profiles=(.+)$", default_text, re.M)[1].split(",")
     if extended:
-        # Optional replacement within the default five-variant paste budget.
-        # Explicitly requesting additional variants may require more pastes.
+        # Optional replacement must retain its extra arithmetic counters too.
         clean[-1] = "input-stream"
         profiles[-1] = "input-stream-profile"
     variants = clean + profiles
@@ -395,10 +394,15 @@ def test_default_suite_fits_one_paste_and_keeps_each_case(reporter, tmp_path, ex
             write_csv(directory / "diagnostic.csv", fields, records)
             write_csv(directory / "producers.csv", list(producers[0]), producers)
     out = subprocess.check_output([str(reporter), "--suite", str(tmp_path)], text=True)
-    header = out[:out.index("\nBS=")]
+    parts = re.findall(r"LL_COMBINE PASTE_BEGIN part=(\d+)/(\d+)\n(.*?)LL_COMBINE PASTE_END part=\1/\2\n", out, re.S)
+    assert len(parts) > 1
+    for i, (part, total, payload) in enumerate(parts, 1):
+        assert int(part) == i and int(total) == len(parts)
+        framed = f"LL_COMBINE PASTE_BEGIN part={part}/{total}\n{payload}LL_COMBINE PASTE_END part={part}/{total}\n"
+        assert len(framed.encode("utf-8")) <= 62 * 1024
+        assert payload.startswith("LL_COMBINE compact=v3")
     blocks = re.findall(r"\nBS=(\d+) .*?END BS=\1\n", out, flags=re.S)
     assert list(map(int, blocks)) == sorted((*defaults, 16, 96, 128))
-    default_report = header
     for bs in defaults:
         block = re.search(rf"\nBS={bs} .*?END BS={bs}\n", out, flags=re.S)[0]
         assert block.index("variant ") < block.index(f"D {first_profile} p50")
@@ -409,10 +413,6 @@ def test_default_suite_fits_one_paste_and_keeps_each_case(reporter, tmp_path, ex
                 assert f"D {phase} worst i=9 event_r=1" in block
                 assert f"IQR {phase} n=1" in block
         assert " G 4/30 W=" in block and " G 4/30 O=" in block
-        default_report += block
-    # Leave room for the run ID and launch output in a 64 KiB clipboard paste.
-    size = len((default_report + "LL_COMBINE END cases=5\n").encode("utf-8"))
-    assert size < 62 * 1024, f"Default report is {size} bytes"
     assert "LL_COMBINE END cases=8" in out
     assert "  e=" in out and "'-'=absent" in out
     assert "input=6/0/0 vec=0/192 arith=0/0" in out
@@ -422,3 +422,36 @@ def test_default_suite_fits_one_paste_and_keeps_each_case(reporter, tmp_path, ex
     assert " stream=9/1/123456" in out
     assert " compact=256/1024/123456" in out
     assert not re.search(r"^E ", out, re.M)  # Raw samples remain in rank-max.csv.
+
+
+def test_paste_split_is_lossless_for_oversized_case(tmp_path):
+    zig = os.environ.get("DEEPEP_TEST_ZIG")
+    if not zig:
+        pytest.skip("Set DEEPEP_TEST_ZIG")
+    source, exe = tmp_path / "paste.cpp", tmp_path / "paste.exe"
+    source.write_text('''#include "paste_report.hpp"
+#include <iostream>
+#include <iterator>
+int main(){
+    std::string report{std::istreambuf_iterator<char>(std::cin),{}};
+    WritePasteReport(std::cout,report,4096);
+}
+''')
+    subprocess.run([zig,"c++","-std=c++17","-O1","-I"+str(HERE),str(source),"-o",str(exe)],
+                   check=True, timeout=120)
+    header="LL_COMBINE compact=v3\nlegend\n"
+    for rows in (1,40,400):
+        report=header+"\nBS=32 ep=8\n"+"".join(f"record={i} "+"x"*90+"\n" for i in range(rows))+"END BS=32\n"
+        report+="\nBS=48 ep=8\nlast case\nEND BS=48\nLL_COMBINE END cases=2\n"
+        out=subprocess.check_output([str(exe)],input=report,text=True)
+        if len(report)<=4096:
+            assert out==report
+            continue
+        parts=re.findall(r"LL_COMBINE PASTE_BEGIN part=(\d+)/(\d+)\n(.*?)LL_COMBINE PASTE_END part=\1/\2\n",out,re.S)
+        restored=header
+        for i,(part,total,payload) in enumerate(parts,1):
+            assert int(part)==i and int(total)==len(parts)
+            assert payload.startswith(header)
+            restored+=payload[len(header):]
+            assert len(f"LL_COMBINE PASTE_BEGIN part={part}/{total}\n{payload}LL_COMBINE PASTE_END part={part}/{total}\n".encode())<=4096
+        assert restored==report

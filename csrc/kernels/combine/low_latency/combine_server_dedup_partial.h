@@ -447,7 +447,16 @@ private:
 #endif
                 if (dtype_ == DispatchDedup::DISPATCH_DEDUP_DATA_TYPE_FP16) Aggregate<half>(row, source, n + 1U);
                 else Aggregate<bfloat16_t>(row, source, n + 1U);
-#if defined(DEEPEP_LL_COMBINE_DEFER_RETURN) && DEEPEP_LL_COMBINE_READY != 7
+#if DEEPEP_LL_COMBINE_READY == 22
+                // Current arithmetic is complete; the older packet and its
+                // private WQE still own separate output/GM/UB storage. Post
+                // before packing this result or reusing its output slot.
+                if (rdmaBatch_->HasStaged()) {
+                    const uint64_t issueStart = profile_.DetailClock();
+                    rdmaBatch_->SubmitPending();
+                    profile_.Elapsed(CombineProfile::ReadyPipelineIssueTicks, issueStart);
+                }
+#elif defined(DEEPEP_LL_COMBINE_DEFER_RETURN) && DEEPEP_LL_COMBINE_READY != 7
                 // The preceding output lane is distinct from current inputs,
                 // sum and low_. Post it BEFORE queuing the next V->MTE3 wait.
                 // The last ready task is immediate: never park a pending Put
@@ -456,7 +465,7 @@ private:
                 rdmaBatch_->SubmitPending();
                 profile_.Elapsed(CombineProfile::ReadyPipelineIssueTicks, issueStart);
 #endif
-#if DEEPEP_LL_COMBINE_READY == 7
+#if DEEPEP_LL_COMBINE_READY == 7 || DEEPEP_LL_COMBINE_READY == 21 || DEEPEP_LL_COMBINE_READY == 22
                 const bool defer = CombineStreamDefer(index, runnable, outputLanes_);
                 profile_.Add(CombineProfile::PartialEagerPackets,
                              index == 0U && LlTransport::RemoteWrite(args_, source) ? 1U : 0U);
@@ -686,7 +695,7 @@ private:
     __aicore__ inline void Aggregate(uint32_t row, uint32_t source, uint32_t contributions)
     {
         PreloadInputs(row, source, contributions);
-#if (defined(DEEPEP_LL_COMBINE_PREFETCH_RETURN) && DEEPEP_LL_COMBINE_READY != 7) || DEEPEP_LL_COMBINE_READY == 6 || (DEEPEP_LL_COMBINE_READY == 11 || DEEPEP_LL_COMBINE_READY == 15)
+#if (defined(DEEPEP_LL_COMBINE_PREFETCH_RETURN) && DEEPEP_LL_COMBINE_READY != 7) || DEEPEP_LL_COMBINE_READY == 6 || DEEPEP_LL_COMBINE_READY == 11 || DEEPEP_LL_COMBINE_READY == 15 || DEEPEP_LL_COMBINE_READY == 21
         // Let current MTE2 input reads overlap the previous packet's MTE3 wait
         // and Put submission. The old output lane is still owned by the batch.
         if (rdmaBatch_->HasStaged()) {

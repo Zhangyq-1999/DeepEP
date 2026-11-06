@@ -12,7 +12,7 @@ while (($#)); do
             cat <<'USAGE'
 build_all.sh [--variants NAME[,NAME...]] [--ranks-per-host 4|16] [--jobs N] [--dry-run]
              [--cann-home DIR] [--mpi-home DIR] [--shmem-root DIR]
-Defaults: base/input6/input6-l2/input6-r32/input6-remote, plus matching diagnostics.
+Defaults: base/input6/input6-l2/input6-r32/input6-remote/input6-rpipe/input6-rfull, plus matching diagnostics.
 Target BS32/48/64; BS72 is a neighboring case and BS256 checks regressions.
 base is the frozen original; ready-snapshot remains opt-in.
 wqe-prep prepares a private UB WQE while M4 payload staging runs, then publishes it.
@@ -22,6 +22,8 @@ input-interleave: input6 with odd physical AIVs sending and even AIVs receiving.
 input6-l2: input6's original halves with default-L2 controls only.
 input6-r32: input6 with 24 DIRECT / 32 receive cores at 56 AIVs.
 input6-remote: input6 with remote-first DIRECT scanning and M4 task assignment.
+input6-rpipe: remote-first input6; eager first/last return, middle return after next input issue.
+input6-rfull: same policy, middle return after next ready task finishes reduction.
 input6-fused (opt-in): input6-l2 + 32 receive cores + remote-first ordering.
 input6: wqe-prep with up to six M4 input lanes (previously three).
 input-stream: input6 plus alternating FP32 buffers and shared Vector barriers.
@@ -77,7 +79,7 @@ IFS=, read -r -a names <<< "$variants"
 # Validate the complete selection before starting any build.
 for name in "${names[@]}"; do
     case "$name" in
-        input6-l2|input6-l2-profile|input6-r32|input6-r32-profile|input6-remote|input6-remote-profile|input6-fused|input6-fused-profile) ;;
+        input6-l2|input6-l2-profile|input6-r32|input6-r32-profile|input6-remote|input6-remote-profile|input6-fused|input6-fused-profile|input6-rpipe|input6-rpipe-profile|input6-rfull|input6-rfull-profile) ;;
         input-l2|input-l2-profile|input-interleave|input-interleave-profile|input-stream|input-stream-profile|input-front|input-front-profile|input-pair|input-pair-profile|input-pipe|input-pipe-profile|input6|input6-profile|input-ready|input-ready-profile|wqe-prep|wqe-prep-profile|wqe-prefetch|wqe-prefetch-profile|mte-pack|mte-pack-profile|plan-compact|plan-compact-profile|ready-r32|ready-r32-profile|ready-r36|ready-r36-profile) ;;
         stage-stream|stage-stream-profile|stage-prefetch|stage-prefetch-profile|stage-pair|stage-pair-profile|ready-snapshot|ready-snapshot-profile|ready-fast|ready-pipeline|ready-fast-profile|ready-pipeline-profile|ready-task|ready-shared|ready-task-profile|ready-shared-profile|notify-simt|notify-core|notify-simt-profile|notify-core-profile|card-all|card-row|server-all|server-row|card-all-profile|card-row-profile|server-all-profile|server-row-profile|batch|batch-profile|batch-pipeline|batch-pipeline-profile|local-first|local-first-profile|poll800|poll800-profile|meta|meta-profile|prefetch|prefetch-profile|prepare|flag|prepare-flag|prepare-profile|flag-profile|prepare-flag-profile|issue|probe|issue-probe|issue-profile|probe-profile|issue-probe-profile|base|remote|pipeline|return|ops-shmem-base|ref-profile|opt-profile|r36-profile|early-profile|remote-profile|pipeline-profile|return-profile) ;;
         *) fail "Unknown experiment: $name (see --help)";;
@@ -103,6 +105,8 @@ for name in "${names[@]}"; do
         input6-r32|input6-r32-profile) ready=12; recv=32;;
         input6-remote|input6-remote-profile) ready=12; remote=ON;;
         input6-fused|input6-fused-profile) ready=20; recv=32; remote=ON;;
+        input6-rpipe|input6-rpipe-profile) ready=21; remote=ON;;
+        input6-rfull|input6-rfull-profile) ready=22; remote=ON;;
         input-ready|input-ready-profile) ready=13;;
         input-pair|input-pair-profile) ready=14;;
         input-pipe|input-pipe-profile) ready=15;;

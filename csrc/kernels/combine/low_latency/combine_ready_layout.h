@@ -15,9 +15,9 @@ constexpr bool kCombineControlL2 = DEEPEP_LL_COMBINE_READY == 19 || DEEPEP_LL_CO
 // that combination is forbidden for coalescing, and ready excludes coalesce.
 constexpr uint32_t CombineReadyOptions(uint32_t mode)
 {
-    // ready20 keeps input6's physical placement and enables control L2 only.
+    // ready20: control L2; ready21/22: eager-edge return pipelines.
     // notify=3/coalesce=1 is another unused tag; do not shift into poll-nop.
-    if (mode == 20U) return (3U << 12U) | (1U << 9U);
+    if (mode >= 20U) return (3U << 12U) | (1U << 9U) | ((mode - 20U) << 14U);
     // coalesce=3 is reserved too: ready16..19 use that tag with notify=3.
     // Keep poll-nop in the upper 16 bits; ready and coalesce are exclusive.
     if (mode >= 16U) return (3U << 12U) | (3U << 9U) | ((mode - 16U) << 14U);

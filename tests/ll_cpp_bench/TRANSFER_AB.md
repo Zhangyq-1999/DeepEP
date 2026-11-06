@@ -441,3 +441,53 @@ Group2/4/16、每机4/16 rank）、实际建表与原扫描等价、空任务/�
 源生命周期、Python双模块共享初始化、冻结base和Perfetto回归。
 新组合没有本地 CANN/NPU 实测；Host 模型不模拟 L2 硬件一致性，不能
 保证收益。所有参与节点需重新编译同一组版本后测试。
+
+
+## 2026-11-06：加入跨机优先的首末包即时回传对照
+
+本节覆盖上节五版默认清单。新增两项都基于 input6-remote，保持六输入槽、
+WQE 预构造、半区布局、28 接收核和控制区旁路；不同时叠加 L2/recv32。
+
+|默认新增版本|ready|上一包提交点|首包/末包|
+|---|---:|---|---|
+|input6-rpipe|21|下一条已就绪任务的初始 MTE2 发出之后，规约之前|立即|
+|input6-rfull|22|下一条任务完整规约和 Cast 完成之后，打包之前|立即|
+
+参考分支的 defer-return 允许上一条 MTE3 暂存与下一条规约重叠，但延后首包
+可能增加小 BS 首发等待。本轮用已有 CombineStreamDefer 规则保护每批已就绪
+任务的首、末包；只有至少三条任务、两个以上输出槽时才延后中间包。这里的
+“批”是当前已筛出的 runnable 集合，不是每个 peer 的首末包，也不是整个 kernel。
+不会把未下发包带入下一次 ready 轮询或 M5 flag 等待。
+
+与旧 input-pipe（ready15）相比，rpipe 保护首包并增加跨机优先建表/任务分配；
+rfull 进一步将上一包提交推迟到下一条规约后。它比参考实现的下一次 Send 内
+排空更早，在当前结果打包前就发布，避免等待当前打包与 V→MTE3 事件。
+两者都可能增加中间包下发延迟，只是待验证的重叠实验，不能保证 BS32 变快。
+
+生命周期沿用 TransferBatch：上一包 MTE3_S(7) 未退休时，不复用其输出槽及
+独立 128 B WQE UB；当前任务使用独立输入槽、cast/product/sum/low。先完成
+上一包 GM 写入，再发布 SQ/doorbell。GM 仍使用每核原 staging ring，满容量
+退休已使用 peer 的 CQ 后才能循环覆盖，最后 CQ 在 kernel 结束前回收。
+不合并 WQE、不改消息/通知协议、归约顺序、QP 所有权及 SHMEM SDK。
+远端索引仍按实际每机4/16 rank 和 server 数计算，无两机配对假设。
+
+打点复用 schema20，CSV/Perfetto 无格式升级：
+
+- 两版均保留 deferred_packets、defer_gap、stage_wait、WQE prepare/fallback、
+  first/last Put、M4/M5 和最终 flag 拖尾；不是只量 Put API 的调用成本。
+- rpipe 的提交计入 early_issue_ticks / partial_prefetch_submit_calls；
+  rfull 的提交计入 ready_pipeline_issue_ticks（紧凑回显 q 最后一组）。
+- partial_eager_packets 计数每批首个远端任务；不把它当所有立即包数量。
+  runnable 不足三条时 deferred=0 是预期行为。
+- 累计等待与提交 ticks 会重叠，不能相加当作端到端 RDMA 单包时间。
+
+默认 Python 编译并运行七个干净版；C++ 为七干净 + 七 profile。base 和 input6
+保留，初始化仍只有一次。新增回显分段器按 BS 边界输出不超过62KiB的块，
+超大的单 BS 按行续块，重复图例且不丢字段/样本。小于限制的原输出不变。
+
+本地检查包括完整 clean/profile kernel 的 Host-stub 编译、构建身份唯一性、
+每机4/16卡的延迟 DMA/NIC 生命周期、SQ wrap/admission 回退、GM复用、
+真实 Aggregate 的输入发起/完整规约提交边界、四机64P任务覆盖、首末包/
+单输出槽/空任务、FP16/BF16累加序、UB容量和 M5 前后退休。
+脚本/报告检查覆盖七版本一次初始化和14阶段调度、全部 BS 诊断、分页无损恢复。
+尚无 CANN/NPU 实测；需要各节点重编后按相同同步方式比较干净性能。
