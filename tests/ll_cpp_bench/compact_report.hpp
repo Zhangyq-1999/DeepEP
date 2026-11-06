@@ -146,6 +146,14 @@ void compact_record(const Record& r, bool brief = false)
                   << " m5=" << r[FinalInputIssueTicks] << '/' << r[FinalInputWaitTicks]
                   << '/' << r[FinalComputeIssueTicks] << '/' << r[FinalStoreIssueTicks];
     }
+    if (r[Level] >= 2 && r.present[PartialOutputInitLanes]) {
+        if (r.receive)
+            std::cout << "\n  small=" << r[PartialOutputInitLanes] << '/' << r[PartialSetupTicks]
+                      << '/' << r[ReadyMetadataWaitTicks] << '/' << r[ReadySingleTasks];
+        else
+            std::cout << "\n  direct_meta=" << r[DirectMetadataCachedRows] << '/'
+                      << r[DirectMetadataReloads] << '/' << r[DirectActiveLanes];
+    }
     if (brief) {
         std::cout << "\n  rdma=" << r[RdmaPackets] << '/' << r[RdmaDeferredPackets]
                   << '/' << r[RdmaDeferGapTicks] << '/' << r[RdmaStageIssueTicks] << '/' << r[RdmaStageWaitTicks]
@@ -338,6 +346,7 @@ void suite_report(const fs::path& root)
                  "e(R)=init/stage_drained/core_notify/ready_begin/ready_observed/ready_end/partial_end/put_first/put_last/final_first/final_last/store/drain/pipe\n"
                  "cache=mask(stage1/TX2/result4); m3=input/store_issue/drain; g=load/check/calls; m5=input_issue/input_wait/compute/store; ticks, NOT cache hits\n"
                  "m4=local_issue/get_issue/local_wait/get_wait/compute_issue/output_wait/pack/input_drain cumulative ticks\n"
+                 "small=output_init_lanes/setup_ticks/meta_wait_ticks/single_task; direct_meta=cached/reloaded/active_lanes\n"
                  "X=same-sample global maxima r/c:ticks; prep/drained=own-entry offsets, notify=local_wait/publish, group=W(wait)|O(observe)/missing_rank/core/count, inputwait=local/get; not additive\n"
                  "top4 cumulative ticks: s.=stage_, d.=direct_, m4.=partial_, m5.=final_, g.=ready_; overlapping costs are not additive.\n"
                  "rdma=n/deferred/gap/stage_issue/stage_wait/put/quiet; stage=wait_calls/pairs/prefetch_calls; stream=packed_posts/eager/ticks\n"

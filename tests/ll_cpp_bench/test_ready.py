@@ -8,7 +8,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
-@pytest.mark.parametrize("mode", [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23])
+@pytest.mark.parametrize("mode", [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27])
 def test_ready_lifecycle_and_vector_selection(tmp_path, mode):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
     if not zig:
@@ -23,7 +23,7 @@ def test_ready_lifecycle_and_vector_selection(tmp_path, mode):
     subprocess.run([str(exe)], check=True, timeout=30)
 
 
-@pytest.mark.parametrize("mode,pipeline", [(1, False), (3, False), (3, True), (4, False), (5, False), (6, False), (7, False), (8, False), (9, False), (10, False), (11, False), (12, False), (13, False), (14, False), (15, False), (16, False), (17, False), (18, False), (19, False), (20, False), (21, False), (22, False), (23, False)])
+@pytest.mark.parametrize("mode,pipeline", [(1, False), (3, False), (3, True), (4, False), (5, False), (6, False), (7, False), (8, False), (9, False), (10, False), (11, False), (12, False), (13, False), (14, False), (15, False), (16, False), (17, False), (18, False), (19, False), (20, False), (21, False), (22, False), (23, False), (24, False), (25, False), (26, False), (27, False)])
 def test_production_dependency_scheduler(tmp_path, mode, pipeline):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
     if not zig:
@@ -166,7 +166,7 @@ template<uint32_t Group> struct Scheduler {
 #if DEEPEP_LL_COMBINE_READY >= 4
         // The route snapshot aliases the output ring. Process must initialize
         // all data-with-flag tails AFTER planning, including untouched lanes.
-        for(uint32_t lane=0;lane<outputLanes_;++lane)for(uint32_t block=0;block<blocks_;++block)
+        for(uint32_t lane=0;lane<(kCombineLeanSetup?std::min<uint32_t>(input.size(),outputLanes_):outputLanes_);++lane)for(uint32_t block=0;block<blocks_;++block)
             for(uint32_t j=0;j<8;++j)assert(outputs_[lane*packetBytes_+block*512U+480U].template ReinterpretCast<float>().GetValue(j)==1.f);
 #endif
         assert(source==input[row].source && members==table3Ub_.GetValue(0U)+1U);
@@ -291,7 +291,7 @@ void CacheAndPipeline() {
         assert(t.Run(4,0)==count);
         assert(t.aggregated==count && !t.batch.pending && t.batch.posted==count);
 #if DEEPEP_LL_COMBINE_READY >= 3
-        assert(filterCalls-before==3U+(DEEPEP_LL_COMBINE_READY==13 && t.readyCached_ ? 1U:0U));
+        assert(filterCalls-before==(kCombineSingleTask && count==1 ? 0U : 3U+(DEEPEP_LL_COMBINE_READY==13 && t.readyCached_ ? 1U:0U)));
         assert(t.loads==(count<=EpCombineReadyCacheCapacity(k)?0U:count*2U));
 #if defined(DEEPEP_LL_COMBINE_DEFER_RETURN) || DEEPEP_LL_COMBINE_READY == 6 || (DEEPEP_LL_COMBINE_READY == 11 || DEEPEP_LL_COMBINE_READY == 15 || DEEPEP_LL_COMBINE_READY == 23)
         assert(t.overlaps==(lanes>1U?count-1U:0U));
@@ -334,7 +334,7 @@ void EarlyInputs() {
 int main(){Check<2>();Check<4>();Check<16>();FourHosts();CacheAndPipeline();EarlyInputs();}
 
 ''', encoding="utf-8")
-    subprocess.run([zig, "c++", "-std=c++17", "-O1", "-UNDEBUG", f"-DDEEPEP_LL_COMBINE_READY={mode}",
+    subprocess.run([zig, "c++", "-std=c++17", "-O1", "-UNDEBUG", "-DDEEPEP_TEST_DEFERRED_MTE2=1", f"-DDEEPEP_LL_COMBINE_READY={mode}",
                     *(["-DDEEPEP_LL_COMBINE_DEFER_RETURN=1"] if pipeline else []),
                     "-I" + str(ROOT / "tests/ll_cpp_bench"), "-I" + str(ROOT / "tests/ll_rdma/metadata_stubs"),
                     "-I" + str(ROOT / "csrc"), str(cpp), "-o", str(exe)], check=True, timeout=180)

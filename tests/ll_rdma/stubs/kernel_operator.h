@@ -18,7 +18,7 @@ inline std::mutex memoryMutex;
 #ifdef DEEPEP_TEST_METADATA_COPY
 inline void (*observeStore)(void*,const void*,uint32_t)=nullptr;
 #endif
-#ifdef DEEPEP_TEST_ROUTE_THREADS
+#if defined(DEEPEP_TEST_ROUTE_THREADS) || defined(DEEPEP_TEST_DEFERRED_MTE2)
 struct DeferredMte2Copy { void* dst;const void* src;uint32_t bytes; };
 inline thread_local std::vector<DeferredMte2Copy> deferredMte2;
 #endif
@@ -46,7 +46,7 @@ template<HardEvent E> void WaitFlag(uint32_t id) {
         }
     }
 #endif
-#ifdef DEEPEP_TEST_ROUTE_THREADS
+#if defined(DEEPEP_TEST_ROUTE_THREADS) || defined(DEEPEP_TEST_DEFERRED_MTE2)
     if constexpr(E==HardEvent::MTE2_S || E==HardEvent::MTE2_V) {
         std::lock_guard<std::mutex> guard(memoryMutex);
         for(const auto& copy:deferredMte2) std::memcpy(copy.dst,copy.src,copy.bytes);
@@ -139,7 +139,13 @@ template<class T> void DataCopyPad(GlobalTensor<T> d, LocalTensor<T> s, DataCopy
 }
 template<class T> void DataCopyPad(LocalTensor<T> d, GlobalTensor<T> s, DataCopyExtParams c, DataCopyPadExtParams<T>) {
     std::lock_guard<std::mutex> guard(memoryMutex);
+#ifdef DEEPEP_TEST_DEFERRED_MTE2
+    for (uint32_t i=0;i<c.count;++i) deferredMte2.push_back({
+        reinterpret_cast<uint8_t*>(d.p)+i*((c.bytes+31U)/32U*32U+c.dstStride*32U),
+        reinterpret_cast<uint8_t*>(s.p)+i*(c.bytes+c.srcStride),c.bytes});
+#else
     for (uint32_t i=0;i<c.count;++i) std::memcpy(reinterpret_cast<uint8_t*>(d.p)+i*((c.bytes+31U)/32U*32U+c.dstStride*32U),
         reinterpret_cast<uint8_t*>(s.p)+i*(c.bytes+c.srcStride),c.bytes);
+#endif
 }
 }

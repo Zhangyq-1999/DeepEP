@@ -123,7 +123,9 @@ def test_dependency_work_is_not_rendered_as_blocking_wait(reporter, tmp_path):
                        route_snapshot_capacity=181888, route_snapshot_fallbacks=0,
                        wqe_prepare_ticks=23, wqe_prepared_packets=2, wqe_fallback_packets=1, mte_pack_packets=3,
                        partial_input_lanes=6, ready_input_issued=5, ready_input_used=3,
-                       partial_pair_groups=4, partial_vector_barriers=16, partial_stream_steps=7, partial_front_loads=6)
+                       partial_pair_groups=4, partial_vector_barriers=16, partial_stream_steps=7, partial_front_loads=6,
+                       partial_output_init_lanes=1, partial_setup_ticks=32, ready_metadata_wait_ticks=7,
+                       ready_single_tasks=1, direct_metadata_cached_rows=2, direct_metadata_reloads=0, direct_active_lanes=2)
     write_csv(path, fields, rows)
     subprocess.run([str(reporter), '--perfetto', str(tmp_path)], check=True, capture_output=True)
     trace = read_trace(next((tmp_path/'perfetto-local').glob('*p50-*.json')))
@@ -144,6 +146,8 @@ def test_dependency_work_is_not_rendered_as_blocking_wait(reporter, tmp_path):
     assert (args['partial_input_lanes'], args['ready_input_issued'], args['ready_input_used']) == (6, 5, 3)
     assert (args['partial_pair_groups'], args['partial_vector_barriers']) == (4, 16)
     assert (args['partial_stream_steps'], args['partial_front_loads']) == (7, 6)
+    assert (args['partial_output_init_lanes'], args['partial_setup_ticks'], args['ready_metadata_wait_ticks'], args['ready_single_tasks']) == (1, 32, 7, 1)
+    assert (args['direct_metadata_cached_rows'], args['direct_metadata_reloads'], args['direct_active_lanes']) == (2, 0, 2)
     assert spans['partial plan']['dur'] == pytest.approx(.002)
 
 

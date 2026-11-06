@@ -66,6 +66,9 @@ int main() {
             view.Add(PartialVectorBarriers, 16);
             view.Add(PartialStreamSteps, 7);
             view.Add(PartialFrontLoads, 6);
+            view.Add(DirectMetadataCachedRows, 2);
+            view.Add(ReadySingleTasks, 1);
+            view.Elapsed(ReadyMetadataWaitTicks, view.DetailClock());
             view.Mark(StageEnd);
             view.MarkOnce(DirectFirstSubmit);
             view.MarkOnce(DirectFirstSubmit);
@@ -85,6 +88,9 @@ int main() {
                 assert(row[PartialPairGroups] == (level == 2 ? 4U : 0U));
                 assert(row[PartialStreamSteps] == (level == 2 ? 7U : 0U));
                 assert(row[PartialFrontLoads] == (level == 2 ? 6U : 0U));
+                assert(row[DirectMetadataCachedRows] == (level == 2 ? 2U : 0U));
+                assert(row[ReadySingleTasks] == (level == 2 ? 1U : 0U));
+                assert(row[ReadyMetadataWaitTicks] == (level == 2 ? 17U : 0U));
                 assert(row[PartialVectorBarriers] == (level == 2 ? 16U : 0U));
                 assert(row[DirectSubmitTicks] == (level == 2 ? 17U : 0U));
                 assert(row[DirectSubmitMaxPeer] == (level == 2 ? 3U : 0U));

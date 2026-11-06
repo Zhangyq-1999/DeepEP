@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Shared defaults for the two convenience entry points. Source from Bash.
-# Keep the frozen base, measured L2 winners, and one small-batch pipeline experiment.
-ll_bench_clean_variants=base,input6-l2-stage,input6-l2-all,input6-l2-pipe
-ll_bench_profiles=ref-profile,input6-l2-stage-profile,input6-l2-all-profile,input6-l2-pipe-profile
+# Keep the frozen base, measured L2 winner, and two small-task experiments.
+ll_bench_clean_variants=base,input6-l2-all,input6-l2-lean,input6-l2-route
+ll_bench_profiles=ref-profile,input6-l2-all-profile,input6-l2-lean-profile,input6-l2-route-profile
 ll_bench_variants=$ll_bench_clean_variants,$ll_bench_profiles
 ll_bench_cann=${ASCEND_HOME_PATH:-/usr/local/Ascend/cann-9.2.T101}
 ll_bench_mpi=${MPI_HOME:-/usr/local/mpich-3.2.1}

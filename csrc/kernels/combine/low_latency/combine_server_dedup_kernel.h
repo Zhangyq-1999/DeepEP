@@ -392,6 +392,7 @@ private:
     __aicore__ inline void PrepareDirectRows()
     {
         selected_ = 0U;
+        directRoutesCached_ = false;
         if (tokens_ == 0U) return;
         if (enableDedup_) {
             const uint64_t loadStart = profile_.DetailClock();
@@ -440,7 +441,13 @@ private:
             Muls(typeUb_, indexUb_, int32_t(1), tokens_);
         }
         Sync<HardEvent::V_S>();
-        ServerDedupRankMask(maskUb_, tableUb_.ReinterpretCast<uint8_t>(), typeUb_, 0, int32_t(args_->rankSize),
+        // With one route tile, preserve the immutable Table2 in its existing
+        // 6 KiB cache. DIRECT does not use the resident ready checker: its
+        // 256B work area can hold this <=64B upper comparison mask instead.
+        directRoutesCached_ = kCombineDirectRouteCache && tokens_ <= kEpServerDedupCombineTableRows;
+        auto upper = tableUb_.ReinterpretCast<uint8_t>();
+        if (directRoutesCached_) upper = readyWork_.ReinterpretCast<uint8_t>();
+        ServerDedupRankMask(maskUb_, upper, typeUb_, 0, int32_t(args_->rankSize),
                             uint32_t(selected_));
         uint64_t valid = 0U;
         GatherMask(indexUb_, packedUb_, maskUb_.ReinterpretCast<uint32_t>(), true, uint32_t(selected_),
@@ -450,7 +457,9 @@ private:
     }
     __aicore__ inline uint32_t SelectDirectServer(uint32_t server)
     {
-        ServerDedupRankMask(maskUb_, tableUb_.ReinterpretCast<uint8_t>(), typeUb_, int32_t(server * Group),
+        auto upper = tableUb_.ReinterpretCast<uint8_t>();
+        if (directRoutesCached_) upper = readyWork_.ReinterpretCast<uint8_t>();
+        ServerDedupRankMask(maskUb_, upper, typeUb_, int32_t(server * Group),
                             int32_t((server + 1U) * Group), uint32_t(selected_));
         uint64_t count = 0U;
         GatherMask(indexUb_, packedUb_, maskUb_.ReinterpretCast<uint32_t>(), true, uint32_t(selected_),
@@ -473,13 +482,14 @@ private:
         const uint32_t servers = uint32_t(args_->rankSize) / Group;
         const uint32_t ownServer = uint32_t(args_->rank) / Group;
         uint32_t owner = 0U, sendSequence = 0U;
-#ifdef DEEPEP_LL_COMBINE_SMALL_BATCH
+#if defined(DEEPEP_LL_COMBINE_SMALL_BATCH) || DEEPEP_LL_COMBINE_READY == 24 || DEEPEP_LL_COMBINE_READY == 26 || DEEPEP_LL_COMBINE_READY == 27
         const uint32_t owned = uint32_t(selected_) / directCores + (core_ < uint32_t(selected_) % directCores ? 1U : 0U);
         if (owned == 0U) return;
         const uint32_t activeLanes = owned < lanes_ ? owned : lanes_;
 #else
         const uint32_t activeLanes = lanes_;
 #endif
+        profile_.Set(CombineProfile::DirectActiveLanes, activeLanes);
         uint64_t flagMask[2] = {0xffU, 0U};
         for (uint32_t lane = 0; lane < activeLanes; ++lane) {
             // The entire 32B Flag is initialized once and is not touched by Copy.
@@ -500,13 +510,20 @@ private:
             for (uint32_t task = first; task < count; task += directCores) {
                 const uint64_t metadataStart = profile_.DetailClock();
                 const uint32_t row = uint32_t(indexUb_.GetValue(task));
-                // Only owned rows reload a routing triple. The persistent rank
-                // and original-row arrays are untouched between server rounds.
-                DataCopyPad(tableUb_, table_[uint64_t(row) * 3U], {1U, 12U, 0U, 0U, 0U}, {false, 0U, 0U, 0});
-                Sync<HardEvent::MTE2_S>();
-                const uint32_t source = uint32_t(tableUb_.GetValue(0U));
-                const uint32_t token = uint32_t(tableUb_.GetValue(1U));
-                const uint32_t topk = uint32_t(tableUb_.GetValue(2U));
+                // Reuse a complete resident snapshot when available; otherwise
+                // reload only owned rows. Persistent rank/row lists stay intact.
+                auto route = tableUb_;
+                if (directRoutesCached_) {
+                    route = tableUb_[row * 3U];
+                    profile_.Add(CombineProfile::DirectMetadataCachedRows);
+                } else {
+                    DataCopyPad(tableUb_, table_[uint64_t(row) * 3U], {1U, 12U, 0U, 0U, 0U}, {false, 0U, 0U, 0});
+                    Sync<HardEvent::MTE2_S>();
+                    profile_.Add(CombineProfile::DirectMetadataReloads);
+                }
+                const uint32_t source = uint32_t(route.GetValue(0U));
+                const uint32_t token = uint32_t(route.GetValue(1U));
+                const uint32_t topk = uint32_t(route.GetValue(2U));
                 const uint32_t lane = sendSequence++ % activeLanes;
                 profile_.Elapsed(CombineProfile::DirectMetadataTicks, metadataStart);
 #ifdef DEEPEP_LL_COMBINE_EARLY_ISSUE
@@ -827,6 +844,7 @@ private:
     bool enableDedup_ = false;
     uint32_t bs_ = 0, experts_ = 0;
     uint8_t dtype_ = 0;
+    bool directRoutesCached_ = false;
     uint32_t core_ = 0, h_ = 0, topK_ = 0, blocks_ = 0, resultStride_ = 0, tokens_ = 0, lanes_ = 0, laneBytes_ = 0,
              usedBytes_ = 0;
     uint64_t selected_ = 0, window_ = 0, control_ = 0, stageBase_ = 0, stageStride_ = 0;

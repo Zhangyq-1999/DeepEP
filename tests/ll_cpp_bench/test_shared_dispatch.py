@@ -84,7 +84,7 @@ file(WRITE "${{CMAKE_BINARY_DIR}}/object-list.txt" "${{DEEPEP_DISPATCH_OBJECTS_F
 
 
 @pytest.mark.parametrize("entry_sync", [False, True])
-@pytest.mark.parametrize("ready", [20, 23])
+@pytest.mark.parametrize("ready", [20, 23, 24, 25, 26, 27])
 def test_device_components_select_real_sources(tmp_path, cmake, entry_sync, ready):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
     if not zig:

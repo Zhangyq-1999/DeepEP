@@ -432,6 +432,7 @@ def test_default_suite_uses_bounded_pastes_and_keeps_each_case(reporter, tmp_pat
     if extended:
         assert "input=6/0/0 vec=0/136 arith=56/0" in out
     assert "  cache=" in out and " m3=" in out and " m5=" in out
+    assert "  small=" in out and "  direct_meta=" in out
     assert "  q=" in out and "  rdma=" in out and " stage=" in out
     assert " stream=9/1/123456" in out
     assert " compact=256/1024/123456" in out

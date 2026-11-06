@@ -595,3 +595,75 @@ Host 模型执行生产调度、真实 TransferBatch/PreparedWrite 的延迟 DMA
 覆盖两任务、单槽、空任务、UB环绕、SQ满回退、GM批次复用、4/16 ranks-per-host、
 2/4 hosts（包含EP64），以及干净/打点模板编译和构建身份。新增策略尚未做CANN编译
 或NPU正确性/性能验证；目标机器继续执行4代输入翻转校验与超时检查。
+
+
+## 2026-11-06：针对 EP32/BS32 的小任务优化与 DIRECT 路由复用
+
+本轮基于附件 `45def604-2dc8-481b-802b-9858e4916569`：EP32/HCCL，
+H3584、TopK8、E384、BF16、random/seed0，warmup10、100次 clean，
+每轮取全局 rank-MAX Event，保留全部样本。单位 μs。
+
+| BS | base mean | stage mean | all mean | pipe mean | all P50 | all min–max |
+| --- | --- | --- | --- | --- | --- | --- |
+| 32 | 60.10 | 56.71 | 56.19 | 56.58 | 55.22 | 52.51–69.83 |
+| 48 | — | — | 64.08 | 65.75 | 63.41 | — |
+| 64 | — | — | 72.96 | 73.14 | 72.33 | — |
+| 72 | — | — | 75.29 | 76.04 | 75.08 | — |
+| 256 | — | — | 178.74 | 171.74 | 178.46 | — |
+
+表中只摘录本次决策使用的数据，横线不是缺测或零值。目标为 BS32 mean
+约55 μs，相对 all 的本轮 mean 需要约1.19 μs。pipe 在 BS256 改善，但
+BS32–64 没有稳定优势，退为可选项。默认保留 base/all，新增 lean/route，
+各自有独立 profile，共8个构建；不会追加所有旧版本一起编译。
+
+BS32 all 的 profile mean71.76/P5070.97，比 clean 多约15.6 μs。
+P50 代表 R 核 rank11/core37 仅1个 M4 包，stage_wait5495、WQE准备883、
+put763、ready_plan3012、filter441 ticks，2次poll。其最晚缺失结果来自
+DIRECT rank29/core6。profile-only tail_inspect 约20977 ticks，不能据此
+把该段当作 clean 的瓶颈，更不能把不同核阶段最大值相加。
+这些证据支持先减轻单任务准备开销、DIRECT 前置元数据依赖，而不是
+继续依赖需要至少两个任务才能生效的发送流水。最终仍看 clean 均值/P50。
+
+新增四个独立模式，均继承 all 的 ready20 调度、control L2、data_l2=7、
+28/28半区、6个输入槽；首尾包立即发送，归约顺序、Notify和SDK保持一致：
+
+| 模式 | 名称 | 改动 | 默认 |
+| --- | --- | --- | --- |
+| 24 | input6-l2-setup | M4只初始化实际会用的输出flag槽；初始化与metadata DMA重叠；DIRECT只启用实际需要的lane | 否 |
+| 25 | input6-l2-single | 本核仅一个M4任务时直接做标量依赖mask判断，省去任务列表初始化/两次Vector筛选 | 否 |
+| 26 | input6-l2-lean | setup + single | 是 |
+| 27 | input6-l2-route | lean + DIRECT复用已有UB Table2快照，减少逐包12B GM拷贝及MTE2_S | 是 |
+
+single只消除单任务的列表压缩，group flag读取/检查仍用Vector；多任务
+保留原来的远端/本地选择与依赖验证，不改变累加顺序。
+setup仍播种并退休全部6个输入事件，保持完整输出物理环和MTE3_V事件，
+仅省掉不会被M4发送使用的flag Duplicate。M5按原布局复用UB；没有把
+outputLanes_缩小，避免M4/M5事件编号与槽位错配。metadata DMA的目的地
+是独立Table2/Table3缓存，在Scalar访问之前仍完成MTE2_S，不能省略该等待。
+
+route不新增UB：DIRECT原来已将512行以内的整张Table2读到6KiB缓存，
+但后续rank比较借用该区域当mask，迫使每包再从GM读12B路由。
+新路径用DIRECT核闲置的256B readyWork保存至多64B比较mask，保留Table2，
+按原始row索引读取路由。容量以该rank接收的总行数判定，不是BS；
+超过512行仍走原逻辑，不缓存不完整表。各server遍历、任务所有权、
+payload/flag格式不变，支持四机EP64。没有把源GM复用提前到CQ之前。
+
+schema22在原272words内追加7个字段，clean版无记录：
+`partial_output_init_lanes`, `partial_setup_ticks`, `ready_metadata_wait_ticks`,
+`ready_single_tasks`, `direct_metadata_cached_rows`, `direct_metadata_reloads`,
+`direct_active_lanes`。回显对应small/direct_meta，CSV及Perfetto的profiled body
+参数均保存。lean的setup属于ready_plan内部，meta_wait只计重叠后的剩余等待，
+这些累计计数不能相加当作独立时间片。原有M3/M4/M5/Put/CQ/拖尾诊断继续保留。
+
+评估先看all→lean的clean mean/P50/min–max，再看lean→route；确认单任务命中、
+实际初始化槽数及DIRECT cached/reloaded。小BS以32为主、48/64邻近检查，
+72/256检查回退。需要拆分收益时再显式编译setup/single，默认不增加编译负担。
+应使用相同路由/同步口径，并可反转版本顺序复测；不因慢样本集中就将其剔除。
+
+Host验证运行生产调度/数据处理方法，延迟MTE2至对应事件等待才完成拷贝；
+覆盖0/1/多任务、metadata缓存溢出、大表回退、DIRECT全部28核分配、
+H256/3584/7168、4/16 ranks-per-host、2/4 hosts（含EP64），以及实际
+TransferBatch/PreparedWrite的延迟DMA/NIC、SQ满回退和GM/CQ生命周期。
+M4顺序规约、M5事件退休、clean/profile模板编译、构建身份、共享Dispatch、
+Python单次初始化、CSV/Perfetto及62KiB报告分块均有检查。
+本机无CANN/NPU，以上不能替代真实设备正确性和性能验收；新模式均未宣称实测提速。

@@ -34,11 +34,11 @@ bash tests/ll_cpp_bench/build_all.sh
 | 构建名 | 实验 | 打点 |
 | --- | --- | --- |
 | `base` | 冻结的上游原版 | 关闭 |
-| `input6-l2-stage` | input6-l2 + M3 staging/M4 input L2 | OFF |
-| `input6-l2-all` | input6-l2 + all three data regions | OFF |
-| `input6-l2-pipe` | all + 首包 staging 与下一条已就绪任务规约重叠 | OFF |
-| `ref-profile` | base diagnostic counterpart | ON |
-| `input6*-profile` | same policy as the corresponding clean variant | ON |
+| `input6-l2-all` | 实测对照，控制区及三个数据区使用 NORMAL 策略 | 关闭 |
+| `input6-l2-lean` | 按任务裁剪槽位初始化、重叠元数据读取、单任务免筛选 | 关闭 |
+| `input6-l2-route` | lean + DIRECT 复用 UB 路由快照，超容量回退 | 关闭 |
+| `ref-profile` | base 对应打点版 | 开启 |
+| `input6*-profile` | 与对应干净版相同策略 | 开启 |
 
 优化和验收以 **BS32、48、64** 为主，BS72 作邻近对照，BS256 只检查回退。上一轮 EP8 干净版 ready-snapshot 的三个 BS 的 P50 分别为 57.11、63.56、70.19 μs，增加接收核没有持续改善这三个场景。ready-r32、ready-r36、stage-stream、plan-compact 保留为可选实验，不再默认编译运行。
 
@@ -46,32 +46,15 @@ EP32 收尾修复后的实测中，`wqe-prep` 在 BS48/64 的均值比 snapshot 
 
 最新 9b3d243 的 EP32/HCCL 实测 `input6` 的 BS32/48/64 均值为 57.28/65.49/74.26 μs，仍是小 BS 对照；`input-pair` 分别慢 1.41/0.69/0.43 μs，改为可选项。保留 `input-pipe`：它在 BS256 的均值为 174.94 μs，比同轮 input6 快 8.85 μs，但 BS32–64 尚无稳定收益。
 
-Current defaults keep the original base, two measured L2 winners and one pipeline experiment:
-`base,input6-l2-stage,input6-l2-all,input6-l2-pipe`, plus four independent diagnostic builds.
-Build and run defaults both shrink from 14 to 8 phases. Input6/control-only/TX-only/RX-only
-and earlier remote-first/core-split experiments remain opt-in via `--variants`.
-All four default variants retain their original core split. Mode 23 changes only the all-L2
-return schedule: the first packet can overlap the next already-ready reduction, including
-two-task batches. Single-task/lane and final-packet cases remain immediate; pending work
-never crosses a readiness poll or M5. Details and validation: [TRANSFER_AB.md](TRANSFER_AB.md).
-The data policy is a separate mask (stage=1, TX=2, result=4), checked across Host/Device/ranks;
-it does not consume ready-mode or poll-nop identity bits. The original base stays frozen.
-All variants run a four-generation `-x,-x,+x,+x` correctness check before warmup,
-reusing both banks without per-call flag clearing, then restoring the original inputs.
-This check is outside timing and catches stale values hidden by constant-input benchmarks.
+当前默认保留 base 和实测较优的 input6-l2-all，新增 lean 和 route，共四个干净版和四个打点版。setup-only 和 single-task-only 为可选拆解实验（`input6-l2-setup`、`input6-l2-single`）；stage、pipe 也仍可选。
 
-Schema 21 adds `data_l2_policy` to CSV/Perfetto without increasing the 272-word record.
-The compact `cache` line always reports M3 input/store/drain, group-ready load/check/calls,
-and M5 input/wait/compute/store for the representative P50 records; existing M4/RDMA/CQ/tail
-fields remain. These timings are not hardware cache hit/miss counters. Completion barriers,
-flag checks, math order, SDK and source-slot CQ ownership are unchanged. The new pipeline still needs NPU validation.
-Full matrix, policy scopes and analysis instructions: [L2 experiments](../ll_python_bench/README.md).
+新实验延续 all 的 28/28 半区、6 个 M4 输入槽、首尾包立即回传和累加顺序。lean 按任务数裁剪 flag 槽位初始化，在此期间读取元数据；单任务时直接检查依赖掩码，group flag 仍用 Vector 轮询。route 在既有 UB 中保留最多 512 行的 DIRECT Table2，省去逐包路由重读；大表走原路径。该容量指本 rank 接收行数，不是原始 BS。详细记录见 [TRANSFER_AB.md](TRANSFER_AB.md)。
 
-Both machines must rebuild, e.g. `bash tests/ll_cpp_bench/build_all.sh --ranks-per-host 16`,
-then node 0 runs `bash tests/ll_cpp_bench/run_all.sh --ep 32 --ranks-per-host 16`;
-use its printed command on node 1. Omit topology options for the default dual-host EP8.
-Existing input6-remote/input6-l2-remote variants remain selectable via `--variants`.
+每版预热前均执行 `-x,-x,+x,+x` 四代正确性检查，复用两个 bank 且不逐轮强制清 flag，然后恢复原输入；检查不计入性能采样。原始 base 保持冻结，SDK 和 CQ 保护源槽的规则不变。
 
+schema 22 追加七个字段，每核仍为 272 words。回显新增 `small=output_init_lanes/setup_ticks/meta_wait_ticks/single_task` 和 `direct_meta=cached/reloaded/active_lanes`，CSV/Perfetto 同步保存。lean 的 setup 包含在 ready_plan 中，meta_wait 是重叠后剩余等待；它们不是独立可加的流水段。现有 M3、group-ready、M4、RDMA/CQ、M5 和拖尾计数保留。这些是软件打点，不是硬件 L2 命中计数。新实验尚待 NPU 正确性及性能验证。
+
+两台重编：`bash tests/ll_cpp_bench/build_all.sh --ranks-per-host 16`；第一台运行 `bash tests/ll_cpp_bench/run_all.sh --ep 32 --ranks-per-host 16`，第二台复制打印的加入命令。省略拓扑参数即为双机后四卡 EP8。完整缓存策略对照见 [Python 用例](../ll_python_bench/README.md)。
 
 增加实验版后，C++ 紧凑回显按 BS 自动分成多个 `PASTE_BEGIN part=i/N` 块，每块不超过 62 KiB，完整保留表格、P50/worst 和拖尾计数。特别大的单个 BS 会在行边界续到下一块。无需删除异常样本或诊断字段；CSV 和 Perfetto 继续保存完整数据。
 

@@ -144,13 +144,18 @@ public:
 #endif
         if (LlTransport::Rdma(args_)) rdmaBatch_->Init(args_, packetBytes_);
         profile_.Set(CombineProfile::PartialInputLanes, inputLanes_);
-        for (uint32_t lane = 0; lane < inputLanes_; ++lane) SetFlag<HardEvent::V_MTE2>(lane);
-        uint64_t flagMask[2] = {0xffU, 0U};
-        for (uint32_t lane = 0; lane < outputLanes_; ++lane) {
-            Duplicate<float>(outputs_[lane * packetBytes_].ReinterpretCast<float>()[120U], 1.0f, flagMask,
-                             uint8_t(blocks_), 1U, 16U);
+        if constexpr (!kCombineLeanSetup) {
+            const uint64_t setupStart = profile_.DetailClock();
+            for (uint32_t lane = 0; lane < inputLanes_; ++lane) SetFlag<HardEvent::V_MTE2>(lane);
+            uint64_t flagMask[2] = {0xffU, 0U};
+            for (uint32_t lane = 0; lane < outputLanes_; ++lane) {
+                Duplicate<float>(outputs_[lane * packetBytes_].ReinterpretCast<float>()[120U], 1.0f, flagMask,
+                                 uint8_t(blocks_), 1U, 16U);
+            }
+            PipeBarrier<PIPE_V>();
+            profile_.Set(CombineProfile::PartialOutputInitLanes, outputLanes_);
+            profile_.Elapsed(CombineProfile::PartialSetupTicks, setupStart);
         }
-        PipeBarrier<PIPE_V>();
         const uint32_t servers = uint32_t(args_->rankSize) / Group;
         const uint32_t ownServer = uint32_t(args_->rank) / Group;
         uint32_t owner = 0U, completed = 0U;
@@ -374,11 +379,39 @@ private:
                 DataCopyPad(readyTable3_[task * readyTable3Stride_], table3_[uint64_t(row) * k_ * 2U],
                             {1U, k_ * 8U, 0U, 0U, 0U}, {false, 0U, 0U, 0U});
             }
-            Sync<HardEvent::MTE2_S>();
+            if constexpr (!kCombineLeanSetup) {
+                const uint64_t waitStart = profile_.DetailClock();
+                Sync<HardEvent::MTE2_S>();
+                profile_.Elapsed(CombineProfile::ReadyMetadataWaitTicks, waitStart);
+            }
             profile_.Add(CombineProfile::ReadyCachedTasks, count);
         }
-        Duplicate(readyDeps_, int32_t(kReadyTaskDone), EpCombineAlign(count, 64U));
+        if constexpr (kCombineLeanSetup) {
+            // Metadata DMA targets the resident caches, disjoint from payload
+            // lanes. Let it run while Vector initializes only used flag slots.
+            // Keep the physical ring and ALL MTE3_V seeds unchanged for M5.
+            const uint64_t setupStart = profile_.DetailClock();
+            for (uint32_t lane = 0; lane < inputLanes_; ++lane) SetFlag<HardEvent::V_MTE2>(lane);
+            const uint32_t active = count < outputLanes_ ? count : outputLanes_;
+            uint64_t flagMask[2] = {0xffU, 0U};
+            for (uint32_t lane = 0; lane < active; ++lane)
+                Duplicate<float>(outputs_[lane * packetBytes_].ReinterpretCast<float>()[120U], 1.0f,
+                                 flagMask, uint8_t(blocks_), 1U, 16U);
+            PipeBarrier<PIPE_V>();
+            profile_.Set(CombineProfile::PartialOutputInitLanes, active);
+            profile_.Elapsed(CombineProfile::PartialSetupTicks, setupStart);
+        }
+        const bool single = kCombineSingleTask && count == 1U;
+        if (!single) Duplicate(readyDeps_, int32_t(kReadyTaskDone), EpCombineAlign(count, 64U));
         Sync<HardEvent::V_S>();
+        if constexpr (kCombineLeanSetup) {
+            if (readyCached_) {
+                const uint64_t waitStart = profile_.DetailClock();
+                Sync<HardEvent::MTE2_S>();
+                profile_.Elapsed(CombineProfile::ReadyMetadataWaitTicks, waitStart);
+            }
+        }
+        uint32_t singleDependency = 0U;
         for (uint32_t task = 0; task < count; ++task) {
             LoadReadyMetadata(task);
             const uint32_t n = table3Ub_.GetValue(0U);
@@ -390,8 +423,10 @@ private:
                 mask |= 1U << (rank % Group);
             }
             const uint32_t source = uint32_t(table2Ub_.GetValue(0U));
-            readyDeps_.SetValue(task, int32_t(mask | (LlTransport::RemoteWrite(args_, source) ? 0U : kReadyTaskLocal)));
+            if (single) singleDependency = mask;
+            else readyDeps_.SetValue(task, int32_t(mask | (LlTransport::RemoteWrite(args_, source) ? 0U : kReadyTaskLocal)));
         }
+        profile_.Set(CombineProfile::ReadySingleTasks, single ? 1U : 0U);
         profile_.Elapsed(CombineProfile::ReadyPlanTicks, start);
         profile_.Mark(CombineProfile::PlanEnd);
         uint32_t completed = 0U, blockedMask = 0xffffffffU;
@@ -412,8 +447,14 @@ private:
             }
             const uint64_t filterStart = profile_.DetailClock();
             const uint32_t missing = ((1U << Group) - 1U) ^ observed;
-            uint32_t runnable = SelectReadyCombineTasks(readyDeps_, readyWork_, readyTasks_, readyMask_, count, missing, true);
-            if (!runnable) runnable = SelectReadyCombineTasks(readyDeps_, readyWork_, readyTasks_, readyMask_, count, missing, false);
+            // One known task needs a dependency test, not compaction. Group
+            // flag polling remains Vector; multi-task ordering is unchanged.
+            uint32_t runnable;
+            if (single) runnable = (singleDependency & missing) == 0U ? 1U : 0U;
+            else {
+                runnable = SelectReadyCombineTasks(readyDeps_, readyWork_, readyTasks_, readyMask_, count, missing, true);
+                if (!runnable) runnable = SelectReadyCombineTasks(readyDeps_, readyWork_, readyTasks_, readyMask_, count, missing, false);
+            }
             profile_.Elapsed(CombineProfile::ReadyFilterTicks, filterStart);
             if (!runnable) {
 #if DEEPEP_LL_COMBINE_READY == 13
@@ -427,7 +468,7 @@ private:
             blockedMask = 0xffffffffU;
             profile_.MarkOnce(CombineProfile::ReadyFirstTask);
             for (uint32_t index = 0; index < runnable; ++index) {
-                const uint32_t task = uint32_t(readyTasks_.GetValue(index));
+                const uint32_t task = single ? 0U : uint32_t(readyTasks_.GetValue(index));
 #if DEEPEP_LL_COMBINE_READY == 13
                 KeepReadyInputs(task);
 #endif
@@ -479,7 +520,7 @@ private:
                 Send(completed % outputLanes_, source, token, topk,
                      deferReady && index + 1U < runnable);
 #endif
-                readyDeps_.SetValue(task, int32_t(kReadyTaskDone));
+                if (!single) readyDeps_.SetValue(task, int32_t(kReadyTaskDone));
                 ++completed;
                 if (!ready_->All()) {
                     profile_.Add(CombineProfile::ReadyTasksBeforeAll);
