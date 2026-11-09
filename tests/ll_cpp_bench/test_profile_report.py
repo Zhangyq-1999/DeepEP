@@ -398,6 +398,7 @@ def test_default_suite_uses_bounded_pastes_and_keeps_each_case(reporter, tmp_pat
                                    partial_vector_barriers=136 if variant.startswith("input-stream") else 192)
                         if variant.startswith("ops-shmem"):
                             row["ops_role"] = 1 if core == 2 else 3 if core == 48 else 2
+                            row["ops_policy"] = 2 if "overlap" in variant else 1 if "retire" in variant else 0
                         records.append(row)
             if profile:
                 for source in range(8):
@@ -431,19 +432,17 @@ def test_default_suite_uses_bounded_pastes_and_keeps_each_case(reporter, tmp_pat
                 assert f"D {phase} p50 i=4 event_r=4" in block
                 assert f"D {phase} worst i=9 event_r=1" in block
                 assert f"IQR {phase} n=1" in block
-        assert " O r/c=" in block and " G 4/30 O=" in block
+        assert " O r/c=" in block
     assert f"LL_COMBINE END cases={len(cases)}" in out
-    assert "  e=" in out and "'-'=absent" in out
-    if not extended:
-        assert "input=6/0/0 vec=0/192 arith=0/0" in out
+    assert "  oe=" in out and "'-'=absent" in out
+    assert "reduce_store=" in out and "deferred/peers=" in out and "retire=" in out
     if extended:
-        assert "input=6/0/0 vec=0/136 arith=56/0" in out
-    assert "  cache=" in out and " m3=" in out and " m5=" in out
-    assert "  small=" in out and "  direct_meta=" in out and " route_plan=" in out
-    assert "  txwait=" in out and " priority=" in out and " tiny=" in out
-    assert "  q=" in out and "  rdma=" in out and " stage=" in out
-    assert " stream=9/1/123456" in out
-    assert " compact=256/1024/123456" in out
+        assert " G 4/30 O=" in out and "input=6/0/0 vec=0/136 arith=56/0" in out
+        assert "  cache=" in out and " m3=" in out and " m5=" in out
+        assert "  small=" in out and "  direct_meta=" in out and " route_plan=" in out
+        assert "  txwait=" in out and " priority=" in out and " tiny=" in out
+        assert "  q=" in out and "  rdma=" in out and " stage=" in out
+        assert " stream=9/1/123456" in out and " compact=256/1024/123456" in out
     assert not re.search(r"^E ", out, re.M)  # Raw samples remain in rank-max.csv.
 
 

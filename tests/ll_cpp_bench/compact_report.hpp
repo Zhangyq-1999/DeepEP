@@ -112,6 +112,9 @@ void compact_record(const Record& r, bool brief = false)
                   << " contrib=" << r[PartialLocalContrib] << '/' << r[Contributions]
                   << " final=" << r[FinalTokens] << " active=";
         compact_times(r, {ActiveStageCores, ActiveGatherCores, ActiveRdmaCores, ActiveFinalCores});
+        std::cout << " policy=" << r[OpsPolicy] << " retire=";
+        compact_times(r, {ReadyRetireBegin, ReadyRetireEnd});
+        std::cout << " deferred/peers=" << r[OpsDeferredCommits] << '/' << r[OpsRetiredPeers];
         std::cout << "\n  oe=";
         compact_times(r, {InitEnd, StageEnd, ReadyFirstTask, PartialEnd, RdmaFirstPut, RdmaLastPut, DirectEnd,
                           ReadyBegin, ReadyEnd, FinalInitEnd, FinalFirstReady, FinalLastReady, FinalLastStore, FinalEnd});
@@ -393,7 +396,7 @@ void suite_report(const fs::path& root)
                  "q=first/all/done rounds/stalls/skips before_all/remote cached/reloads setup/plan/filter/snapshot/pipeline_issue retire\n"
                  "scan=GM_batches/rows/Vector_group_passes (16B/row); ub=snapshot_bytes/capacity/fallbacks; compact=FIRST_HOP/filter_rows/ticks\n"
                  "T=last observed miss (schema26: first + every8 repeated misses/token); time=first/last/ready; src=slot:rank/core/path/type; D=direct P=partial.\n"
-                 "O=upstream role; active=scatter/gather/RDMA/final cores per rank (gather requires level2).\n"
+                 "O=upstream role; active=scatter/gather/RDMA/final cores per rank; policy=0 reference/1 retire/2 overlap; retire=start/end.\n"
                  "oe=init/scatter/first_ready/gather/put_first/put_last/sender/barrier_begin/barrier_end/final_init/first/last/store/end; ops poll=miss/calls/ticks, NOT wire latency.\n"
                  "O reduce_store=gather reduction/output/final reduction/output ticks (includes input loads or output packing).\n"
                  "Tfreq links=producer>receiver/path/type:sample_count\n";
@@ -423,7 +426,8 @@ void suite_report(const fs::path& root)
         for (const auto& d : results) {
             if (d.config.count("upstream_revision") && !d.config.at("upstream_revision").empty())
                 std::cout << "REF " << diagnostic_id(d.variant) << " upstream=" << d.config.at("upstream_revision")
-                          << " transport=SHMEM-per-core-QP; upstream algorithm; "
+                          << " transport=SHMEM-per-core-QP; policy="
+                          << (d.config.count("ops_policy") ? d.config.at("ops_policy") : "0") << "; "
                           << (d.records.empty() ? "no internal profile" : "instrumented diagnostics") << '\n';
             std::vector<double> values;
             for (const auto& [i, e] : d.events) values.push_back(e.us);

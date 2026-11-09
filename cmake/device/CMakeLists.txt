@@ -182,6 +182,10 @@ if(DEEPEP_LL_OPS_BASE)
         "${DEEPEP_SOURCE_DIR}/tests/ll_cpp_bench/ops_shmem"
         "${ASCEND_HOME_PATH}/include/op_common" "${ASCEND_HOME_PATH}/pkg_inc/op_common"
         "${ASCEND_HOME_PATH}/${CMAKE_SYSTEM_PROCESSOR}-linux/include/op_common")
+    if(NOT DEEPEP_LL_OPS_POLICY)
+        set(DEEPEP_LL_OPS_POLICY 0)
+    endif()
+    target_compile_definitions(deepep_kernel_options INTERFACE DEEPEP_LL_OPS_POLICY=${DEEPEP_LL_OPS_POLICY})
 endif()
 if(DEVICE_RT_INCLUDE)
     target_include_directories(deepep_kernel_options INTERFACE "${DEVICE_RT_INCLUDE}")

@@ -20,17 +20,21 @@
 
 ## 编译、回显与验证边界
 
-两台分别运行现有 `build_all.sh` 即可，首次构建会抓取固定上游源码；离线时设置 `OPS_SOURCE_DIR=/path/to/clean/pinned/checkout`。Python 自动安装到 `py311_zyq`，两端需重编，后续 `run_all.sh` 沿用已有 IP 和设备默认值。默认保留原始 `base`、参考版、`input6-l2-route-only`，仅后两者附带打点版，共5个构建。tiny 与 ref-profile 保留为可选项。
+两台分别运行现有 `build_all.sh` 即可，首次构建会抓取固定上游源码；离线时设置 `OPS_SOURCE_DIR=/path/to/clean/pinned/checkout`。Python 自动安装到 `py311_zyq`，两端需重编，后续 `run_all.sh` 沿用已有 IP 和设备默认值。默认保留原始 `base`、参考版、`input6-l2-route-only` 三个干净对照，增加 `ops-shmem-retire`、`ops-shmem-overlap` 两个实验及其打点版，共7个构建。参考版、route-only 的打点版以及 tiny 改为按需选择。
+
+新实验分别减少批次 quiet、重叠最终规约和发送收尾；仅 BS≤24、EP≤64 生效，详见 [实验与数据](SMALL_BS_AB.md)。以上四处替换及原流程的说明特指 `ops-shmem-base`，不将实验版标成未改动的上游算法。
 
 `ops-shmem-base-profile` 单独编译打点，输出细粒度诊断及 Perfetto；干净参考版的四处适配保持不变。回显 `REF`、summary CSV 和构建/安装目录的 `ops-baseline.txt` 记录固定提交及传输区别。
 
 本地主机检查覆盖小 BS 路由/权重/位图、每机4/16 rank的EP8/32/64映射、批次 quiet、源码适配范围、Python共享初始化及版本选择。没有本地 CANN/NPU，目标设备编译、精度与性能仍须实测；主机模型通过不代表设备验证通过。
 
-## 小 BS 诊断（schema 26）
+## 小 BS 诊断（schema 27）
 
-新增打点仅进入 `ops-shmem-base-profile`。构建替换锚点必须唯一；主机测试移除诊断语句后逐字核对干净算法。quiet 边界、包数、epoch、分核、归约和就绪判断不变。
+打点仅进入独立的 `-profile` 构建。构建替换锚点必须唯一；主机测试移除诊断语句后逐字核对基线算法，并检查实验版只改声明和 Process 调度。基线 quiet 边界、包数、epoch、分核、归约和就绪判断不变。
 
-回显 `O` 是实际单核记录，`role=scatter/gather/rdma` 表示前一阶段角色，所有角色之后仍参加全核同步及最终规约。`active` 是该 rank 全核记录在 Host 侧统计的有效 scatter/gather/RDMA/final 核数，gather 计数需要 profile2。
+回显 `O` 是实际单核记录，`role=scatter/gather/rdma` 表示前一阶段角色，所有角色之后仍参加最终规约和全核同步；policy2 将同步放到退出前。`active` 是该 rank 全核记录在 Host 侧统计的有效 scatter/gather/RDMA/final 核数，gather 计数需要 profile2。
+
+schema27 保持每核304 words，增加 `policy=0/1/2`（实际生效策略）、`deferred`（省去的批次 quiet 数）、`peers`（收尾 quiet 的实际 peer 数）及 `retire` 起止。Perfetto 显示 `ops deferred transport retirement`；policy2 显示 `ops exit all-core barrier`。累计 quiet ticks 不能当作独立的流水片段，也不能当成网络单程时延。
 
 `oe` 输出初始化、scatter、首个就绪任务、gather 结束、首/末 put、发送核结束、全核同步起止、最终规约初始化/首末就绪/store/结束时间。`op` 输出建表耗时/扫描条数/有效任务数、轮询失败/总次数/耗时、RDMA 包数/实际字节/put 耗时/quiet 耗时/次数/最大值、最终轮询及归约贡献数。
 

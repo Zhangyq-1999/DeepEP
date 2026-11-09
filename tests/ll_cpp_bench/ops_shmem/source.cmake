@@ -48,5 +48,8 @@ string(REPLACE "const ChannelHandle channel" "const uint64_t channel" _text "${_
 if(DEEPEP_LL_COMBINE_PROFILE)
     include("${CMAKE_CURRENT_LIST_DIR}/profile.cmake")
 endif()
+if(DEEPEP_LL_OPS_POLICY)
+    include("${CMAKE_CURRENT_LIST_DIR}/experiment.cmake")
+endif()
 file(WRITE "${_kernel}" "${_text}")
 message(STATUS "ops-shmem-base: ${LL_OPS_REV}; SHMEM transport adaptation, no ACLNN/HCCL initialization")

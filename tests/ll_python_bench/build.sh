@@ -23,7 +23,7 @@ done
 clean=${variant%-profile}
 [[ $variant != ref-profile ]] || clean=base
 [[ $variant != base-profile && $variant != ref ]] || { echo 'Use base or ref-profile' >&2; exit 2; }
-case "$clean" in base|ops-shmem-base|ready-snapshot|wqe-prep|wqe-prefetch|input6|input-ready|input-pair|input-pipe|input-stream|input-front|input-interleave|input-l2|input6-l2|input6-l2-stage|input6-l2-tx|input6-l2-rx|input6-l2-all|input6-l2-pipe|input6-l2-setup|input6-l2-single|input6-l2-lean|input6-l2-route|input6-l2-route-only|input6-l2-tiny-setup|input6-l2-tiny-probe|input6-l2-tiny|input6-l2-route-priority|input6-l2-route-tx-bypass|input6-l2-route-plan|input6-l2-remote|input6-r32|input6-remote|input6-fused|input6-rpipe|input6-rfull|mte-pack|card-all|card-row|server-all|server-row) ;; *) echo 'Choose a supported clean or -profile variant' >&2; exit 2;; esac
+case "$clean" in base|ops-shmem-base|ops-shmem-retire|ops-shmem-overlap|ready-snapshot|wqe-prep|wqe-prefetch|input6|input-ready|input-pair|input-pipe|input-stream|input-front|input-interleave|input-l2|input6-l2|input6-l2-stage|input6-l2-tx|input6-l2-rx|input6-l2-all|input6-l2-pipe|input6-l2-setup|input6-l2-single|input6-l2-lean|input6-l2-route|input6-l2-route-only|input6-l2-tiny-setup|input6-l2-tiny-probe|input6-l2-tiny|input6-l2-route-priority|input6-l2-route-tx-bypass|input6-l2-route-plan|input6-l2-remote|input6-r32|input6-remote|input6-fused|input6-rpipe|input6-rfull|mte-pack|card-all|card-row|server-all|server-row) ;; *) echo 'Choose a supported clean or -profile variant' >&2; exit 2;; esac
 source "$root/tests/ll_python_bench/environment.sh"
 ll_python_environment "$env_name"
 "$ll_python" -c 'import torch, torch_npu; print("torch:",torch.__version__,"torch_npu:",torch_npu.__version__)'

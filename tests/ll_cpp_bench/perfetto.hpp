@@ -161,7 +161,8 @@ inline void write_perfetto(const std::filesystem::path& path, const std::vector<
                 add("ops local scatter", StageBegin, StageEnd);
                 add("ops local gather and reduction", PartialBegin, PartialEnd);
                 add("ops RDMA sender (includes readiness and quiet)", DirectBegin, DirectEnd);
-                add("ops all-core barrier", ReadyBegin, ReadyEnd);
+                add(v[OpsPolicy] == 2 ? "ops exit all-core barrier" : "ops all-core barrier", ReadyBegin, ReadyEnd);
+                add("ops deferred transport retirement", ReadyRetireBegin, ReadyRetireEnd);
                 add("ops final combine", FinalBegin, FinalEnd);
                 add("ops final setup", FinalBegin, FinalInitEnd);
             } else for (auto s : spans) {

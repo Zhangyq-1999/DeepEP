@@ -16,7 +16,7 @@ while (($#)); do
             echo '         [--data-l2 0..7] stage=1, RDMA TX=2, result/flags=4; requires ready=20 or 23..33'
             echo '         [--notify 0|1|2] (MTE rank / SIMT rank / SIMT per-core)'
             echo '         [--coalesce 0|1|2] [--coalesce-rows 0|1] (off/card/server; whole bucket/one hidden)'
-            echo '         [--variant base|opt|ops-shmem-base|auto] [--profile ON|OFF] [--small-batch ON|OFF] [--early-reduce ON|OFF] [--recv-cores 0|8..36] [--jobs N]'
+            echo '         [--variant base|opt|ops-shmem-base|ops-shmem-retire|ops-shmem-overlap|auto] [--profile ON|OFF] [--small-batch ON|OFF] [--early-reduce ON|OFF] [--recv-cores 0|8..36] [--jobs N]'
             echo '         [--ops-source DIR] optional pinned ops-transformer checkout'
             echo '         [--remote-first ON|OFF] [--defer-return ON|OFF] [--early-issue ON|OFF] [--progress-probe ON|OFF] [--ranks-per-host 4|16]'
             echo '         [--local-first ON|OFF] [--poll-nop 0..65535] [--simt-meta ON|OFF] [--simt-flag ON|OFF] [--prefetch-return ON|OFF]'
@@ -59,7 +59,7 @@ elif [[ $coalesce_rows != 0 ]]; then
     echo 'coalesce-rows requires coalesce=1 or 2' >&2; exit 2
 fi
 [[ $profile =~ ^(ON|OFF)$ && $small =~ ^(ON|OFF)$ && $early =~ ^(ON|OFF)$ && $recv =~ ^(0|[89]|[12][0-9]|3[0-6])$ ]] || { echo 'Invalid Combine build option' >&2; exit 2; }
-[[ $variant =~ ^(base|opt|ops-shmem-base|auto)$ ]] || { echo 'Unknown variant' >&2; exit 2; }
+[[ $variant =~ ^(base|opt|ops-shmem-base|ops-shmem-retire|ops-shmem-overlap|auto)$ ]] || { echo 'Unknown variant' >&2; exit 2; }
 [[ $remote_first =~ ^(ON|OFF)$ && $defer_return =~ ^(ON|OFF)$ ]] || { echo 'Return options must be ON or OFF' >&2; exit 2; }
 [[ $ranks_per_host =~ ^(4|16)$ && $issue =~ ^(ON|OFF)$ && $probe =~ ^(ON|OFF)$ ]] || { echo 'Invalid topology or experiment option' >&2; exit 2; }
 [[ $simt_meta =~ ^(ON|OFF)$ && $simt_flag =~ ^(ON|OFF)$ && $prefetch_return =~ ^(ON|OFF)$ ]] || { echo 'SIMT/prefetch options must be ON or OFF' >&2; exit 2; }
@@ -82,11 +82,13 @@ if [[ $variant == auto ]]; then
     variant=base
     if [[ $profile == ON || $small == ON || $early == ON || $recv != 0 || $remote_first == ON || $defer_return == ON || $issue == ON || $probe == ON || $simt_meta == ON || $simt_flag == ON || $prefetch_return == ON || $local_first == ON || $poll_nop != 0 || $notify != 0 || $ready != 0 ]]; then variant=opt; fi
 fi
-original=OFF ops_base=OFF
-if [[ $variant == ops-shmem-base ]]; then
+original=OFF ops_base=OFF ops_policy=0
+if [[ $variant == ops-shmem-* ]]; then
     [[ $small == OFF && $early == OFF && $recv == 0 && $remote_first == OFF && $defer_return == OFF && $issue == OFF && $probe == OFF && $simt_meta == OFF && $simt_flag == OFF && $prefetch_return == OFF && $local_first == OFF && $poll_nop == 0 && $notify == 0 && $ready == 0 ]] || { echo 'ops-shmem-base is an independent kernel' >&2; exit 2; }
     ops_base=ON
-    if [[ $build == "$root/build/ll-cpp-base" ]]; then build="$root/build/ll-cpp-ops-shmem-base"; fi
+    [[ $variant != ops-shmem-retire ]] || ops_policy=1
+    [[ $variant != ops-shmem-overlap ]] || ops_policy=2
+    if [[ $build == "$root/build/ll-cpp-base" ]]; then build="$root/build/ll-cpp-$variant"; fi
 fi
 if [[ $variant == base ]]; then
     [[ $profile == OFF && $small == OFF && $early == OFF && $recv == 0 && $remote_first == OFF && $defer_return == OFF && $issue == OFF && $probe == OFF && $simt_meta == OFF && $simt_flag == OFF && $prefetch_return == OFF && $local_first == OFF && $poll_nop == 0 && $notify == 0 && $ready == 0 ]] || { echo 'Use --variant opt for experimental options' >&2; exit 2; }
@@ -104,6 +106,7 @@ cmake -S "$root/tests/ll_cpp_bench" -B "$build" -G 'Unix Makefiles' \
     -DDEEPEP_LL_PYTHON_BENCH=OFF \
     "-DASCEND_HOME_PATH=$cann" "-DSHMEM_ROOT=$shmem" \
     "-DDEEPEP_LL_OPS_BASE=$ops_base" "-DLL_OPS_SOURCE_DIR=$ops_source" \
+    "-DDEEPEP_LL_OPS_POLICY=$ops_policy" \
     "-DDEEPEP_LL_COMBINE_ORIGINAL=$original" "-DDEEPEP_LL_COMBINE_PROFILE=$profile" "-DDEEPEP_DEVICE_JOBS=$jobs" "-DDEEPEP_LL_COMBINE_SMALL_BATCH=$small" \
     "-DDEEPEP_LL_COMBINE_RECV_CORES=$recv" "-DDEEPEP_LL_COMBINE_EARLY_REDUCE=$early" \
     "-DDEEPEP_LL_COMBINE_REMOTE_FIRST=$remote_first" "-DDEEPEP_LL_COMBINE_DEFER_RETURN=$defer_return" \

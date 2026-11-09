@@ -147,6 +147,7 @@ inline void ops_shmem_combine_do(void* stream,Combine* args) {
     for(unsigned c=0;c<56;++c) {
         auto r=data+c*kWords;
         r[OpsRole]=c<28?1:c<54?2:3;
+        r[OpsPolicy]=DEEPEP_LL_OPS_POLICY;
         if(c<28) {
             r[StageEnd]=r[Entry]+300;r[StageRows]=1;r[Valid]|=1ULL<<StageEnd;
         } else if(c<54) {
@@ -160,6 +161,12 @@ inline void ops_shmem_combine_do(void* stream,Combine* args) {
         r[ReadyBegin]=r[Entry]+600;r[ReadyEnd]=r[Entry]+700;
         r[FinalBegin]=r[Entry]+701;r[FinalEnd]=r[Entry]+900;r[FinalTokens]=1;
         r[Valid]|=(1ULL<<ReadyBegin)|(1ULL<<ReadyEnd)|(1ULL<<FinalBegin)|(1ULL<<FinalEnd);
+        if (DEEPEP_LL_OPS_POLICY) {
+            r[ReadyRetireBegin]=r[Entry]+(DEEPEP_LL_OPS_POLICY==2?901:591);
+            r[ReadyRetireEnd]=r[ReadyRetireBegin]+5;
+            r[Valid]|=(1ULL<<ReadyRetireBegin)|(1ULL<<ReadyRetireEnd);
+        }
+        if (DEEPEP_LL_OPS_POLICY==2) {r[ReadyBegin]=r[Entry]+910;r[ReadyEnd]=r[Entry]+920;}
     }
 }
 extern "C" void ll_bench_entry_sync_do(void*,uint64_t) {}
@@ -191,12 +198,13 @@ PYBIND11_MODULE(_ll_py_debug,m) {
         spec.loader.exec_module(module)
         return module
     modules=[]
-    for index in range(5):
+    for index in range(7):
         path=tmp_path/f"variant{index}.pyd"
         subprocess.run([zig,"c++","-std=c++17","-shared","-O0","-DMS_WIN64",
                         f"-DTEST_VARIANT={index}", f"-DDEEPEP_LL_COMBINE_READY={20 if index else 12}",
-                        f"-DDEEPEP_BENCH_PROFILE={int(index in (2,4))}", "-DDEEPEP_LL_PHYSICAL_RANKS_PER_HOST=4",
-                        f"-DDEEPEP_LL_OPS_BASE={int(index in (3,4))}",
+                        f"-DDEEPEP_BENCH_PROFILE={int(index in (2,4,5,6))}", "-DDEEPEP_LL_PHYSICAL_RANKS_PER_HOST=4",
+                        f"-DDEEPEP_LL_OPS_BASE={int(index >= 3)}",
+                        f"-DDEEPEP_LL_OPS_POLICY={max(0,index-4)}",
                         "-I",str(tmp_path),"-I",str(HERE),"-I",str(HERE.parents[1]/"csrc"),
                         "-I",str(HERE.parent/"ll_cpp_bench"),
                         "-I",pybind11.get_include(),"-I",sysconfig.get_path("include"),
@@ -204,7 +212,7 @@ PYBIND11_MODULE(_ll_py_debug,m) {
                         str(Path(sys.base_prefix)/"libs"/f"python{sys.version_info.major}{sys.version_info.minor}.lib"),
                         "-o",str(path)],check=True,timeout=180,capture_output=True,text=True)
         modules.append((load(path,f"variant{index}._ll_py_combine"),load(path,f"variant{index}._ll_py_debug")))
-    (base,bdebug),(opt,odebug),(profile,pdebug),(ops,opsdebug),(ops_profile,opdebug)=modules
+    (base,bdebug),(opt,odebug),(profile,pdebug),(ops,opsdebug),(ops_profile,opdebug),*experiments=modules
     owner=base.Bench(0,8,0,["--profile","2"],123,"tcp://a:1")
     assert bdebug.counts()[:2]==(1,0)
     owner.prepare(32); owner.sample(lambda:None,False); owner.release_case()
@@ -299,11 +307,26 @@ PYBIND11_MODULE(_ll_py_debug,m) {
     report=subprocess.run([str(reporter),"--suite",str(tmp_path)],capture_output=True,text=True,check=True).stdout
     assert " O r/c=" in report and "role=gather" in report and "role=rdma" in report
     assert "instrumented diagnostics" in report
+    for policy,(mod,debug) in enumerate(experiments,1):
+        owner.reset_workspace()
+        bench=mod.Bench(owner.share())
+        identity=bench.identity()
+        assert identity["ops_policy"]==policy
+        assert identity["implementation"]==("ops-shmem-retire" if policy==1 else "ops-shmem-overlap")
+        bench.prepare(32)  # model fixture shape; generated Device schedule tests the BS guard
+        directory=tmp_path/f"ops-experiment-{policy}"
+        bench.begin_profile(str(directory),"hccl")
+        for _ in range(3): bench.sample(lambda:None,True)
+        bench.finish_profile([30,10,20],debug.gather)
+        bench.close()
+        trace=json.loads(next((directory/"perfetto").glob("*p50*.json")).read_text())
+        assert any(e["name"]=="ops deferred transport retirement" for e in trace["traceEvents"])
+        assert any(e["name"]==("ops exit all-core barrier" if policy==2 else "ops all-core barrier") for e in trace["traceEvents"])
     # Reference-only selection must also own and close a session normally.
     standalone=ops.Bench(0,8,0,[],123,"tcp://a:1")
     standalone.prepare(32); standalone.sample(lambda:None,True); standalone.release_case(); standalone.close()
     assert opsdebug.counts()==(1,1,0,0,0,2)
     owner.reset_workspace(); owner.close()
-    assert bdebug.counts()==(1,1,5,0,0,1)
+    assert bdebug.counts()==(1,1,7,0,0,1)
     with pytest.raises(RuntimeError,match="closed"): borrowed.prepare(32)
     with pytest.raises(RuntimeError,match="closed"): owner.share()

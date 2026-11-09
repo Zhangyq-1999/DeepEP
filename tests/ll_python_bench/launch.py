@@ -13,15 +13,15 @@ import sys
 import sysconfig
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_VARIANTS = "base,ops-shmem-base,input6-l2-route-only"
-CLEAN_VARIANTS = ("base", "ops-shmem-base", "ready-snapshot", "wqe-prep", "wqe-prefetch", "input6", "input-ready", "input-pair", "input-pipe", "input-stream", "input-front", "input-interleave", "input-l2", "input6-l2", "input6-r32", "input6-remote", "input6-fused", "input6-rpipe", "input6-rfull", "mte-pack",
+DEFAULT_VARIANTS = "base,ops-shmem-base,input6-l2-route-only,ops-shmem-retire,ops-shmem-overlap"
+CLEAN_VARIANTS = ("base", "ops-shmem-base", "ops-shmem-retire", "ops-shmem-overlap", "ready-snapshot", "wqe-prep", "wqe-prefetch", "input6", "input-ready", "input-pair", "input-pipe", "input-stream", "input-front", "input-interleave", "input-l2", "input6-l2", "input6-r32", "input6-remote", "input6-fused", "input6-rpipe", "input6-rfull", "mte-pack",
                   "card-all", "card-row", "server-all", "server-row", "input6-l2-remote", "input6-l2-stage", "input6-l2-tx", "input6-l2-rx", "input6-l2-all", "input6-l2-pipe", "input6-l2-setup", "input6-l2-single", "input6-l2-lean", "input6-l2-route", "input6-l2-route-only", "input6-l2-route-plan", "input6-l2-route-priority", "input6-l2-route-tx-bypass", "input6-l2-tiny-setup", "input6-l2-tiny-probe", "input6-l2-tiny")
 
 
 def phase_names(a):
     clean = a.variants.split(",")
     return clean + (["ref-profile" if name=="base" else name+"-profile" for name in clean
-                     if name != "base" or a.variants != DEFAULT_VARIANTS]
+                     if a.variants != DEFAULT_VARIANTS or name in ("ops-shmem-retire", "ops-shmem-overlap")]
                     if a.profile and not a.check_hccl else [])
 
 

@@ -302,6 +302,9 @@ inline void profile_header(std::ostream& out)
         "active_gather_cores",
         "active_rdma_cores",
         "active_final_cores",
+        "ops_policy",
+        "ops_deferred_commits",
+        "ops_retired_peers",
     };
     static_assert(sizeof(names) / sizeof(names[0]) == CombineProfile::Count, "profile CSV fields");
     for (uint32_t w = 0; w < CombineProfile::Count; ++w) out << (w ? "," : "") << names[w];

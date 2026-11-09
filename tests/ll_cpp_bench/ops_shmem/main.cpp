@@ -164,7 +164,7 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
     platform_ascendc::PlatformAscendCManager::GetInstance()->GetCoreMemSize(platform_ascendc::CoreMemType::UB, ub);
     if (ub < 128 * 1024) throw std::runtime_error("Cannot query sufficient UB capacity");
     peers.verify(llbench::hash(o.signature() + "/ops-shmem/" + DEEPEP_BENCH_SOURCE_ID + "/" + std::to_string(cores) +
-                               "/" + std::to_string(ub)));
+                               "/" + std::to_string(ub) + "/" + std::to_string(opsbench::policy)));
     std::filesystem::create_directories(o.output);
     const auto directory = std::filesystem::path(o.output);
     const auto rankPath = directory / ("rank-" + std::to_string(o.rank) + ".csv");
@@ -181,15 +181,15 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
         summary.open(directory / "summary.csv");
         if (!summary) throw std::runtime_error("Cannot open summary");
         summary << "ep,tokens,hidden,topk,experts,dtype,route,seed,capacity,warmup,samples,active_aiv,implementation,"
-                   "source_id,upstream_revision,entry_sync,profile_build,profile_level,rank_max_mean_us,rank_max_min_us,rank_max_max_us,p50_us,p99_"
+                   "source_id,upstream_revision,entry_sync,profile_build,profile_level,ops_policy,rank_max_mean_us,rank_max_min_us,rank_max_max_us,p50_us,p99_"
                    "us\n";
     }
     auto c = context_for(session);
     Buffer context(sizeof(c));
     context.upload(&c, sizeof(c));
     if (!o.rank)
-        std::cout << "ops-shmem-base: upstream " << LL_OPS_REV
-                  << "; SHMEM QP Put + batch-boundary quiet; entry_sync=" << o.entrySync << std::endl;
+        std::cout << opsbench::implementation << ": upstream " << LL_OPS_REV
+                  << "; " << opsbench::transportDescription << "; entry_sync=" << o.entrySync << std::endl;
     llbench::EntrySync entry(session);
     if (o.entrySync == "device") {
         session.report("device entry sync preparation");
@@ -244,7 +244,7 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
                 check(aclrtEventElapsedTime(&ms, start.value, end.value), "elapsed Event");
                 if (!std::isfinite(ms) || ms <= 0) throw std::runtime_error("Invalid Event duration");
                 times.push_back(ms * 1000);
-                samples << bs << ',' << i - o.warmup << ',' << times.back() << ",ops-shmem-base," << o.entrySync
+                samples << bs << ',' << i - o.warmup << ',' << times.back() << ',' << opsbench::implementation << ',' << o.entrySync
                         << ',' << DEEPEP_BENCH_PROFILE << ',' << o.profile << '\n';
                 if (o.profile) {
                     profileBuffer->download(profileData.data(), profileBuffer->bytes);
@@ -267,8 +267,8 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
             auto s = llbench::stats(rankMax);
             summary << o.world << ',' << bs << ',' << o.hidden << ',' << o.topk << ',' << o.experts << ',' << o.dtype
                     << ',' << o.route << ',' << o.seed << ',' << o.capacity << ',' << o.warmup << ',' << o.iterations
-                    << ',' << cores << ",ops-shmem-base," << DEEPEP_BENCH_SOURCE_ID << ',' << LL_OPS_REV << ','
-                    << o.entrySync << ',' << DEEPEP_BENCH_PROFILE << ',' << o.profile
+                    << ',' << cores << ',' << opsbench::implementation << ',' << DEEPEP_BENCH_SOURCE_ID << ',' << LL_OPS_REV << ','
+                    << o.entrySync << ',' << DEEPEP_BENCH_PROFILE << ',' << o.profile << ',' << opsbench::policy
                     << ',' << s.mean << ',' << s.min << ',' << s.max << ',' << s.p50 << ',' << s.p99
                     << '\n';
             summary.flush();

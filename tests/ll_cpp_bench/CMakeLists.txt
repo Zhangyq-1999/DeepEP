@@ -12,6 +12,10 @@ include("${DEEPEP_SOURCE_DIR}/cmake/Dependencies.cmake")
 find_file(SHMEM_MPI_PLUGIN aclshmem_bootstrap_mpi.so PATHS "${SHMEM_ROOT}/lib" NO_DEFAULT_PATH REQUIRED)
 option(DEEPEP_LL_COMBINE_PROFILE "Build optional Combine diagnostics" OFF)
 option(DEEPEP_LL_OPS_BASE "Build the ops-transformer SHMEM adaptation" OFF)
+set(DEEPEP_LL_OPS_POLICY "0" CACHE STRING "0=upstream, 1=deferred retirement, 2=final/transport overlap")
+if(NOT DEEPEP_LL_OPS_POLICY MATCHES "^[012]$" OR (DEEPEP_LL_OPS_POLICY AND NOT DEEPEP_LL_OPS_BASE))
+    message(FATAL_ERROR "ops policy requires the standalone ops kernel and a value in [0,2]")
+endif()
 option(DEEPEP_LL_COMBINE_ORIGINAL "Use the unaltered upstream Combine kernel" ON)
 option(DEEPEP_LL_COMBINE_SMALL_BATCH "Cache partial tasks and trim idle lanes" OFF)
 option(DEEPEP_LL_COMBINE_LOCAL_FIRST "Accumulate local-host returns before remote returns" OFF)
@@ -145,7 +149,8 @@ set_target_properties(ll_bench_variant PROPERTIES CXX_VISIBILITY_PRESET hidden V
     NO_SONAME TRUE)
 target_link_options(ll_bench_variant PRIVATE -Wl,-Bsymbolic)
 if(DEEPEP_LL_OPS_BASE)
-    target_compile_definitions(ll_bench_variant PRIVATE LL_OPS_REV="${LL_OPS_REV}")
+    target_compile_definitions(ll_bench_variant PRIVATE LL_OPS_REV="${LL_OPS_REV}"
+        DEEPEP_LL_OPS_POLICY=${DEEPEP_LL_OPS_POLICY})
 endif()
 if(DEEPEP_LL_COMBINE_ORIGINAL)
     target_sources(ll_bench_variant PRIVATE baseline_queries.cpp)
@@ -196,7 +201,8 @@ file(GLOB_RECURSE _identity_files CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_LIST_DIR}/../ll_python_bench/*.hpp")
 list(SORT _identity_files)
 list(APPEND _identity_files "${CMAKE_CURRENT_LIST_DIR}/ops_shmem/source.cmake"
-                            "${CMAKE_CURRENT_LIST_DIR}/ops_shmem/profile.cmake")
+                            "${CMAKE_CURRENT_LIST_DIR}/ops_shmem/profile.cmake"
+                            "${CMAKE_CURRENT_LIST_DIR}/ops_shmem/experiment.cmake")
 # All suite phases must share one source identity; the pinned upstream is
 # hashed through source.cmake, including for phases that do not build it.
 set(_source_hashes "")
@@ -248,11 +254,11 @@ if(DEEPEP_LL_PYTHON_BENCH)
 endif()
 if(DEEPEP_LL_OPS_BASE)
     file(WRITE "${CMAKE_BINARY_DIR}/ops-baseline.txt"
-        "implementation=ops-shmem-base\nupstream=${LL_OPS_REV}\ntransport=SHMEM QP Put; quiet at upstream batch boundary\n")
+        "implementation=ops-shmem\npolicy=${DEEPEP_LL_OPS_POLICY}\nupstream=${LL_OPS_REV}\ntransport=SHMEM QP Put\n")
     if(DEEPEP_LL_PYTHON_BENCH)
         install(FILES "${CMAKE_BINARY_DIR}/ops-baseline.txt"
             DESTINATION "${_python_destination}" COMPONENT ll_python)
     endif()
 endif()
 file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/bench-build.txt" CONTENT
-    "source=${_source_id}\noriginal=${DEEPEP_LL_COMBINE_ORIGINAL}\nbaseline_revision=${LL_COMBINE_BASELINE_REV}\ncombine_source=${DEEPEP_LL_COMBINE_SOURCE}\nsmall_batch=${DEEPEP_LL_COMBINE_SMALL_BATCH}\nrecv_cores=${DEEPEP_LL_COMBINE_RECV_CORES}\nearly_reduce=${DEEPEP_LL_COMBINE_EARLY_REDUCE}\nremote_first=${DEEPEP_LL_COMBINE_REMOTE_FIRST}\ndefer_return=${DEEPEP_LL_COMBINE_DEFER_RETURN}\nearly_issue=${DEEPEP_LL_COMBINE_EARLY_ISSUE}\nprogress_probe=${DEEPEP_LL_COMBINE_PROGRESS_PROBE}\nsimt_meta=${DEEPEP_LL_COMBINE_SIMT_META}\nsimt_flag=${DEEPEP_LL_COMBINE_SIMT_FLAG}\nlocal_first=${DEEPEP_LL_COMBINE_LOCAL_FIRST}\nbatch_final=${DEEPEP_LL_COMBINE_BATCH_FINAL}\npoll_nop=${DEEPEP_LL_COMBINE_POLL_NOP}\nprefetch_return=${DEEPEP_LL_COMBINE_PREFETCH_RETURN}\ndata_l2=${DEEPEP_LL_COMBINE_DATA_L2}\nready=${DEEPEP_LL_COMBINE_READY}\nnotify=${DEEPEP_LL_COMBINE_NOTIFY}\ncoalesce=${DEEPEP_LL_COMBINE_COALESCE}\ncoalesce_rows=${DEEPEP_LL_COMBINE_COALESCE_ROWS}\nranks_per_host=${DEEPEP_LL_PHYSICAL_RANKS_PER_HOST}\nprofile=${DEEPEP_LL_COMBINE_PROFILE}\nmpi=${MPI_CXX_COMPILER}\nshmem=${SHMEM_ROOT}\n")
+    "source=${_source_id}\nops_policy=${DEEPEP_LL_OPS_POLICY}\noriginal=${DEEPEP_LL_COMBINE_ORIGINAL}\nbaseline_revision=${LL_COMBINE_BASELINE_REV}\ncombine_source=${DEEPEP_LL_COMBINE_SOURCE}\nsmall_batch=${DEEPEP_LL_COMBINE_SMALL_BATCH}\nrecv_cores=${DEEPEP_LL_COMBINE_RECV_CORES}\nearly_reduce=${DEEPEP_LL_COMBINE_EARLY_REDUCE}\nremote_first=${DEEPEP_LL_COMBINE_REMOTE_FIRST}\ndefer_return=${DEEPEP_LL_COMBINE_DEFER_RETURN}\nearly_issue=${DEEPEP_LL_COMBINE_EARLY_ISSUE}\nprogress_probe=${DEEPEP_LL_COMBINE_PROGRESS_PROBE}\nsimt_meta=${DEEPEP_LL_COMBINE_SIMT_META}\nsimt_flag=${DEEPEP_LL_COMBINE_SIMT_FLAG}\nlocal_first=${DEEPEP_LL_COMBINE_LOCAL_FIRST}\nbatch_final=${DEEPEP_LL_COMBINE_BATCH_FINAL}\npoll_nop=${DEEPEP_LL_COMBINE_POLL_NOP}\nprefetch_return=${DEEPEP_LL_COMBINE_PREFETCH_RETURN}\ndata_l2=${DEEPEP_LL_COMBINE_DATA_L2}\nready=${DEEPEP_LL_COMBINE_READY}\nnotify=${DEEPEP_LL_COMBINE_NOTIFY}\ncoalesce=${DEEPEP_LL_COMBINE_COALESCE}\ncoalesce_rows=${DEEPEP_LL_COMBINE_COALESCE_ROWS}\nranks_per_host=${DEEPEP_LL_PHYSICAL_RANKS_PER_HOST}\nprofile=${DEEPEP_LL_COMBINE_PROFILE}\nmpi=${MPI_CXX_COMPILER}\nshmem=${SHMEM_ROOT}\n")

@@ -4,6 +4,7 @@
 #include <pybind11/stl.h>
 #include "runtime/session.hpp"
 #include "launch_gate.hpp"
+#include "../ll_cpp_bench/ops_shmem/policy.hpp"
 
 namespace py = pybind11;
 extern "C" void ll_bench_entry_sync_do(void* stream, uint64_t ffts);
@@ -124,15 +125,16 @@ public:
         py::dict d;
         d["source_id"] = DEEPEP_BENCH_SOURCE_ID;
 #if DEEPEP_LL_OPS_BASE
-        d["implementation"] = "ops-shmem-base";
+        d["implementation"] = opsbench::implementation;
+        d["ops_policy"] = opsbench::policy;
         d["upstream_revision"] = LL_OPS_REV;
-        d["transport"] = "SHMEM per-core QP Put + quiet at upstream batch boundary";
+        d["transport"] = opsbench::transportDescription;
         d["original"] = false;
         d["profile_build"] = bool(DEEPEP_BENCH_PROFILE);
         // Upstream has scatter/gather/send roles, followed by all-core final
         // combine. A fixed receive-core count would misdescribe that schedule.
         d["recv_cores"] = 0;
-        d["core_layout"] = "upstream-scatter-gather-send-then-all-core-final";
+        d["core_layout"] = opsbench::policy == 2 ? "tiny-overlap-final-then-exit-barrier" : "upstream-scatter-gather-send-then-all-core-final";
         d["return_options"] = 0;
 #else
         d["original"] = bool(DEEPEP_LL_COMBINE_ORIGINAL);

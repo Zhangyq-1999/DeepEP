@@ -30,6 +30,7 @@ __aicore__ inline void run_ops(GM_ADDR context, GM_ADDR expanded, GM_ADDR expert
     CombineProfile::DeviceProfile profile;
     profile.Init(stageTimer, timerMode);
     profile.Mark(CombineProfile::MagicEnd);
+    profile.Set(CombineProfile::OpsPolicy, opsbench::smallShape(c->bs, c->world) ? opsbench::policy : 0U);
 #endif
     MoeDistributeCombineV2TilingData tiling{};
     auto& t = tiling.moeDistributeCombineV2Info;
@@ -49,6 +50,9 @@ __aicore__ inline void run_ops(GM_ADDR context, GM_ADDR expanded, GM_ADDR expert
     t.enablePreReduce = true;
     AscendC::TPipe pipe;
     MoeDistributeCombineV2RoceImpl::MoeDistributeCombineV2Roce<T, T, int32_t, 0, false> op;
+#if DEEPEP_LL_OPS_POLICY
+    op.SetSmallExperiment(opsbench::smallShape(c->bs, c->world));
+#endif
 #ifdef DEEPEP_LL_COMBINE_PROFILE
     op.SetProfile(&profile);
 #endif

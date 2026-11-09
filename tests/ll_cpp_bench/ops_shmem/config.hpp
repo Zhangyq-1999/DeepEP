@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include "policy.hpp"
 
 namespace opsbench {
 constexpr uint64_t workspaceBytes = 8ULL << 30;

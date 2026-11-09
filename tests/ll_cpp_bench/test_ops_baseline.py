@@ -21,7 +21,8 @@ def test_ops_fixture_routes_and_gather_masks(tmp_path):
 
 
 @pytest.mark.parametrize("profile", [False, True])
-def test_ops_shmem_transport(tmp_path, profile):
+@pytest.mark.parametrize("policy", [0, 1, 2])
+def test_ops_shmem_transport(tmp_path, profile, policy):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
     if not zig:
         pytest.skip("Set DEEPEP_TEST_ZIG")
@@ -42,6 +43,7 @@ def test_ops_shmem_transport(tmp_path, profile):
         f'#include "{(stubs / "device/gm2gm/engine/shmem_device_rdma.h").as_posix()}"\n')
     exe = tmp_path / ("transport.exe" if os.name == "nt" else "transport")
     subprocess.run([zig, "c++", "-std=c++17", "-O1", "-UNDEBUG",
+                    f"-DDEEPEP_LL_OPS_POLICY={policy}",
                     *(["-DDEEPEP_LL_COMBINE_PROFILE"] if profile else []),
                     "-I", str(sdk), "-I", str(stubs),
                     str(HERE / "ops_shmem/transport_test.cpp"), "-o", str(exe)], check=True, timeout=180)
@@ -95,7 +97,8 @@ def test_pinned_ops_adaptation_changes_only_transport(tmp_path, profile):
 
 
 @pytest.mark.parametrize("profile", [False, True])
-def test_ops_device_profile_macro_reaches_real_translation_unit(tmp_path, profile):
+@pytest.mark.parametrize("policy", [0, 1, 2])
+def test_ops_device_profile_macro_reaches_real_translation_unit(tmp_path, profile, policy):
     zig, cmake = os.environ.get("DEEPEP_TEST_ZIG"), shutil.which("cmake")
     if not zig or not cmake or not shutil.which("ninja"):
         pytest.skip("Zig, CMake and Ninja required")
@@ -116,9 +119,84 @@ def test_ops_device_profile_macro_reaches_real_translation_unit(tmp_path, profil
                     "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON", f"-DDEEPEP_SOURCE_DIR={root}",
                     f"-DASCEND_HOME_PATH={cann}", f"-DSHMEM_ROOT={shmem}",
                     "-DDEEPEP_LL_OPS_BASE=ON", f"-DLL_OPS_KERNEL_DIR={tmp_path}",
+                    f"-DDEEPEP_LL_OPS_POLICY={policy}",
                     f"-DDEEPEP_LL_COMBINE_PROFILE={'ON' if profile else 'OFF'}"],
                    check=True, capture_output=True, text=True, timeout=90)
     commands = json.loads((build / "compile_commands.json").read_text())
     plain = [c for c in commands if "deepep_kernel_ll_plain.dir" in c["command"]]
     assert len(plain) == 1 and plain[0]["file"].replace("\\", "/").endswith("ops_shmem/device.cpp")
     assert ("DEEPEP_LL_COMBINE_PROFILE=1" in plain[0]["command"]) == profile
+    assert f"DEEPEP_LL_OPS_POLICY={policy}" in plain[0]["command"]
+
+
+@pytest.mark.parametrize("policy", [1, 2])
+@pytest.mark.parametrize("profile", [False, True])
+def test_ops_experiment_preserves_payload_and_executes_real_schedule(tmp_path, policy, profile):
+    """Compile the generated Process body; verify both roles, fallback and timing boundaries."""
+    import re
+    source = os.environ.get("DEEPEP_TEST_OPS_SOURCE")
+    zig, cmake = os.environ.get("DEEPEP_TEST_ZIG"), shutil.which("cmake")
+    if not source or not zig or not cmake:
+        pytest.skip("Pinned upstream, Zig and CMake required")
+    source = Path(source)
+    rel = Path("mc2/moe_distribute_combine_v2/op_kernel/arch35/moe_distribute_combine_v2_a5_roce.h")
+    generated = []
+    for mode in (0, policy):
+        directory = tmp_path / str(mode)
+        directory.mkdir()
+        wrapper = directory / "adapt.cmake"
+        wrapper.write_text(f'set(DEEPEP_SOURCE_DIR "{HERE.parents[1].as_posix()}")\n'
+                           f'set(DEEPEP_LL_COMBINE_PROFILE {"ON" if profile else "OFF"})\n'
+                           f'set(DEEPEP_LL_OPS_POLICY {mode})\n'
+                           f'set(LL_OPS_SOURCE_DIR "{source.as_posix()}" CACHE PATH "")\n'
+                           f'include("{(HERE / "ops_shmem/source.cmake").as_posix()}")\n')
+        subprocess.run([cmake, "-P", str(wrapper)], cwd=directory, check=True, capture_output=True, timeout=60)
+        generated.append((directory / "ops-kernel" / rel).read_text(encoding="utf-8"))
+    original, experiment = generated
+    process = re.compile(r'::Process\(\)\n(\{.*?\n\})', re.S)
+    original_body = process.search(original).group(1)
+    body = process.search(experiment).group(1)
+    restored = experiment.replace(body, original_body)
+    restored = re.sub(r'    __aicore__ inline void SetSmallExperiment\(bool enabled\).*?\npublic:\n',
+                      '', restored, flags=re.S)
+    assert restored == original  # every payload/flag/reduction method remains identical
+    cpp = tmp_path / "schedule.cpp"
+    # Use the actual generated body, with operations represented by ordered marks.
+    cpp.write_text(r'''
+#include <cassert>
+#include <string>
+#include <vector>
+#define ASCEND_IS_AIV (true)
+namespace CombineProfile { enum {ReadyBegin,ReadyEnd,FinalBegin,FinalEnd,OpsRole,StageBegin,StageEnd}; }
+struct Profile { void Mark(int) {} void Set(int,unsigned) {} };
+struct Kernel {
+    unsigned aivId_, sendAivNum_=28;
+    bool smallExperiment_;
+    std::vector<std::string> calls;
+    Profile profile_;
+    Kernel* tpipe_=this;
+    void ScatterTokenToLocal() { calls.push_back("scatter"); }
+    void GatherTokenFromLocal() { calls.push_back("gather"); }
+    void RetireTransport() { calls.push_back("retire"); }
+    void Reset() { calls.push_back("reset"); }
+    void ReceiveAndCombine() { calls.push_back("final"); }
+    template<bool> void SyncAll() { calls.push_back("barrier"); }
+    void Process();
+};
+void Kernel::Process()
+''' + body + r'''
+int main() {
+    for (unsigned core: {0U,27U,28U,55U}) for (bool small: {false,true}) {
+        Kernel k{core,28,small}; k.Process();
+        std::vector<std::string> expected{core<28?"scatter":"gather"};
+        if (POLICY==1) expected.insert(expected.end(),{"retire","barrier","reset","final"});
+        else if(small) expected.insert(expected.end(),{"reset","final","retire","barrier"});
+        else expected.insert(expected.end(),{"barrier","reset","final"});
+        assert(k.calls==expected);
+    }
+}
+''', encoding="utf-8")
+    exe = tmp_path / ("schedule.exe" if os.name == "nt" else "schedule")
+    subprocess.run([zig, "c++", "-std=c++17", "-O1", "-UNDEBUG", f"-DPOLICY={policy}",
+                    str(cpp), "-o", str(exe)], check=True, timeout=180)
+    subprocess.run([str(exe)], check=True, timeout=30)

@@ -7,7 +7,7 @@
 | 参数 | 默认值 |
 | --- | --- |
 | 主机 | `90.90.93.84,90.90.93.184` |
-| 算子 | `base,ops-shmem-base,input6-l2-route-only`；后两者有独立打点版 |
+| 算子 | `base,ops-shmem-base,input6-l2-route-only,ops-shmem-retire,ops-shmem-overlap`；仅两个新实验默认带打点版 |
 | BS | `1,2,4,8,16,24` |
 | Hidden / TopK / Experts | `3584 / 8 / 384` |
 | 数据和路由 | BF16、random、seed 0 |
@@ -31,7 +31,7 @@ bash tests/ll_python_bench/build_all.sh
 
 脚本自动激活 `py311_zyq`，用该环境的 Python 编译并安装测试扩展。扩展、对应 kernel 库和构建记录安装在 `py311_zyq/lib/python3.11/site-packages/deepep_ll_bench/base/`。运行脚本自动切换到同一环境，并加载这里的安装产物。
 
-默认编译三个干净版本及两个独立打点版本，复用已有 Dispatch 编译产物。参考版首次编译自动下载固定的上游源码；已有干净 checkout 可设置 `OPS_SOURCE_DIR`。`--variants base` 缩减为 base/ref-profile；`--variants ops-shmem-base` 编译参考版及其打点版；编译和运行同时传 `--profile 0` 则只测干净版。脚本保留环境中的 Torch 和 torch-npu 版本，只在缺少构建工具时安装 pybind11 或 CMake。测试扩展独立安装，环境中原有的 `deep_ep` 包保持不变。
+默认编译五个干净版本及两个新实验的独立打点版本，复用已有 Dispatch 编译产物。参考版首次编译自动下载固定的上游源码；已有干净 checkout 可设置 `OPS_SOURCE_DIR`。`--variants base` 缩减为 base/ref-profile；`--variants ops-shmem-base` 编译参考版及其打点版；编译和运行同时传 `--profile 0` 则只测干净版。脚本保留环境中的 Torch 和 torch-npu 版本，只在缺少构建工具时安装 pybind11 或 CMake。测试扩展独立安装，环境中原有的 `deep_ep` 包保持不变。
 
 编译和运行都会打印 `ENV=py311_zyq PYTHON=...`，安装完成后打印 `INSTALLED=...`。即使当前终端激活了 `base` 或其他环境，脚本也会切换到 `py311_zyq`；激活失败则退出。若 Conda 不在常见路径，可先设置 `CONDA_EXE=/实际路径/bin/conda`。
 
@@ -116,7 +116,7 @@ bash tests/ll_python_bench/run_all.sh \
 
 ## 参数和其他实验
 
-默认一次测试三个干净版本和两个打点版本，BS 为 `1,2,4,8,16,24`。其他 BS 通过 `--tokens` 显式指定；tiny/tiny-setup/tiny-probe 和 ref-profile 保留为可选版本。只测原版可用 `--variant base`；要测聚合实验，两台机器都编译同一版本，然后在第一台启动，第二台粘贴输出的命令：
+默认一次测试五个干净版本和两个新实验的打点版本，BS 为 `1,2,4,8,16,24`。其他 BS 通过 `--tokens` 显式指定；tiny/tiny-setup/tiny-probe 和 ref-profile 保留为可选版本。只测原版可用 `--variant base`；要测聚合实验，两台机器都编译同一版本，然后在第一台启动，第二台粘贴输出的命令：
 
 ```bash
 bash tests/ll_python_bench/build_all.sh --variants card-all
@@ -125,13 +125,13 @@ bash tests/ll_python_bench/run_all.sh --variant card-all
 
 可用 `--variants base,wqe-prefetch` 指定比较列表，或 `--variant base` 只选一个版本。版本各自独立安装、使用独立 kernel 库，原版 kernel 保持不变。版本切换在所有 rank 完成上一阶段后释放 case、清空共享工作区及注册暂存区，再准备下一版输入；SHMEM 通信资源保持到整个测试结束才释放。
 
-当前默认先测五个干净版本，再测相同策略的五个打点版本，只有一次 SHMEM 初始化：
+当前默认先测五个干净版本，再测两个新实验的打点版本，只有一次 SHMEM 初始化：
 
 ```bash
 bash tests/ll_python_bench/build_all.sh
 ```
 
-默认共10个构建：原始 base、较优对照 input6-l2-route-only，以及 input6-l2-tiny-setup、input6-l2-tiny-probe、input6-l2-tiny，各有独立打点库。三个 tiny 版只在 BS≤24 启用改动：按任务数初始化、记住已到齐贡献、两者组合。BS>24 保留 route-only 行为。细节见 [小 BS 对照](../ll_cpp_bench/TINY_BS_AB.md)。all、route-priority、route-tx-bypass 转可选。route、route-plan、lean、stage、pipe和所有旧实验仍可显式通过 `--variants` 构建运行，不删除已有构建。
+默认共7个构建：原始 base、较优对照 input6-l2-route-only、参考版 ops-shmem-base，以及新实验 ops-shmem-retire、ops-shmem-overlap 和这两个实验的独立打点库。新实验仅在 BS≤24、EP≤64 生效；较大形状回退到参考版原调度。retire 减少批次 quiet，overlap 在此基础上提前最终规约，将 quiet 和全核同步放到退出前。依据、生命周期和打点说明见 [小 BS 传输实验](../ll_cpp_bench/ops_shmem/SMALL_BS_AB.md)。旧打点版、tiny 及其他历史实验仍可用 --variants 显式选择，不删除已有构建。
 
 route-only 保持 all 的28/28半区分工、6个M4输入槽及累加顺序，只复用DIRECT已经加载到UB的路由表，减少逐包12 B GM读取和同步；接收行数超过512时回退，不额外分配UB。旧lean/setup/single/route-plan仍为可选对照。
 
@@ -177,7 +177,7 @@ tiny-setup、tiny-probe 和组合 tiny 改为可选，不默认编译。重点�
 
 现有 `rdma=包数/延后包数/延后间隔/stage_issue/stage_wait/put/quiet`、`q` 的 pipeline_issue、first/last Put 和 Tfreq 保留。schema 22 新增 `small=output_init_lanes/setup_ticks/meta_wait_ticks/single_task` 和 `direct_meta=cached/reloaded/active_lanes`，CSV/Perfetto 同步保存，仍为每核 272 words。lean 的 setup 包含在 ready_plan 内，meta_wait 仅表示重叠后剩余等待；累计计数不可相加当作独立流水。route 是否命中取决于本 rank 的接收行数，而非原始 BS，需看 cached/reloaded。schema 23 再追加 `route_plan=preload_rows/wait_ticks/gather_rows`，每核仍为 272 words；wait 仅为预取后剩余等待，gather_rows 是实际提取 rank 的行数。profile-only 的 `tail_inspect` 开销仍需单列，不能当作干净算子的瓶颈。测试详情与这轮 EP8/EP32 数据见 [发送流水实验](../ll_cpp_bench/TRANSFER_AB.md)。
 
-当前 schema26 为每核304 words，需重编所有选中库。二级打点新增 `txwait=prefix_remaining/copy_remaining/calls`：在当前payload DMA前记event6，原payload完成event7不变，两者都在原等待位置退休。它拆开WQE准备后前序MTE3工作/依赖与当前拷贝的剩余等待；不是完整DMA耗时或RDMA单程时延，前序也可能包含Vector→MTE3依赖。仅profile2增加该事件，clean和profile0/1不变。`priority=local_rows_deferred/extra_scan_ticks`记录本机后置行数及额外筛选成本。CSV及Perfetto的 `profiled body` 参数保存全部新增字段；不把累计ticks伪装成独立流水片段。profile事件和读时钟会扰动流水，验收仍看clean Event。
+当前 schema27 为每核304 words，需重编所有选中库。二级打点新增 `txwait=prefix_remaining/copy_remaining/calls`：在当前payload DMA前记event6，原payload完成event7不变，两者都在原等待位置退休。它拆开WQE准备后前序MTE3工作/依赖与当前拷贝的剩余等待；不是完整DMA耗时或RDMA单程时延，前序也可能包含Vector→MTE3依赖。仅profile2增加该事件，clean和profile0/1不变。`priority=local_rows_deferred/extra_scan_ticks`记录本机后置行数及额外筛选成本。CSV及Perfetto的 `profiled body` 参数保存全部新增字段；不把累计ticks伪装成独立流水片段。profile事件和读时钟会扰动流水，验收仍看clean Event。
 
 EP32 两台分别编译：
 
