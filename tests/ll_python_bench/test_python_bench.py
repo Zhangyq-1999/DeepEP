@@ -27,11 +27,11 @@ def test_default_and_four_host_plan():
     node, hosts, run_id, out, build, cmd = launch.plan(args)
     assert node==0 and len(hosts)==2 and build.name=="base" and build.parent.name=="deepep_ll_bench"
     assert str(build).startswith(sys.prefix)
-    assert cmd[cmd.index("--tokens")+1]=="1,2,4,8,16,24,32,48,64,72,256"
+    assert cmd[cmd.index("--tokens")+1]=="1,2,4,8,16,24"
     assert cmd[cmd.index("--devices")+1]=="12,13,14,15"
     assert "--nproc_per_node=4" in cmd
     assert cmd[cmd.index("--sync")+1]=="device"
-    assert cmd[cmd.index("--variants")+1]=="base,input6-l2-route-only,input6-l2-tiny-setup,input6-l2-tiny-probe,input6-l2-tiny,ref-profile,input6-l2-route-only-profile,input6-l2-tiny-setup-profile,input6-l2-tiny-probe-profile,input6-l2-tiny-profile"
+    assert cmd[cmd.index("--variants")+1]=="base,ops-shmem-base,input6-l2-route-only,input6-l2-tiny,ref-profile,input6-l2-route-only-profile,input6-l2-tiny-profile"
     assert launch.plan(args)[2]!=run_id
     other = launch.parser().parse_args([run_id,"--node-rank","1"])
     assert launch.plan(other)[3]==out
@@ -50,7 +50,17 @@ def test_default_and_four_host_plan():
             assert cmd[cmd.index("--sync")+1] == "hccl"
     args = launch.parser().parse_args(["--node-rank","0","--profile","0"])
     cmd = launch.plan(args)[-1]
-    assert cmd[cmd.index("--variants")+1] == "base,input6-l2-route-only,input6-l2-tiny-setup,input6-l2-tiny-probe,input6-l2-tiny"
+    assert cmd[cmd.index("--variants")+1] == "base,ops-shmem-base,input6-l2-route-only,input6-l2-tiny"
+
+
+def test_ops_baseline_has_no_synthetic_profile_phase():
+    launch = module("launch")
+    for per_host, hosts in ((4,"a,b"), (16,"a,b"), (16,"a,b,c,d")):
+        args = launch.parser().parse_args(["--node-rank","0","--variant","ops-shmem-base",
+                                          "--hosts",hosts,"--ranks-per-host",str(per_host)])
+        command = launch.plan(args)[-1]
+        assert launch.phase_names(args) == ["ops-shmem-base"]
+        assert command[command.index("--variants")+1] == "ops-shmem-base"
 
 
 def test_clean_build_suite_forwards_environment_and_stops(tmp_path):
@@ -71,13 +81,15 @@ if [[ "$2" == "${FAIL_VARIANT:-}" ]]; then exit 17; fi
     result = subprocess.run(cmd,capture_output=True,text=True,check=True)
     calls = result.stdout.splitlines()
     assert calls == [f"CALL --variant {v} --ranks-per-host 16 --conda-env py311_zyq"
-                     for v in ('base', 'input6-l2-route-only', 'input6-l2-tiny-setup', 'input6-l2-tiny-probe', 'input6-l2-tiny', 'ref-profile', 'input6-l2-route-only-profile', 'input6-l2-tiny-setup-profile', 'input6-l2-tiny-probe-profile', 'input6-l2-tiny-profile')]
+                     for v in ('base', 'ops-shmem-base', 'input6-l2-route-only', 'input6-l2-tiny', 'ref-profile', 'input6-l2-route-only-profile', 'input6-l2-tiny-profile')]
     failed = subprocess.run(cmd,env=dict(os.environ,FAIL_VARIANT="input6-l2-route-only"),capture_output=True,text=True)
     assert failed.returncode == 17 and "input6-l2-tiny" not in failed.stdout
     invalid = subprocess.run(cmd+["--variants","base,typo"],capture_output=True,text=True)
     assert invalid.returncode == 2 and not invalid.stdout
     clean = subprocess.run(cmd+["--profile","0"],capture_output=True,text=True,check=True)
-    assert clean.stdout.splitlines() == calls[:5]
+    assert clean.stdout.splitlines() == calls[:4]
+    reference = subprocess.run(cmd+["--variants","ops-shmem-base"],capture_output=True,text=True,check=True)
+    assert reference.stdout.splitlines() == [calls[1]]
 
 
 @pytest.mark.parametrize("extra",[["--devices","12,12,14,15"],["--node-rank","2"],["--tokens","32","--iters","0"],
@@ -320,7 +332,7 @@ def test_python_patch_difference_does_not_hide_other_mismatches():
 
 @pytest.mark.parametrize("failure",[None,"python_patch","finalize","configuration","native"])
 @pytest.mark.parametrize("variants", [("base",), ("base","input6","input6-l2","input6-r32","input6-remote", "input6-rpipe", "input6-rfull"),
-                                       ("base","input6-l2-remote","ref-profile","input6-l2-remote-profile")])
+                                       ("base","ops-shmem-base","input6-l2-remote","ref-profile","input6-l2-remote-profile")])
 @pytest.mark.parametrize("sync", ["both", "hccl"])
 def test_worker_saves_each_case_and_closes_once(tmp_path,monkeypatch,capsys,failure,variants,sync):
     run = module("run")
@@ -339,8 +351,13 @@ def test_worker_saves_each_case_and_closes_once(tmp_path,monkeypatch,capsys,fail
         def share(self): return "capsule"
         def reset_workspace(self): calls.append("reset")
         def release_case(self): calls.append("release-case")
-        def identity(self): return dict(source_id="same",active_aiv=56,recv_cores=28,rdma_qps=56,return_options=0,
-                                       profile_build=self.variant.endswith("-profile"))
+        def identity(self):
+            result=dict(source_id="same",active_aiv=56,recv_cores=28,rdma_qps=56,return_options=0,
+                        profile_build=self.variant.endswith("-profile"))
+            if self.variant=="ops-shmem-base":
+                result.update(upstream_revision="test-upstream",transport="SHMEM QP Put + batch quiet",
+                              core_layout="upstream-scatter-gather-send-then-all-core-final",recv_cores=0)
+            return result
         def prepare(self,bs): self.bs=bs; calls.append(("prepare",bs))
         def dispatch(self): calls.append("dispatch")
         def clear_flags(self): calls.append("clear")
@@ -448,12 +465,18 @@ def test_worker_saves_each_case_and_closes_once(tmp_path,monkeypatch,capsys,fail
         directory=tmp_path/f"out/profiles/{mode}/{index}-{variant}"
         rows=list(csv.DictReader((directory/"summary.csv").open()))
         assert len(rows)==2 and {r["profile_build"] for r in rows}=={str(int(variant.endswith("-profile")))}
+        if variant=="ops-shmem-base":
+            assert {r["upstream_revision"] for r in rows}=={"test-upstream"}
+            assert {r["transport"] for r in rows}=={"SHMEM QP Put + batch quiet"}
         events=list(csv.DictReader((directory/"rank-max.csv").open()))
         assert len(events)==(4 if variant.endswith("-profile") else 6)
     report=(tmp_path/"out/report.txt").read_text()
     assert f"status={'RUNNING' if fail_close else 'PASS'}" in report
     assert "Event_us=per-iteration rank-MAX" in report and "aiv=56 recv=28 qps=56" in report
     assert "device=SHMEM-mixed-71a2154" in report
+    if "ops-shmem-base" in variants:
+        assert "REF ops-shmem-base upstream=test-upstream" in report
+        assert "l2=upstream" in report
     if sync=="both": assert "AB BS=32 variant=base device_p50_reduction=0.00%" in report
     assert f"D BS=48 variant=base sync={'device' if sync=='both' else 'hccl'}" in report and "i1/r0:12.00" in report
     console=capsys.readouterr().out

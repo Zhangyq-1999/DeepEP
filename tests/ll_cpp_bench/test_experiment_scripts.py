@@ -8,8 +8,8 @@ import subprocess
 import pytest
 
 HERE = Path(__file__).resolve().parent
-PROFILES = ('ref-profile', 'input6-l2-route-only-profile', 'input6-l2-tiny-setup-profile', 'input6-l2-tiny-probe-profile', 'input6-l2-tiny-profile')
-CLEAN = ('base', 'input6-l2-route-only', 'input6-l2-tiny-setup', 'input6-l2-tiny-probe', 'input6-l2-tiny')
+PROFILES = ('ref-profile', 'input6-l2-route-only-profile', 'input6-l2-tiny-profile')
+CLEAN = ('base', 'ops-shmem-base', 'input6-l2-route-only', 'input6-l2-tiny')
 
 
 @pytest.fixture
@@ -73,10 +73,10 @@ def call_options(output):
 def test_build_all_isolated_matrix_and_failure_stop(harness):
     run, env = harness
     calls = call_options(run("build_all.sh").stdout)
-    assert len(calls) == 10
+    assert len(calls) == len(CLEAN) + len(PROFILES)
     for name, call in zip((*CLEAN, *PROFILES), calls):
         assert call["--build-dir"].endswith("/build/ll-cpp-" + name)
-        assert call["--variant"] == ("base" if name == "base" else "opt")
+        assert call["--variant"] == (name if name in ("base", "ops-shmem-base") else "opt")
         assert call["--profile"] == ("ON" if name.endswith("-profile") else "OFF")
         assert call["--small-batch"] == ("ON" if name == "opt-profile" else "OFF")
         assert call["--recv-cores"] == ("32" if name.startswith(("ready-r32", "input6-r32")) else "36" if name.startswith("ready-r36") else "0")
@@ -152,7 +152,7 @@ def test_repeat_default_run_and_second_host_join(harness):
         assert call["--devices"] == "12,13,14,15" and call["--ranks-per-host"] == "4"
         assert call["--hosts"] == "90.90.93.84,90.90.93.184"
         assert call["--variants"] == ",".join((*CLEAN, *PROFILES))
-        assert call["--tokens"] == "1,2,4,8,16,24,32,48,64,72,256"
+        assert call["--tokens"] == "1,2,4,8,16,24"
         assert call["--iters"] == "100" and call["--profile"] == "2"
         assert call["--profile-iters"] == "10"
         assert call["--profile-frequency-hz"] == "1000000000"
@@ -214,7 +214,7 @@ def test_four_host_commands_and_detection(harness):
     run, env = harness
     builds = call_options(run("build_all.sh", "--ranks-per-host", "16").stdout)
     assert len(builds) == len(CLEAN)+len(PROFILES) and all(call["--ranks-per-host"] == "16" for call in builds)
-    assert [call["--ready"] for call in builds] == ["0", "28", "31", "32", "33"] * 2
+    assert [call["--ready"] for call in builds] == ["0", "0", "28", "33", "0", "28", "33"]
     hosts = "90.90.93.84,90.90.93.184,90.90.93.85,90.90.93.185"
     result = run("run_all.sh", "--ep", "64", "--ranks-per-host", "16", "--hosts", hosts,
                  "--tokens", "32,72,128,256", "--master-port", "30071")

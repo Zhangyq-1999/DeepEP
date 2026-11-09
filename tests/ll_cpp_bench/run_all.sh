@@ -8,7 +8,7 @@ master= port=29671 variants=$ll_bench_variants run_id= dry=0
 cann=$ll_bench_cann mpi=$ll_bench_mpi shmem=$ll_bench_shmem
 job_timeout=3600 join_timeout=300
 bench_keys=(tokens hidden topk experts capacity dtype route seed entry-sync warmup iters profile-iters profile profile-frequency-hz timeout kernel-timeout)
-declare -A bench=([tokens]=1,2,4,8,16,24,32,48,64,72,256 [hidden]=3584 [topk]=8 [experts]=384
+declare -A bench=([tokens]=1,2,4,8,16,24 [hidden]=3584 [topk]=8 [experts]=384
                   [capacity]=256 [dtype]=bf16 [route]=random [seed]=0 [entry-sync]=device
                   [warmup]=10 [iters]=100 [profile-iters]=10 [profile]=2 [profile-frequency-hz]=1000000000 [timeout]=300 [kernel-timeout]=10)
 fail() { echo "ERROR: $*" >&2; exit 2; }
@@ -29,8 +29,8 @@ Benchmark options (with or without a preceding --):
          --kernel-timeout SECONDS (default 10; bounded stream wait)
          --profile-frequency-hz HZ (default 1000000000; 0 disables Perfetto export)
 Defaults: EP8, four ranks/host, devices 12,13,14,15 on each host; hosts 90.90.93.84,90.90.93.184, port 29671.
-          base/route-only/tiny-setup/tiny-probe/tiny (input6-l2-*), with matching diagnostics; BS 1,2,4,8,16,24,32,48,64,72,256; H3584/K8/E384/BF16.
-          Primary targets: BS1/2/4/8/16/24; BS32/48/64/72/256 check regressions.
+          base/ops-shmem-base/route-only/tiny; diagnostics for DeepEP variants; BS 1,2,4,8,16,24; H3584/K8/E384/BF16.
+          Use --tokens to add BS32/48/64/72/256 or other shapes.
           Warmup 10; clean samples 100; diagnostic samples 10, level 2.
 Rebuild with the same --ranks-per-host value. Use 16 for EP16/32/64 on one/two/four hosts.
 All selected variants share one MPI/ACL/SHMEM initialization.

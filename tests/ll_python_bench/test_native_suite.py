@@ -93,8 +93,12 @@ struct Buffer {
 };
 struct Combine {uint8_t* stageTimer=nullptr; unsigned timerMode=0,bs=0;};
 struct Case {
-    unsigned bs,variant=0; int dispatch=0; Combine combine;
+    unsigned bs,variant=0; int dispatch=0,args=0; Combine combine;
     Case(const llbench::Options&,unsigned n,unsigned,void*):bs(n) {++cases;combine.bs=n;}
+    Case(const llbench::Options&,unsigned n,unsigned,uint64_t ub,void*):bs(n) {
+        if(ub!=192*1024) throw std::runtime_error("invalid upstream UB capacity");
+        ++cases;
+    }
     ~Case() {--cases;}
     void flipExpertSign(const llbench::Options&) {}
     double precision(bool) {return 0;}
@@ -106,6 +110,15 @@ inline DispatchDedup::CommArgs comm_args(const llbench::Runtime& r) {
         throw std::runtime_error("invalid shared runtime");
     return {};
 }
+inline DispatchDedup::CommArgs context_for(const llbench::Runtime& r) {return comm_args(r);}
+namespace platform_ascendc {
+enum class CoreMemType {UB};
+struct PlatformAscendCManager {
+    static PlatformAscendCManager* GetInstance() {static PlatformAscendCManager p;return &p;}
+    void GetCoreMemSize(CoreMemType,uint64_t& bytes) {bytes=192*1024;}
+};
+}
+inline void ops_shmem_combine_do(void*,int*) {++launches;}
 inline void dispatch_server_dedup_kernel_do_v2(void*,void*,unsigned) {}
 inline void combine_clear_result_flags_kernel_do(void*,void*,uint64_t,unsigned) {}
 inline void combine_server_dedup_kernel_do(void*,Combine* args) {
@@ -127,6 +140,7 @@ inline void combine_server_dedup_kernel_do(void*,Combine* args) {
 extern "C" void ll_bench_entry_sync_do(void*,uint64_t) {}
 #define DEEPEP_BENCH_SOURCE_ID "host-model"
 #define DEEPEP_LL_COMBINE_ORIGINAL 0
+#define LL_OPS_REV "test-upstream"
 #include "bindings.hpp"
 PYBIND11_MODULE(_ll_py_debug,m) {
     m.def("counts", [] { return py::make_tuple(deepep::sessionInits,deepep::sessionCloses,
@@ -152,11 +166,12 @@ PYBIND11_MODULE(_ll_py_debug,m) {
         spec.loader.exec_module(module)
         return module
     modules=[]
-    for index in range(3):
+    for index in range(4):
         path=tmp_path/f"variant{index}.pyd"
         subprocess.run([zig,"c++","-std=c++17","-shared","-O0","-DMS_WIN64",
                         f"-DTEST_VARIANT={index}", f"-DDEEPEP_LL_COMBINE_READY={20 if index else 12}",
                         f"-DDEEPEP_BENCH_PROFILE={int(index==2)}", "-DDEEPEP_LL_PHYSICAL_RANKS_PER_HOST=4",
+                        f"-DDEEPEP_LL_OPS_BASE={int(index==3)}",
                         "-I",str(tmp_path),"-I",str(HERE),"-I",str(HERE.parents[1]/"csrc"),
                         "-I",str(HERE.parent/"ll_cpp_bench"),
                         "-I",pybind11.get_include(),"-I",sysconfig.get_path("include"),
@@ -164,7 +179,7 @@ PYBIND11_MODULE(_ll_py_debug,m) {
                         str(Path(sys.base_prefix)/"libs"/f"python{sys.version_info.major}{sys.version_info.minor}.lib"),
                         "-o",str(path)],check=True,timeout=180,capture_output=True,text=True)
         modules.append((load(path,f"variant{index}._ll_py_combine"),load(path,f"variant{index}._ll_py_debug")))
-    (base,bdebug),(opt,odebug),(profile,pdebug)=modules
+    (base,bdebug),(opt,odebug),(profile,pdebug),(ops,opsdebug)=modules
     owner=base.Bench(0,8,0,["--profile","2"],123,"tcp://a:1")
     assert bdebug.counts()[:2]==(1,0)
     owner.prepare(32); owner.sample(lambda:None,False); owner.release_case()
@@ -220,7 +235,27 @@ PYBIND11_MODULE(_ll_py_debug,m) {
     report=subprocess.run([str(reporter),"--suite",str(tmp_path)],capture_output=True,text=True,check=True).stdout
     assert "entry_sync=hccl" in report and "profile" in report and "event_r=0 us=20.00" in report
     assert "BS=32" in report and "BS=48" in report and " S r/c=" in report and " R r/c=" in report
+    owner.reset_workspace()
+    upstream=ops.Bench(owner.share())
+    identity=upstream.identity()
+    assert identity["upstream_revision"]=="test-upstream" and identity["implementation"]=="ops-shmem-base"
+    assert not identity["profile_build"] and identity["recv_cores"]==0
+    upstream.prepare(32); upstream.dispatch(); upstream.clear_flags()
+    upstream.sample(lambda:None,True)
+    upstream.flip_inputs(); upstream.precision(); upstream.close()
+    assert opsdebug.counts()==(0,0,0,0,0,1)  # borrowed session, independent upstream kernel
+    result=worker.summarize([[12,13,14]]*8)
+    result.update(tokens=32,kind="clean",sync="hccl",identity=identity,
+                  config=dict(world=8,hidden=3584,topk=8,experts=384,dtype="bf16",route="random",seed=0,
+                              capacity=256,warmup=10,profile=2))
+    worker.write_timing_artifacts(tmp_path/"ops-shmem-base",result)
+    report=subprocess.run([str(reporter),"--suite",str(tmp_path)],capture_output=True,text=True,check=True).stdout
+    assert "upstream=test-upstream" in report and "no internal profile" in report
+    # Reference-only selection must also own and close a session normally.
+    standalone=ops.Bench(0,8,0,[],123,"tcp://a:1")
+    standalone.prepare(32); standalone.sample(lambda:None,True); standalone.release_case(); standalone.close()
+    assert opsdebug.counts()==(1,1,0,0,0,2)
     owner.reset_workspace(); owner.close()
-    assert bdebug.counts()==(1,1,3,0,0,1)
+    assert bdebug.counts()==(1,1,4,0,0,1)
     with pytest.raises(RuntimeError,match="closed"): borrowed.prepare(32)
     with pytest.raises(RuntimeError,match="closed"): owner.share()

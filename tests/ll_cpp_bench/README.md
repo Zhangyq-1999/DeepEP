@@ -26,27 +26,26 @@ git pull --ff-only https://github.com/Zhangyq-1999/DeepEP.git perf/ll-combine-sm
 bash tests/ll_cpp_bench/build_all.sh
 ```
 
-`build_all.sh` 默认更新以下 10 个构建目录，每个构建使用 4 个编译任务。Dispatch 用于准备 Combine 的输入和路由，同一配置只编译一次，各版本复用它的目标文件。每个版本再单独编译 Combine，并链接成独立的 kernel 库。
+`build_all.sh` 默认更新以下 7 个构建目录（四个干净版、三个打点版），每个构建使用 4 个编译任务。Dispatch 用于准备 DeepEP Combine 的输入和路由，同一配置只编译一次，各版本复用它的目标文件；参考仓版在 Host 构造等价输入。每个版本再单独编译 Combine，并链接成独立的 kernel 库。
 
 已有目录继续用于增量编译。只修改 Combine 时，Dispatch 无需重编；修改 Dispatch 或它依赖的头文件时，构建系统自动重编受影响的部分。共享目标文件保存在 `build/ll-cpp-dispatch`，不同编译器、SDK 和每机 rank 数使用独立目录。更新代码后，两台机器都执行一次 `build_all.sh`，更新所有选中的版本。
 
 | 构建名 | 实验 | 打点 |
 | --- | --- | --- |
 | `base` | 冻结的上游原版 | 关闭 |
+| `ops-shmem-base` | ops-transformer d1bad1c 原算法，SHMEM 传输适配 | 关闭 |
 | `input6-l2-route-only` | all + DIRECT 路由复用，移除 lean 改动 | 关闭 |
-| `input6-l2-tiny-setup` | route-only + BS≤24 按实际任务初始化缓冲、单任务依赖快路径 | 关闭 |
-| `input6-l2-tiny-probe` | route-only + BS≤24 记住已到齐贡献、仅轮询未完成贡献 | 关闭 |
-| `input6-l2-tiny` | 上述两项组合 | 关闭 |
+| `input6-l2-tiny` | route-only + 小任务初始化与记忆式轮询 | 关闭 |
 | `ref-profile` | base 对应打点版 | 开启 |
 | `input6*-profile` | 与对应干净版相同策略 | 开启 |
 
-本轮重点 **BS1、2、4、8、16、24**，默认同时保留 BS32、48、64、72、256 检查回退。三个 tiny 版本在 BS>24 时走 route-only 原路径。参考仓差异、生命周期及验收说明见 [小 BS 对照](TINY_BS_AB.md)。上一轮 EP8 干净版 ready-snapshot 的三个 BS 的 P50 分别为 57.11、63.56、70.19 μs，增加接收核没有持续改善这三个场景。ready-r32、ready-r36、stage-stream、plan-compact 保留为可选实验，不再默认编译运行。
+默认只测 **BS1、2、4、8、16、24**。其他 BS 使用 `--tokens` 指定；tiny-setup、tiny-probe 改为可选，组合版 tiny 在 BS>24 时走 route-only 原路径。参考仓的算法保留范围和通信差异见 [参考基线](ops_shmem/README.md)，此前小 BS 实验见 [小 BS 对照](TINY_BS_AB.md)。ready-r32、ready-r36、stage-stream、plan-compact 等历史实验仍可显式选择。
 
 EP32 收尾修复后的实测中，`wqe-prep` 在 BS48/64 的均值比 snapshot 低约 2.20%/2.84%，BS32 基本持平，尚需重复验证。它在独立 128 B UB 提前构造 WQE，payload 完成后才发布 SQ/doorbell。新增 `wqe-prefetch` 在下一条任务已经就绪时，先发起其输入 MTE2，再等上一包 MTE3 并提交 WQE；不会等待下一条完整规约。末条任务和单输出 lane 仍立即提交，M5 前排空待提交包，最终 quiet 保留。新方案尚待 CANN/NPU 验证。`mte-pack` 收益不稳定，保留为可选项，不再默认编译。完整数据、生命周期与打点说明见 [TRANSFER_AB.md](TRANSFER_AB.md)。
 
 此前 9b3d243 的 EP32/HCCL 实测 `input6` 的 BS32/48/64 均值为 57.28/65.49/74.26 μs，仍是小 BS 对照；`input-pair` 分别慢 1.41/0.69/0.43 μs，改为可选项。保留 `input-pipe`：它在 BS256 的均值为 174.94 μs，比同轮 input6 快 8.85 μs，但 BS32–64 尚无稳定收益。
 
-最新 EP32/HCCL 这轮 BS32 clean mean：base=60.74、all=56.46、route-only=55.75 μs；route-only P50=55.32、min–max=53.17–68.49、P95=58.21 μs。当前默认保留 base、route-only，加入 tiny-setup、tiny-probe、tiny，共五个干净版及五个打点版。all、route、route-plan、route-priority、route-tx-bypass 改为可选，所有旧实验仍可用 `--variants` 选择。BS48/64 上 route-plan 的 mean 为63.10/71.98 μs，保留这一方案供后续形状选择，不宣称已经对所有 BS 选出最佳实现。
+此前 EP32/HCCL 的 BS32 clean mean：base=60.74、all=56.46、route-only=55.75 μs；route-only P50=55.32、min–max=53.17–68.49、P95=58.21 μs。当前保留 base、route-only、tiny，加入 ops-shmem-base 参考基线；只有 DeepEP 三个版本附带打点版。all、route、route-plan、route-priority、route-tx-bypass 等仍可用 `--variants` 选择。BS48/64 上 route-plan 的 mean 为63.10/71.98 μs，保留这一方案供后续形状选择，不宣称已经对所有 BS 选出最佳实现。
 
 route-only 恢复 all 的 M4 初始化及多/单任务筛选，只加入 DIRECT 的整表路由复用。route-priority 在此基础上推迟 DIRECT 本机发送，保留每条任务原来的核、QP和远端 server 次序；代价是有本机任务的核多筛选一次本机行。它不改变已有的 M4 跨机就绪任务优先策略。route-tx-bypass 则仅把 data_l2 从7改为5，保留控制区、M3和M5的缓存策略，用于隔离 RDMA 发送暂存区的缓存影响。两项实验分别对比 route-only，不叠加。28/28分核、6个M4输入槽、所有输出槽初始化、规约及完成协议保持。支持每机4/16 rank及四机EP64；逻辑组不等于物理主机或单机时不调整 DIRECT 次序。详细数据/生命周期见 [TRANSFER_AB.md](TRANSFER_AB.md)。
 
@@ -149,14 +148,14 @@ bash tests/ll_cpp_bench/run_all.sh --hosts HOST0,HOST1 --node-rank 0 \
 
 ### ops-transformer 的 SHMEM 适配基线
 
-`ops-shmem-base` 使用 [ubx_reserve 的 Combine 实现](https://gitcode.com/zzg_code/ops-transformer/blob/e6c7d2e57dd222e5a774ba3c89392a50a6a26a78/mc2/moe_distribute_combine_v2/op_kernel/arch35/moe_distribute_combine_v2_a5_roce.h)，固定到提交 `e6c7d2e5`。它保留原实现的分核、机内汇集、部分归约、跨机回传和最终归约流程。通信上下文由 SHMEM 内存和 PE 映射组成，测试侧继续使用 MPI 和 SHMEM 初始化，直接启动 kernel。
+`ops-shmem-base` 使用 [ubx_reserve 的 Combine 实现](https://gitcode.com/zzg_code/ops-transformer/blob/d1bad1c202ce628c7249bf248f1f967de74ac195/mc2/moe_distribute_combine_v2/op_kernel/arch35/moe_distribute_combine_v2_a5_roce.h)，固定到提交 `d1bad1c`。它保留原实现的分核、机内汇集、部分归约、跨机回传和最终归约流程。通信上下文由 SHMEM 内存和 PE 映射组成，测试侧继续使用 MPI 和 SHMEM 初始化，直接启动 kernel。
 
 跨机适配使用 `aclshmemx_roce_qp_put_nbi`，在原有批次边界调用 `aclshmemx_roce_qp_quiet`。这与原仓 Hcomm 的批量提交、CQE 策略有差异，结果用于比较 SHMEM 后端上的算法方案。单机也运行这套分层算法，只执行机内阶段。原来的 `base` 继续使用冻结的 DeepEP kernel。
 
-两边分别按需编译，默认 `build_all.sh` 构建前文的 10 个版本：
+默认 `build_all.sh` 已包含该参考版；也可只比较两个基线：
 
 ```bash
-bash tests/ll_cpp_bench/build_all.sh --ranks-per-host 16 --variants base,ops-shmem-base
+bash tests/ll_cpp_bench/build_all.sh --variants base,ops-shmem-base
 ```
 
 首次构建会下载固定版本的 kernel 及依赖，保留上游许可证。已有该版本的干净 checkout 时，可用 `OPS_SOURCE_DIR=/path/to/ops-transformer` 指定源码目录。新基线只编译自身 kernel，不编译 DeepEP Dispatch 的多种特化。
@@ -164,13 +163,12 @@ bash tests/ll_cpp_bench/build_all.sh --ranks-per-host 16 --variants base,ops-shm
 第一台执行以下命令，第二台复制第一台打印的加入命令：
 
 ```bash
-bash tests/ll_cpp_bench/run_all.sh --ep 32 --ranks-per-host 16 --variants base,ops-shmem-base --profile 0 --iters 100
-# 单机比较：把上面的 --ep 32 改为 --ep 16。
+bash tests/ll_cpp_bench/run_all.sh --variants base,ops-shmem-base
 ```
 
-这份适配基线目前按每机 16 个 rank 构建，尚未接入两机各 4 卡的拓扑。初版支持 H3584/H7168、TopK 8、384 个专家、BF16/FP16，BS 和设备选择沿用现有参数。测试在 CPU 上根据相同路由生成 expert 输入、行索引、计数和位图，准备工作在计时外完成。每个 rank 检查输出，汇总仍使用逐轮 rank-MAX Event。构建目录的 `ops-baseline.txt` 和结果 CSV 记录源码版本及通信适配方式。
+支持每机4/16 rank，默认双机后4卡 EP8；EP32/64 沿用现有拓扑参数，并在两边用 `--ranks-per-host 16` 重编。支持 H3584/H7168、TopK8、384 专家、BF16/FP16，BS 和设备选择沿用现有参数。测试在 CPU 上根据相同路由生成 expert 输入、行索引、计数和位图，准备工作在计时外完成。每个 rank 检查输出，汇总仍使用逐轮 rank-MAX Event。构建目录的 `ops-baseline.txt` 和结果 CSV 记录源码版本及通信适配方式。
 
-这份基线关闭算子内打点，使用 `--profile 0`。Host 检查覆盖路由与汇集位图的一致性、构建选择及源码适配范围；CANN 编译和 NPU 精度、性能仍需在目标机器验证。
+该基线始终关闭算子内打点，无需额外指定 `--profile 0`；其他版本的打点照常运行。Python 同样支持参考版并复用一次初始化。Host 检查覆盖路由与汇集位图的一致性、构建选择及源码适配范围；CANN 编译和 NPU 精度、性能仍需在目标机器验证。详见 [参考基线说明](ops_shmem/README.md)。
 
 ### DeepEP 基线与实验版
 

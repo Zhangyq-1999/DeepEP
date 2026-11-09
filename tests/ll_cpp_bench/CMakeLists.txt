@@ -95,9 +95,6 @@ set(DEEPEP_LL_REFERENCE_PROFILE OFF)
 set(DEEPEP_LL_STAGE_TIMER OFF)
 set(DEEPEP_LL_COUNT_HISTOGRAM OFF)
 if(DEEPEP_LL_OPS_BASE)
-    if(NOT DEEPEP_LL_PHYSICAL_RANKS_PER_HOST STREQUAL "16")
-        message(FATAL_ERROR "ops-shmem-base currently requires --ranks-per-host 16")
-    endif()
     if(DEEPEP_LL_COMBINE_ORIGINAL OR DEEPEP_LL_COMBINE_PROFILE OR DEEPEP_LL_COMBINE_SMALL_BATCH OR
        DEEPEP_LL_COMBINE_EARLY_REDUCE OR DEEPEP_LL_COMBINE_REMOTE_FIRST OR DEEPEP_LL_COMBINE_DEFER_RETURN OR
        DEEPEP_LL_COMBINE_EARLY_ISSUE OR DEEPEP_LL_COMBINE_PROGRESS_PROBE OR
@@ -162,6 +159,7 @@ target_link_directories(ll_bench_variant PRIVATE "${ASCEND_HOME_PATH}/lib64"
 target_link_libraries(ll_bench_variant PRIVATE MPI::MPI_CXX ascendcl shmem deepep_device
     tiling_api platform unified_dlog ${CMAKE_DL_LIBS} pthread)
 target_compile_definitions(ll_bench_variant PRIVATE DEEPEP_LL_RDMA=1 DEEPEP_LL_METADATA_CORES=4
+    DEEPEP_LL_OPS_BASE=$<BOOL:${DEEPEP_LL_OPS_BASE}>
     DEEPEP_LL_COMBINE_READY=${DEEPEP_LL_COMBINE_READY}
     DEEPEP_LL_COMBINE_DATA_L2=${DEEPEP_LL_COMBINE_DATA_L2}
     DEEPEP_LL_COMBINE_NOTIFY=${DEEPEP_LL_COMBINE_NOTIFY}
@@ -197,7 +195,10 @@ file(GLOB_RECURSE _identity_files CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_LIST_DIR}/*.h" "${CMAKE_CURRENT_LIST_DIR}/*.hpp" "${CMAKE_CURRENT_LIST_DIR}/*.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/../ll_python_bench/*.hpp")
 list(SORT _identity_files)
-set(_source_hashes "${LL_OPS_REV}")
+list(APPEND _identity_files "${CMAKE_CURRENT_LIST_DIR}/ops_shmem/source.cmake")
+# All suite phases must share one source identity; the pinned upstream is
+# hashed through source.cmake, including for phases that do not build it.
+set(_source_hashes "")
 foreach(_file IN LISTS _identity_files)
     file(SHA256 "${_file}" _hash)
     string(APPEND _source_hashes "${_hash}")
@@ -216,12 +217,9 @@ target_compile_definitions(ll_combine_bench PRIVATE DEEPEP_LL_RDMA=1 DEEPEP_LL_M
 add_dependencies(ll_combine_bench ll_bench_variant)
 option(DEEPEP_LL_PYTHON_BENCH "Build the PyTorch-controlled benchmark extension" OFF)
 if(DEEPEP_LL_PYTHON_BENCH)
-    if(DEEPEP_LL_OPS_BASE)
-        message(FATAL_ERROR "Python benchmark requires DeepEP variants")
-    endif()
     find_package(Python 3.11 REQUIRED COMPONENTS Interpreter Development.Module)
     find_package(pybind11 CONFIG REQUIRED)
-    pybind11_add_module(_ll_py_combine main.cpp "${DEEPEP_SOURCE_DIR}/csrc/runtime/session.cpp")
+    pybind11_add_module(_ll_py_combine ${_bench_main} "${DEEPEP_SOURCE_DIR}/csrc/runtime/session.cpp")
     # Same case generator, Host options and Device library as the C++ variant.
     foreach(_prop INCLUDE_DIRECTORIES LINK_DIRECTORIES COMPILE_DEFINITIONS)
         get_target_property(_value ll_bench_variant ${_prop})
@@ -250,6 +248,10 @@ endif()
 if(DEEPEP_LL_OPS_BASE)
     file(WRITE "${CMAKE_BINARY_DIR}/ops-baseline.txt"
         "implementation=ops-shmem-base\nupstream=${LL_OPS_REV}\ntransport=SHMEM QP Put; quiet at upstream batch boundary\n")
+    if(DEEPEP_LL_PYTHON_BENCH)
+        install(FILES "${CMAKE_BINARY_DIR}/ops-baseline.txt"
+            DESTINATION "${_python_destination}" COMPONENT ll_python)
+    endif()
 endif()
 file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/bench-build.txt" CONTENT
     "source=${_source_id}\noriginal=${DEEPEP_LL_COMBINE_ORIGINAL}\nbaseline_revision=${LL_COMBINE_BASELINE_REV}\ncombine_source=${DEEPEP_LL_COMBINE_SOURCE}\nsmall_batch=${DEEPEP_LL_COMBINE_SMALL_BATCH}\nrecv_cores=${DEEPEP_LL_COMBINE_RECV_CORES}\nearly_reduce=${DEEPEP_LL_COMBINE_EARLY_REDUCE}\nremote_first=${DEEPEP_LL_COMBINE_REMOTE_FIRST}\ndefer_return=${DEEPEP_LL_COMBINE_DEFER_RETURN}\nearly_issue=${DEEPEP_LL_COMBINE_EARLY_ISSUE}\nprogress_probe=${DEEPEP_LL_COMBINE_PROGRESS_PROBE}\nsimt_meta=${DEEPEP_LL_COMBINE_SIMT_META}\nsimt_flag=${DEEPEP_LL_COMBINE_SIMT_FLAG}\nlocal_first=${DEEPEP_LL_COMBINE_LOCAL_FIRST}\nbatch_final=${DEEPEP_LL_COMBINE_BATCH_FINAL}\npoll_nop=${DEEPEP_LL_COMBINE_POLL_NOP}\nprefetch_return=${DEEPEP_LL_COMBINE_PREFETCH_RETURN}\ndata_l2=${DEEPEP_LL_COMBINE_DATA_L2}\nready=${DEEPEP_LL_COMBINE_READY}\nnotify=${DEEPEP_LL_COMBINE_NOTIFY}\ncoalesce=${DEEPEP_LL_COMBINE_COALESCE}\ncoalesce_rows=${DEEPEP_LL_COMBINE_COALESCE_ROWS}\nranks_per_host=${DEEPEP_LL_PHYSICAL_RANKS_PER_HOST}\nprofile=${DEEPEP_LL_COMBINE_PROFILE}\nmpi=${MPI_CXX_COMPILER}\nshmem=${SHMEM_ROOT}\n")

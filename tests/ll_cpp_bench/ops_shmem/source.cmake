@@ -1,5 +1,5 @@
 # Fetch only the kernel dependencies. No ACLNN package or HCCL Host code is built.
-set(LL_OPS_REV "e6c7d2e57dd222e5a774ba3c89392a50a6a26a78")
+set(LL_OPS_REV "d1bad1c202ce628c7249bf248f1f967de74ac195")
 find_package(Git REQUIRED)
 set(LL_OPS_SOURCE_DIR "" CACHE PATH "Existing clean ops-transformer checkout at the pinned revision")
 if(NOT LL_OPS_SOURCE_DIR)
@@ -42,10 +42,8 @@ file(READ "${_kernel}" _text)
 # Only the communication adapter changes. Keep partitioning, packet formats,
 # ready polling, partial reduction and final reduction from the pinned source.
 string(REPLACE "#include \"adv_api/hcomm/hcomm.h\"" "#include \"transport.hpp\"" _text "${_text}")
-string(REPLACE "#include \"../../../common/op_kernel/mc2_roce_wqe_config.h\"" "" _text "${_text}")
 string(REPLACE "Hcomm<CommProtocol::COMM_PROTOCOL_ROCE>" "opsbench::Transport" _text "${_text}")
 string(REPLACE "BatchHandle<ChannelHandle>" "opsbench::Batch" _text "${_text}")
 string(REPLACE "const ChannelHandle channel" "const uint64_t channel" _text "${_text}")
-string(REPLACE "hcomm_.template WriteNbi<Mc2RoceSend::NO_CQE_CONFIG>" "hcomm_.WriteNbi" _text "${_text}")
 file(WRITE "${_kernel}" "${_text}")
 message(STATUS "ops-shmem-base: ${LL_OPS_REV}; SHMEM transport adaptation, no ACLNN/HCCL initialization")

@@ -7,8 +7,8 @@
 | 参数 | 默认值 |
 | --- | --- |
 | 主机 | `90.90.93.84,90.90.93.184` |
-| 算子 | `base,input6-l2-route-only,input6-l2-tiny-setup,input6-l2-tiny-probe,input6-l2-tiny`，各有独立打点版 |
-| BS | `1,2,4,8,16,24,32,48,64,72,256` |
+| 算子 | `base,ops-shmem-base,input6-l2-route-only,input6-l2-tiny`；除参考仓版外，各有独立打点版 |
+| BS | `1,2,4,8,16,24` |
 | Hidden / TopK / Experts | `3584 / 8 / 384` |
 | 数据和路由 | BF16、random、seed 0 |
 | Capacity | 256 |
@@ -16,6 +16,8 @@
 | 算子前同步 | SHMEM 混合 MTE/RoCE 设备同步，计时不包含同步 |
 
 Python 流程复用 C++ 用例的输入、路由、精度检查和原始 Combine kernel。Dispatch 只负责准备 Combine 的输入，放在计时外。每个 worker 只初始化一次 NPU、SHMEM；使用 HCCL 时也只创建一次 HCCL 通信组，依次完成所有版本的全部 BS。
+
+`ops-shmem-base` 直接编译参考仓 `ubx_reserve` 提交 `d1bad1c` 的 Combine，保留上游分核、轮询、分层归约、批次边界和全核最终规约。只把通信接到 SHMEM；与原仓 Hcomm 的批量发布/完成机制有差异，不能称为原 ACLNN 路径的完全复刻。其输入由相同路由在计时外构造，clean Event 与其他版本使用相同同步和统计口径。参考版没有插入 DeepEP 打点，也不生成虚构的内部分段 Perfetto；回显 `REF` 行、安装目录的 `ops-baseline.txt` 和 CSV 标明来源。详见 [参考基线说明](../ll_cpp_bench/ops_shmem/README.md)。
 
 ## 两台机器分别编译安装
 
@@ -29,7 +31,7 @@ bash tests/ll_python_bench/build_all.sh
 
 脚本自动激活 `py311_zyq`，用该环境的 Python 编译并安装测试扩展。扩展、对应 kernel 库和构建记录安装在 `py311_zyq/lib/python3.11/site-packages/deepep_ll_bench/base/`。运行脚本自动切换到同一环境，并加载这里的安装产物。
 
-默认编译五个干净版本及五个独立打点版本，复用已有 Dispatch 编译产物。`--variants base` 缩减为 base/ref-profile；编译和运行同时传 `--profile 0` 则只测干净版。脚本保留环境中的 Torch 和 torch-npu 版本，只在缺少构建工具时安装 pybind11 或 CMake。测试扩展独立安装，环境中原有的 `deep_ep` 包保持不变。
+默认编译四个干净版本及三个独立打点版本，复用已有 Dispatch 编译产物。参考版首次编译自动下载固定的上游源码；已有干净 checkout 可设置 `OPS_SOURCE_DIR`。`--variants base` 缩减为 base/ref-profile；`--variants ops-shmem-base` 只编译参考版；编译和运行同时传 `--profile 0` 则只测干净版。脚本保留环境中的 Torch 和 torch-npu 版本，只在缺少构建工具时安装 pybind11 或 CMake。测试扩展独立安装，环境中原有的 `deep_ep` 包保持不变。
 
 编译和运行都会打印 `ENV=py311_zyq PYTHON=...`，安装完成后打印 `INSTALLED=...`。即使当前终端激活了 `base` 或其他环境，脚本也会切换到 `py311_zyq`；激活失败则退出。若 Conda 不在常见路径，可先设置 `CONDA_EXE=/实际路径/bin/conda`。
 
@@ -114,7 +116,7 @@ bash tests/ll_python_bench/run_all.sh \
 
 ## 参数和其他实验
 
-默认一次测试五个干净版本和对应的打点版本。只测原版可用 `--variant base`；要测聚合实验，两台机器都编译同一版本，然后在第一台启动，第二台粘贴输出的命令：
+默认一次测试四个干净版本和三个打点版本，BS 为 `1,2,4,8,16,24`。其他 BS 通过 `--tokens` 显式指定；tiny-setup/tiny-probe 保留为可选版本。只测原版可用 `--variant base`；要测聚合实验，两台机器都编译同一版本，然后在第一台启动，第二台粘贴输出的命令：
 
 ```bash
 bash tests/ll_python_bench/build_all.sh --variants card-all

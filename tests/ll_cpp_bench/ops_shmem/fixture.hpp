@@ -13,7 +13,7 @@ struct Fixture {
     uint32_t rows = 0;
     Fixture(const llbench::Options& o, uint32_t bs)
     {
-        const uint32_t perServer = std::min(o.world, 16U), servers = o.world / perServer;
+        const uint32_t perServer = std::min(o.world, o.ranksPerHost), servers = o.world / perServer;
         const uint32_t localExperts = o.experts / o.world;
         const uint32_t alignedBs = (bs + 7U) / 8U * 8U;
         experts = llbench::routes(o, bs);

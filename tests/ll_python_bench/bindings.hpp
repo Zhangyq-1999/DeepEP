@@ -47,6 +47,19 @@ class Bench {
     void live() const { if (!shared_ || shared_->session->closed()) throw std::runtime_error("Session is closed"); }
     void hasCase() const { live(); if (!case_) throw std::runtime_error("Prepare a case first"); }
     void sync() const { wait(runtime_.stream, o_.kernelTimeout * 1000U); }
+    void initComm() {
+#if DEEPEP_LL_OPS_BASE
+        if ((o_.hidden != 3584 && o_.hidden != 7168) || o_.topk != 8 || o_.experts != 384)
+            throw std::runtime_error("ops-shmem-base supports H3584/H7168, TopK8, E384");
+        auto context = context_for(runtime_);
+        comm_ = std::make_unique<Buffer>(sizeof(context));
+        comm_->upload(&context, sizeof(context));
+#else
+        comm_ = std::make_unique<Buffer>(sizeof(DispatchDedup::CommArgs));
+        auto args = comm_args(runtime_);
+        comm_->upload(&args, sizeof(args));
+#endif
+    }
 public:
     Bench(int rank, int world, int localRank, const std::vector<std::string>& arguments,
           uintptr_t stream, const std::string& endpoint) {
@@ -66,9 +79,7 @@ public:
                     static_cast<uint8_t*>(session_->workspace()), static_cast<uint8_t*>(session_->ll_rdma_stage()),
                     session_->capacity(), shmemx_get_ffts_config(), cores, session_->ll_rdma_qps(), nullptr};
         shared_->runtime = runtime_;
-        comm_ = std::make_unique<Buffer>(sizeof(DispatchDedup::CommArgs));
-        auto args = comm_args(runtime_);
-        comm_->upload(&args, sizeof(args));
+        initComm();
     }
     explicit Bench(py::capsule capsule) : owner_(false) {
         if (!PyCapsule_IsValid(capsule.ptr(), sessionCapsule))
@@ -80,9 +91,7 @@ public:
         if (o_.ranksPerHost != DispatchDedup::kLlPhysicalRanksPerHost)
             throw std::runtime_error("Shared session requires matching topology");
         py::gil_scoped_release release;
-        comm_ = std::make_unique<Buffer>(sizeof(DispatchDedup::CommArgs));
-        auto args = comm_args(runtime_);
-        comm_->upload(&args, sizeof(args));
+        initComm();
     }
     py::capsule share() const {
         live();
@@ -114,10 +123,20 @@ public:
     py::dict identity() const {
         py::dict d;
         d["source_id"] = DEEPEP_BENCH_SOURCE_ID;
+#if DEEPEP_LL_OPS_BASE
+        d["implementation"] = "ops-shmem-base";
+        d["upstream_revision"] = LL_OPS_REV;
+        d["transport"] = "SHMEM per-core QP Put + quiet at upstream batch boundary";
+        d["original"] = false;
+        d["profile_build"] = false;
+        // Upstream has scatter/gather/send roles, followed by all-core final
+        // combine. A fixed receive-core count would misdescribe that schedule.
+        d["recv_cores"] = 0;
+        d["core_layout"] = "upstream-scatter-gather-send-then-all-core-final";
+        d["return_options"] = 0;
+#else
         d["original"] = bool(DEEPEP_LL_COMBINE_ORIGINAL);
         d["profile_build"] = bool(deepep_ll_combine_profile_enabled());
-        d["ranks_per_host"] = o_.ranksPerHost;
-        d["active_aiv"] = runtime_.cores;
         d["recv_cores"] = CombineDedup::EpCombineRecvCoreCount(runtime_.cores);
         d["core_layout"] = CombineDedup::kCombineInterleavedCores ? "odd-send-even-receive" : "halves";
         d["control_l2"] = CombineDedup::kCombineControlL2;
@@ -127,8 +146,11 @@ public:
         d["data_l2"] = dataL2;
         d["ready_mode"] = DEEPEP_LL_COMBINE_READY;
         d["remote_first"] = bool(deepep_ll_combine_return_options() & 1U);
-        d["rdma_qps"] = runtime_.rdmaQps;
         d["return_options"] = deepep_ll_combine_return_options();
+#endif
+        d["ranks_per_host"] = o_.ranksPerHost;
+        d["active_aiv"] = runtime_.cores;
+        d["rdma_qps"] = runtime_.rdmaQps;
         d["case_signature"] = o_.signature();
         return d;
     }
@@ -158,7 +180,14 @@ public:
             checked(aclrtMemset(local_base(runtime_)+uint64_t(bank)*DispatchDedup::kEpServerDedupWindowBytes+
                 CombineCoalesce::kBase,packed.bytes,0,packed.bytes), "reset coalescing workspace");
 #endif
+#if DEEPEP_LL_OPS_BASE
+        uint64_t ub = 0;
+        platform_ascendc::PlatformAscendCManager::GetInstance()->GetCoreMemSize(platform_ascendc::CoreMemType::UB, ub);
+        if (ub < 128 * 1024) throw std::runtime_error("Cannot query sufficient UB capacity");
+        case_ = std::make_unique<Case>(o_, bs, runtime_.cores, ub, comm_->p);
+#else
         case_ = std::make_unique<Case>(o_, bs, runtime_.cores, comm_->p);
+#endif
 #if DEEPEP_BENCH_PROFILE
         profileData_.assign(size_t(runtime_.cores) * CombineProfile::kWords, 0U);
         profileBuffer_ = std::make_unique<Buffer>(profileData_.size() * sizeof(uint64_t));
@@ -168,13 +197,17 @@ public:
     }
     void dispatch() {
         hasCase(); py::gil_scoped_release release;
+#if !DEEPEP_LL_OPS_BASE
         dispatch_server_dedup_kernel_do_v2(runtime_.stream, &case_->dispatch, case_->variant);
+#endif
         sync();
     }
     void clearFlags() {
         hasCase(); py::gil_scoped_release release;
+#if !DEEPEP_LL_OPS_BASE
         const uint64_t blocks = uint64_t(case_->bs)*o_.topk*((uint64_t(o_.hidden)*2+479)/480);
         combine_clear_result_flags_kernel_do(runtime_.stream, local_base(runtime_), blocks, runtime_.cores);
+#endif
         sync();
     }
     // Enqueue only: the surrounding local Notify is still closed here.
@@ -200,7 +233,11 @@ public:
         // All tensor allocation, routing and Host validation precede the gate.
         enqueue(gate.get(), runtime_.stream, [&] { callback(); }, timer, [&] {
             py::gil_scoped_release release;
+#if DEEPEP_LL_OPS_BASE
+            ops_shmem_combine_do(runtime_.stream, &case_->args);
+#else
             combine_server_dedup_kernel_do(runtime_.stream, &case_->combine);
+#endif
         });
         py::gil_scoped_release release;
         sync();

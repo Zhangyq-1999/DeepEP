@@ -73,8 +73,12 @@ def format_report(config, identity, results, run_id, status="RUNNING"):
              "Event_us=per-iteration rank-MAX; no samples removed; worst iteration is 1-based",
              "clean=performance; profile=instrumented diagnostics; Perfetto uses independent core-entry origins", TABLE_HEADER]
     lines += [result_row(r) for r in results]
-    lines += [f"ID {v} aiv={i['active_aiv']} recv={i['recv_cores']} qps={i['rdma_qps']} options={i['return_options']} layout={i.get('core_layout','halves')} control_l2={int(i.get('control_l2',False))} data_l2={i.get('data_l2',0)} ready={i.get('ready_mode',0)} remote_first={int(i.get('remote_first',False))}"
+    lines += [(f"ID {v} aiv={i['active_aiv']} qps={i['rdma_qps']} layout={i['core_layout']} l2=upstream"
+               if i.get("upstream_revision") else
+               f"ID {v} aiv={i['active_aiv']} recv={i['recv_cores']} qps={i['rdma_qps']} options={i['return_options']} layout={i.get('core_layout','halves')} control_l2={int(i.get('control_l2',False))} data_l2={i.get('data_l2',0)} ready={i.get('ready_mode',0)} remote_first={int(i.get('remote_first',False))}")
               for v,i in identity.items()]
+    lines += [f"REF {v} upstream={i['upstream_revision']} transport={i['transport']}; kernel unchanged except transport adapter; no internal profile"
+              for v,i in identity.items() if i.get("upstream_revision")]
     lines += [diagnostic_row(r) for r in results]
     for variant,bs in dict.fromkeys((r["variant"],r["tokens"]) for r in results):
         modes = {r["sync"]:r["rank_max"]["p50"] for r in results if r["tokens"]==bs and r["variant"]==variant}
@@ -222,7 +226,8 @@ def write_timing_artifacts(directory, result):
         profile_level=c["profile"] if result["kind"]=="profile" else 0,
         rank_max_mean_us=s["mean"],rank_max_min_us=s["min"],rank_max_max_us=s["max"],p50_us=s["p50"],p99_us=s["p99"],
         core_layout=i.get("core_layout","halves"),control_l2=int(i.get("control_l2",False)),data_l2=i.get("data_l2",0),
-        ready=i.get("ready_mode",0),remote_first=int(i.get("remote_first",False)))])
+        ready=i.get("ready_mode",0),remote_first=int(i.get("remote_first",False)),
+        upstream_revision=i.get("upstream_revision",""),transport=i.get("transport",""))])
     ranks = result["per_rank_us"]
     append_csv(directory/"rank-max.csv",[dict(tokens=result["tokens"],iteration=j,
         rank=max(range(len(ranks)),key=lambda r:ranks[r][j]),us=value)
@@ -464,7 +469,7 @@ def main():
         if any(i.get("profile_build") for i in identities.values()):
             # The compact report already includes clean/profile tables for each BS.
             print("\n"+"\n".join(line for line in report.splitlines()
-                if line.startswith(("LL_PY_REPORT_","CFG ","SW ","SYNC ","ID "))),flush=True)
+                if line.startswith(("LL_PY_REPORT_","CFG ","SW ","SYNC ","ID ","REF "))),flush=True)
         else: print("\n"+report,flush=True)
     progress.set(f"rank={rank} PASS"); progress.stopped.set()
 

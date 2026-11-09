@@ -34,6 +34,7 @@ __aicore__ inline void run_ops(GM_ADDR context, GM_ADDR expanded, GM_ADDR expert
     t.enablePreReduce = true;
     AscendC::TPipe pipe;
     MoeDistributeCombineV2RoceImpl::MoeDistributeCombineV2Roce<T, T, int32_t, 0, false> op;
+    // HasAddRmsNorm=false: upstream writes XOut (argument 19), not yOut.
     op.Init(context, expanded, experts, assist, counts, nullptr, nullptr, weights, expandedWeights, nullptr, nullptr,
             nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, output, nullptr, &pipe, &tiling);
     op.Process();

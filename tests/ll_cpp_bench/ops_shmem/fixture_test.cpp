@@ -6,14 +6,17 @@
 
 int main()
 {
-    for (uint32_t world : {2U, 4U, 8U, 16U, 32U}) {
-        for (uint32_t bs : {32U, 48U, 64U, 72U, 256U}) {
+    for (uint32_t perHost : {4U, 16U}) {
+    for (uint32_t world : {2U, 4U, 8U, 16U, 32U, 64U}) {
+        if (world > perHost * 4U) continue;
+        for (uint32_t bs : {1U, 2U, 4U, 8U, 16U, 24U, 32U, 64U, 256U}) {
             for (const auto& route : {"random", "hotspot"}) {
                 llbench::Options o;
                 o.world = world;
+                o.ranksPerHost = perHost;
                 o.hidden = 16;
                 o.route = route;
-                const auto group = std::min(world, 16U), servers = world / group;
+                const auto group = std::min(world, perHost), servers = world / group;
                 const auto alignedBs = (bs + 7) / 8 * 8;
                 std::vector<std::vector<int32_t>> ids(world);
                 for (uint32_t rank = 0; rank < world; ++rank) {
@@ -53,6 +56,7 @@ int main()
                 }
             }
         }
+    }
     }
     std::cout << "ops fixture: every route delivered exactly once; gather masks match scatter slots\n";
 }

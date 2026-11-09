@@ -1,6 +1,8 @@
 #include "fixture.hpp"
 #include "../sample_report.hpp"
+#ifndef LL_BENCH_PYTHON
 #include "../mpi_coordinator.hpp"
+#endif
 #include "../variant_api.hpp"
 #include "../entry_sync.hpp"
 #include "runtime/ll_core_config.hpp"
@@ -100,12 +102,21 @@ struct DeviceCase {
         }
         return worst;
     }
+    void flipExpertSign(const llbench::Options&)
+    {
+        // Exercise new payloads at the same addresses across upstream epochs.
+        for (auto& value : data.expanded) value ^= 0x8000U;
+        for (auto& value : data.expected) value ^= 0x8000U;
+        if (!data.expanded.empty())
+            check(aclrtMemcpy(args.expanded, data.expanded.size() * 2, data.expanded.data(),
+                              data.expanded.size() * 2, ACL_MEMCPY_HOST_TO_DEVICE), "replace ops inputs");
+    }
 };
 opsbench::Context context_for(const llbench::Runtime& session)
 {
     opsbench::Context c{};
     c.rank = session.options.rank;
-    c.ranksPerServer = std::min(session.options.world, 16U);
+    c.ranksPerServer = std::min(session.options.world, session.options.ranksPerHost);
     const uint32_t server = c.rank / c.ranksPerServer, servers = session.options.world / c.ranksPerServer;
     for (uint32_t peer = server * c.ranksPerServer; peer < (server + 1) * c.ranksPerServer; ++peer) {
         void* address = peer == c.rank ? session.workspace : aclshmem_ptr(session.workspace, peer);
@@ -125,6 +136,11 @@ opsbench::Context context_for(const llbench::Runtime& session)
 }
 }  // namespace
 
+#ifdef LL_BENCH_PYTHON
+// Reuse the same Python session, launch gate and Event boundary as DeepEP.
+using Case = DeviceCase;
+#include "../../ll_python_bench/bindings.hpp"
+#else
 LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
 {
     static_assert(llbench::workspaceBytes == opsbench::workspaceBytes);
@@ -176,6 +192,14 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
         entry.complete("Combine correctness", bs);
         double error = item.precision(o.dtype == "bf16");
         peers.barrier();
+        for (uint32_t generation = 0; generation < 4; ++generation) {
+            if (generation % 2 == 0) item.flipExpertSign(o);
+            peers.barrier();
+            entry.enqueue(launch);
+            entry.complete("cache reuse correctness", bs, generation);
+            error = std::max(error, item.precision(o.dtype == "bf16"));
+            peers.barrier();
+        }
         Event start, end;
         std::vector<float> times;
         for (uint32_t i = 0; i < o.warmup + o.iterations; ++i) {
@@ -217,3 +241,4 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
         peers.barrier();
     }
 }
+#endif

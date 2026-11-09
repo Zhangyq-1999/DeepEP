@@ -1,5 +1,7 @@
 # BS1–24 Combine 对照（2026-11-09）
 
+本轮数据后已将默认测试收敛为 BS1/2/4/8/16/24，保留 base、route-only、tiny，加入固定到 d1bad1c 的 `ops-shmem-base`。tiny-setup/tiny-probe 改为可选。参考版的源码、传输差异及验证范围见 [参考基线说明](ops_shmem/README.md)；下文保留本轮实验设计记录。
+
 目标是缩短极小 BS 的固定启动/准备和轮询开销。当前没有同一轮 BS1–24
 干净版与细粒度测量，不把 BS32 的阶段比例外推为小 BS 已证实的瓶颈。
 较优对照是 `input6-l2-route-only`（ready28/data7）；原始 `base` 继续冻结。
@@ -20,8 +22,8 @@
 
 相对此前固定参考 e6c7d2e，该 Combine 文件的最近变化主要是批量接口及尾批
 CQ/SQ 回收处理（+5/-11行）。不能把该分支其他算子的“多QP”提交标题当成
-Combine 已开启同样多QP的证据。现有 `ops-shmem-base` 适配器仍固定原提交，
-没有静默替换它的来源或引入 HCCL 初始化/算子调用；SHMEM SDK 不改。
+Combine 已开启同样多QP的证据。后续 `ops-shmem-base` 适配器已显式更新到 d1bad1c，
+没有引入 HCCL 初始化/算子调用；SHMEM SDK 不改。
 
 ## 三个独立实验
 

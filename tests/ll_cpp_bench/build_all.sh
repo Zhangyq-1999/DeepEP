@@ -12,8 +12,8 @@ while (($#)); do
             cat <<'USAGE'
 build_all.sh [--variants NAME[,NAME...]] [--ranks-per-host 4|16] [--jobs N] [--dry-run]
              [--cann-home DIR] [--mpi-home DIR] [--shmem-root DIR]
-Defaults: base/input6-l2-route-only/input6-l2-tiny-setup/input6-l2-tiny-probe/input6-l2-tiny, plus diagnostics.
-Target BS1/2/4/8/16/24; BS32/48/64/72/256 check regressions.
+Defaults: base/ops-shmem-base/input6-l2-route-only/input6-l2-tiny, plus DeepEP diagnostics.
+Default BS1/2/4/8/16/24; use --tokens at runtime for other shapes.
 base is the frozen original; ready-snapshot remains opt-in.
 wqe-prep prepares a private UB WQE while M4 payload staging runs, then publishes it.
 wqe-prefetch overlaps the next ready task's input reads with the previous staged return.
@@ -66,7 +66,7 @@ meta/meta-profile selects metadata only; prefetch/prefetch-profile selects overl
 --ranks-per-host 16: single-host EP4/8/16, two-host EP32 or four-host EP64.
 Previous experiments pipeline, return, opt-profile, r36-profile and early-profile remain
 available through --variants but are excluded from the default build.
-ops-shmem-base builds the optional ops-transformer baseline with SHMEM transport.
+ops-shmem-base compiles the pinned upstream algorithm with SHMEM transport (4 or 16 ranks/host).
 Existing build directories are updated in place; all flags are explicit.
 Dispatch compiler outputs are shared; each variant compiles only its own Combine.
 SDK defaults: CANN cann-9.2.T101, MPI /usr/local/mpich-3.2.1,

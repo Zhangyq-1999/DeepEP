@@ -46,11 +46,9 @@ def test_pinned_ops_adaptation_changes_only_transport(tmp_path):
     after = (tmp_path / "ops-kernel" / rel).read_text(encoding="utf-8")
     replacements = (
         ('#include "adv_api/hcomm/hcomm.h"', '#include "transport.hpp"'),
-        ('#include "../../../common/op_kernel/mc2_roce_wqe_config.h"', ''),
         ('Hcomm<CommProtocol::COMM_PROTOCOL_ROCE>', 'opsbench::Transport'),
         ('BatchHandle<ChannelHandle>', 'opsbench::Batch'),
         ('const ChannelHandle channel', 'const uint64_t channel'),
-        ('hcomm_.template WriteNbi<Mc2RoceSend::NO_CQE_CONFIG>', 'hcomm_.WriteNbi'),
     )
     expected = before
     for old, new in replacements:

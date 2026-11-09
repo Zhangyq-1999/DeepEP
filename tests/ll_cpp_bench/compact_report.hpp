@@ -394,6 +394,9 @@ void suite_report(const fs::path& root)
                       << ((values.back() - values.front()) > .2 * p50 ? " WIDE" : "") << '\n';
         }
         for (const auto& d : results) {
+            if (d.config.count("upstream_revision") && !d.config.at("upstream_revision").empty())
+                std::cout << "REF " << diagnostic_id(d.variant) << " upstream=" << d.config.at("upstream_revision")
+                          << " transport=SHMEM-per-core-QP; upstream algorithm; no internal profile\n";
             std::vector<double> values;
             for (const auto& [i, e] : d.events) values.push_back(e.us);
             std::sort(values.begin(), values.end());
