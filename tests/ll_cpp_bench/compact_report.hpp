@@ -105,6 +105,27 @@ void compact_times(const Record& r, std::initializer_list<Word> words)
 }
 void compact_record(const Record& r, bool brief = false)
 {
+    if (r[OpsRole]) {
+        const char* role = r[OpsRole] == 1 ? "scatter" : r[OpsRole] == 2 ? "gather" : "rdma";
+        std::cout << " O r/c=" << r[Rank] << '/' << r[Core] << " role=" << role << " body=" << r[FlushDone]
+                  << " rows=" << r[StageRows] << '/' << r[PartialRows]
+                  << " contrib=" << r[PartialLocalContrib] << '/' << r[Contributions]
+                  << " final=" << r[FinalTokens] << " active=";
+        compact_times(r, {ActiveStageCores, ActiveGatherCores, ActiveRdmaCores, ActiveFinalCores});
+        std::cout << "\n  oe=";
+        compact_times(r, {InitEnd, StageEnd, ReadyFirstTask, PartialEnd, RdmaFirstPut, RdmaLastPut, DirectEnd,
+                          ReadyBegin, ReadyEnd, FinalInitEnd, FinalFirstReady, FinalLastReady, FinalLastStore, FinalEnd});
+        if (r[Level] >= 2)
+            std::cout << "\n  op plan/rows/tasks=" << r[ReadyPlanTicks] << '/' << r[RouteLoadedRows] << '/' << r[ReadyCachedTasks]
+                      << " poll= " << r[ReadyPollMisses] << '/' << r[ReadyPollCalls] << '/' << r[ReadyPollCheckTicks]
+                      << " tx=n/bytes/put/quiet/calls/max:" << r[RdmaPackets] << '/' << r[RdmaBytes] << '/' << r[RdmaPutTicks]
+                      << '/' << r[RdmaQuietTicks] << '/' << r[RdmaQuietCalls] << '/' << r[RdmaQuietMaxTicks]
+                      << " final_poll=" << r[ProbeMisses] << '/' << r[ProbeCalls] << '/' << r[ProbeTicks]
+                      << " reduce_store=" << r[PartialComputeIssueTicks] << '/' << r[PartialPackTicks]
+                      << '/' << r[FinalComputeIssueTicks] << '/' << r[FinalStoreIssueTicks];
+        std::cout << '\n';
+        return;
+    }
     if(r[CoalesceWorker]) {
         std::cout << " A r/c=" << r[Rank] << '/' << r[Core] << " body=" << r[FlushDone] << " end";
         for(Word w : {CoalesceReady,CoalesceSendBegin,RdmaFirstPut,RdmaLastPut,CoalesceSendEnd,
@@ -200,7 +221,10 @@ void compact_record(const Record& r, bool brief = false)
             if (r[ProbeBlockedSlot] == 0xffffffffU) std::cout << "all";
             else std::cout << r[ProbeBlockedSlot];
         }
-        std::cout << " inspect=" << r[TailInspectTicks] << '\n';
+        std::cout << " inspect=" << r[TailInspectTicks];
+        if (r[TailSampleStride])
+            std::cout << " sampled=" << r[TailSampleStride] << '/' << r[TailInspectCalls] << '/' << r[TailInspectSkipped];
+        std::cout << '\n';
     }
     if (r[EarlyIssueTicks] || r[MetadataBatches] || r[PollPauseCalls])
         std::cout << "  extra early/meta/pause_calls/pause_ticks=" << r[EarlyIssueTicks] << '/' << r[MetadataBatches]
@@ -368,7 +392,10 @@ void suite_report(const fs::path& root)
                  "G=r/c window=W(wait)|O(observe, includes work) miss/calls/max_probe missing_rank/core/count inspect; omitted if same as R\n"
                  "q=first/all/done rounds/stalls/skips before_all/remote cached/reloads setup/plan/filter/snapshot/pipeline_issue retire\n"
                  "scan=GM_batches/rows/Vector_group_passes (16B/row); ub=snapshot_bytes/capacity/fallbacks; compact=FIRST_HOP/filter_rows/ticks\n"
-                 "T=last-miss; time=first/last/ready; src=slot:rank/core/path/type; D=direct P=partial.\n"
+                 "T=last observed miss (schema26: first + every8 repeated misses/token); time=first/last/ready; src=slot:rank/core/path/type; D=direct P=partial.\n"
+                 "O=upstream role; active=scatter/gather/RDMA/final cores per rank (gather requires level2).\n"
+                 "oe=init/scatter/first_ready/gather/put_first/put_last/sender/barrier_begin/barrier_end/final_init/first/last/store/end; ops poll=miss/calls/ticks, NOT wire latency.\n"
+                 "O reduce_store=gather reduction/output/final reduction/output ticks (includes input loads or output packing).\n"
                  "Tfreq links=producer>receiver/path/type:sample_count\n";
     std::cout << std::fixed << std::setprecision(2);
     for (const auto& [bs, results] : cases) {
@@ -396,7 +423,8 @@ void suite_report(const fs::path& root)
         for (const auto& d : results) {
             if (d.config.count("upstream_revision") && !d.config.at("upstream_revision").empty())
                 std::cout << "REF " << diagnostic_id(d.variant) << " upstream=" << d.config.at("upstream_revision")
-                          << " transport=SHMEM-per-core-QP; upstream algorithm; no internal profile\n";
+                          << " transport=SHMEM-per-core-QP; upstream algorithm; "
+                          << (d.records.empty() ? "no internal profile" : "instrumented diagnostics") << '\n';
             std::vector<double> values;
             for (const auto& [i, e] : d.events) values.push_back(e.us);
             std::sort(values.begin(), values.end());
@@ -422,6 +450,28 @@ void suite_report(const fs::path& root)
                 if (ranks.size() != integer(d.config.at("ep"))) throw std::runtime_error("Partial global diagnostics");
                 std::cout << "D " << diagnostic_id(d.variant) << ' ' << (i == worst ? "worst" : "p50") << " i=" << i
                           << " event_r=" << event.rank << " us=" << event.us << '\n';
+                if (!records.empty() && records.front()[OpsRole]) {
+                    std::set<std::pair<uint64_t, uint64_t>> printed;
+                    // Real records from the Event rank: longest active scatter,
+                    // gather, sender and final worker; never synthesize a pipeline.
+                    for (uint32_t role = 1; role <= 4; ++role) {
+                        const Record* selected = nullptr;
+                        const Word end = role == 1 ? StageEnd : role == 2 ? PartialEnd : role == 3 ? DirectEnd : FinalEnd;
+                        for (const auto& r : records)
+                            if (r[Rank] == event.rank && r.present[end] &&
+                                (role == 4 ? r[FinalTokens] != 0 : r[OpsRole] == role) &&
+                                (!selected || r[end] > (*selected)[end])) selected = &r;
+                        if (selected && printed.emplace((*selected)[Rank], (*selected)[Core]).second) compact_record(*selected);
+                    }
+                    const Record* lastPut = nullptr;
+                    for (const auto& r : records) if (r.present[RdmaLastPut] &&
+                        (!lastPut || r[RdmaLastPut] > (*lastPut)[RdmaLastPut])) lastPut = &r;
+                    if (lastPut && printed.emplace((*lastPut)[Rank], (*lastPut)[Core]).second) {
+                        std::cout << " O_latest_put_offset (independent core origins)\n";
+                        compact_record(*lastPut);
+                    }
+                    continue;
+                }
                 compact_supply(records);
                 const Record* receiveRecord = nullptr;
                 for (bool receive : {false, true}) {

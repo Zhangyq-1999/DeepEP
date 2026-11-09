@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Shared defaults for the two convenience entry points. Source from Bash.
-# Keep frozen base, unchanged upstream algorithm, measured route-only and tiny candidate.
-ll_bench_clean_variants=base,ops-shmem-base,input6-l2-route-only,input6-l2-tiny
-ll_bench_profiles=ref-profile,input6-l2-route-only-profile,input6-l2-tiny-profile
+# Keep frozen base, upstream reference and measured route-only. Older candidates
+# remain selectable; only the two algorithms under investigation need diagnostics.
+ll_bench_clean_variants=base,ops-shmem-base,input6-l2-route-only
+ll_bench_profiles=ops-shmem-base-profile,input6-l2-route-only-profile
 ll_bench_variants=$ll_bench_clean_variants,$ll_bench_profiles
 ll_bench_cann=${ASCEND_HOME_PATH:-/usr/local/Ascend/cann-9.2.T101}
 ll_bench_mpi=${MPI_HOME:-/usr/local/mpich-3.2.1}

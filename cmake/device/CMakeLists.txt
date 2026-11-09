@@ -111,6 +111,10 @@ set_property(SOURCE "${DEEPEP_SOURCE_DIR}/csrc/kernels/combine/low_latency.cpp"
 if(DEEPEP_LL_COMBINE_PROFILE)
     set_property(SOURCE "${DEEPEP_SOURCE_DIR}/csrc/kernels/combine/low_latency.cpp"
         APPEND PROPERTY COMPILE_DEFINITIONS DEEPEP_LL_COMBINE_PROFILE=1)
+    if(DEEPEP_LL_OPS_BASE)
+        set_property(SOURCE "${DEEPEP_SOURCE_DIR}/tests/ll_cpp_bench/ops_shmem/device.cpp"
+            APPEND PROPERTY COMPILE_DEFINITIONS DEEPEP_LL_COMBINE_PROFILE=1)
+    endif()
 endif()
 if(DEEPEP_LL_COMBINE_EARLY_REDUCE)
     set_property(SOURCE "${DEEPEP_SOURCE_DIR}/csrc/kernels/combine/low_latency.cpp"

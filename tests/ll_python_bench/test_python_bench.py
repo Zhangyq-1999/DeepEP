@@ -31,7 +31,7 @@ def test_default_and_four_host_plan():
     assert cmd[cmd.index("--devices")+1]=="12,13,14,15"
     assert "--nproc_per_node=4" in cmd
     assert cmd[cmd.index("--sync")+1]=="device"
-    assert cmd[cmd.index("--variants")+1]=="base,ops-shmem-base,input6-l2-route-only,input6-l2-tiny,ref-profile,input6-l2-route-only-profile,input6-l2-tiny-profile"
+    assert cmd[cmd.index("--variants")+1]=="base,ops-shmem-base,input6-l2-route-only,ops-shmem-base-profile,input6-l2-route-only-profile"
     assert launch.plan(args)[2]!=run_id
     other = launch.parser().parse_args([run_id,"--node-rank","1"])
     assert launch.plan(other)[3]==out
@@ -50,17 +50,17 @@ def test_default_and_four_host_plan():
             assert cmd[cmd.index("--sync")+1] == "hccl"
     args = launch.parser().parse_args(["--node-rank","0","--profile","0"])
     cmd = launch.plan(args)[-1]
-    assert cmd[cmd.index("--variants")+1] == "base,ops-shmem-base,input6-l2-route-only,input6-l2-tiny"
+    assert cmd[cmd.index("--variants")+1] == "base,ops-shmem-base,input6-l2-route-only"
 
 
-def test_ops_baseline_has_no_synthetic_profile_phase():
+def test_ops_baseline_has_separate_profile_phase():
     launch = module("launch")
     for per_host, hosts in ((4,"a,b"), (16,"a,b"), (16,"a,b,c,d")):
         args = launch.parser().parse_args(["--node-rank","0","--variant","ops-shmem-base",
                                           "--hosts",hosts,"--ranks-per-host",str(per_host)])
         command = launch.plan(args)[-1]
-        assert launch.phase_names(args) == ["ops-shmem-base"]
-        assert command[command.index("--variants")+1] == "ops-shmem-base"
+        assert launch.phase_names(args) == ["ops-shmem-base", "ops-shmem-base-profile"]
+        assert command[command.index("--variants")+1] == "ops-shmem-base,ops-shmem-base-profile"
 
 
 def test_clean_build_suite_forwards_environment_and_stops(tmp_path):
@@ -81,15 +81,15 @@ if [[ "$2" == "${FAIL_VARIANT:-}" ]]; then exit 17; fi
     result = subprocess.run(cmd,capture_output=True,text=True,check=True)
     calls = result.stdout.splitlines()
     assert calls == [f"CALL --variant {v} --ranks-per-host 16 --conda-env py311_zyq"
-                     for v in ('base', 'ops-shmem-base', 'input6-l2-route-only', 'input6-l2-tiny', 'ref-profile', 'input6-l2-route-only-profile', 'input6-l2-tiny-profile')]
+                     for v in ('base', 'ops-shmem-base', 'input6-l2-route-only', 'ops-shmem-base-profile', 'input6-l2-route-only-profile')]
     failed = subprocess.run(cmd,env=dict(os.environ,FAIL_VARIANT="input6-l2-route-only"),capture_output=True,text=True)
     assert failed.returncode == 17 and "input6-l2-tiny" not in failed.stdout
     invalid = subprocess.run(cmd+["--variants","base,typo"],capture_output=True,text=True)
     assert invalid.returncode == 2 and not invalid.stdout
     clean = subprocess.run(cmd+["--profile","0"],capture_output=True,text=True,check=True)
-    assert clean.stdout.splitlines() == calls[:4]
+    assert clean.stdout.splitlines() == calls[:3]
     reference = subprocess.run(cmd+["--variants","ops-shmem-base"],capture_output=True,text=True,check=True)
-    assert reference.stdout.splitlines() == [calls[1]]
+    assert reference.stdout.splitlines() == [calls[1], calls[3]]
 
 
 @pytest.mark.parametrize("extra",[["--devices","12,12,14,15"],["--node-rank","2"],["--tokens","32","--iters","0"],

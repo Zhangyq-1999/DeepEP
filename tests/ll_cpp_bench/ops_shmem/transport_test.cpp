@@ -13,6 +13,12 @@ int main()
     std::fill(local + 512, local + 1024, 0x21);
     std::fill(local + 1024, local + 1536, 0x43);
     opsbench::Transport transport;
+#ifdef DEEPEP_LL_COMBINE_PROFILE
+    std::vector<uint64_t> records(56 * CombineProfile::kWords);
+    CombineProfile::DeviceProfile profile;
+    profile.Init(reinterpret_cast<uint8_t*>(records.data()), 2);
+    transport.SetProfile(&profile);
+#endif
     transport.Init({scratch}, sizeof(scratch));
     auto batch = transport.MakeBatchHandle(17, {scratch}, sizeof(scratch), local, local);
     transport.WriteNbi(batch, local + 4096, local + 512, 512);
@@ -28,5 +34,14 @@ int main()
     assert(std::memcmp(remote + 4096, local + 512, 1024) == 0);
     transport.BatchCommit(batch);
     assert(Model::quiets == 1);  // empty batch has no completion to retire
+#ifdef DEEPEP_LL_COMBINE_PROFILE
+    profile.Mark(CombineProfile::FlushDone);
+    profile.Finish(1, 32, 2);
+    using namespace CombineProfile;
+    const auto* row = records.data() + 53 * kWords;
+    assert(row[RdmaPackets] == 2 && row[RdmaBytes] == 1024);
+    assert(row[RdmaQuietCalls] == 1);
+    assert((row[Valid] & (1ULL << RdmaFirstPut)) && (row[Valid] & (1ULL << RdmaLastPut)));
+#endif
     std::cout << "SHMEM adapter: symmetric translation, per-core QP and batch completion passed\n";
 }

@@ -76,7 +76,9 @@ struct Runtime {
 };
 }
 namespace DispatchDedup {struct CommArgs {};}
+#if !DEEPEP_LL_OPS_BASE
 namespace CombineDedup {inline unsigned EpCombineRecvCoreCount(unsigned n) {return n/2;}}
+#endif
 inline unsigned deepep_ll_combine_profile_enabled() {return DEEPEP_BENCH_PROFILE;}
 inline unsigned deepep_ll_combine_return_options() {return TEST_VARIANT;}
 inline unsigned deepep_ll_combine_data_l2() {return 0;}
@@ -93,11 +95,11 @@ struct Buffer {
 };
 struct Combine {uint8_t* stageTimer=nullptr; unsigned timerMode=0,bs=0;};
 struct Case {
-    unsigned bs,variant=0; int dispatch=0,args=0; Combine combine;
+    unsigned bs,variant=0; int dispatch=0; Combine args,combine;
     Case(const llbench::Options&,unsigned n,unsigned,void*):bs(n) {++cases;combine.bs=n;}
     Case(const llbench::Options&,unsigned n,unsigned,uint64_t ub,void*):bs(n) {
         if(ub!=192*1024) throw std::runtime_error("invalid upstream UB capacity");
-        ++cases;
+        ++cases; args.bs=n;
     }
     ~Case() {--cases;}
     void flipExpertSign(const llbench::Options&) {}
@@ -118,7 +120,7 @@ struct PlatformAscendCManager {
     void GetCoreMemSize(CoreMemType,uint64_t& bytes) {bytes=192*1024;}
 };
 }
-inline void ops_shmem_combine_do(void*,int*) {++launches;}
+
 inline void dispatch_server_dedup_kernel_do_v2(void*,void*,unsigned) {}
 inline void combine_clear_result_flags_kernel_do(void*,void*,uint64_t,unsigned) {}
 inline void combine_server_dedup_kernel_do(void*,Combine* args) {
@@ -135,6 +137,29 @@ inline void combine_server_dedup_kernel_do(void*,Combine* args) {
         r[Schema]=kSchema;r[Complete]=1;r[World]=8;r[Core]=c;r[Tokens]=args->bs;r[Level]=args->timerMode;
         r[Entry]=1000000000000ULL+c*100;r[FlushDone]=r[Entry]+1000+launches+c;
         r[Valid]=(1ULL<<Entry)|(1ULL<<FlushDone);
+    }
+}
+inline void ops_shmem_combine_do(void* stream,Combine* args) {
+    combine_server_dedup_kernel_do(stream,args);
+    if(!DEEPEP_BENCH_PROFILE) return;
+    using namespace CombineProfile;
+    auto data=reinterpret_cast<uint64_t*>(args->stageTimer);
+    for(unsigned c=0;c<56;++c) {
+        auto r=data+c*kWords;
+        r[OpsRole]=c<28?1:c<54?2:3;
+        if(c<28) {
+            r[StageEnd]=r[Entry]+300;r[StageRows]=1;r[Valid]|=1ULL<<StageEnd;
+        } else if(c<54) {
+            r[PartialBegin]=r[Entry]+30;r[PartialEnd]=r[Entry]+550;r[PartialRows]=1;
+            r[Valid]|=(1ULL<<PartialBegin)|(1ULL<<PartialEnd);
+        } else {
+            r[DirectBegin]=r[Entry]+40;r[DirectEnd]=r[Entry]+590;
+            r[RdmaFirstPut]=r[Entry]+500;r[RdmaLastPut]=r[Entry]+580;
+            r[Valid]|=(1ULL<<DirectBegin)|(1ULL<<DirectEnd)|(1ULL<<RdmaFirstPut)|(1ULL<<RdmaLastPut);
+        }
+        r[ReadyBegin]=r[Entry]+600;r[ReadyEnd]=r[Entry]+700;
+        r[FinalBegin]=r[Entry]+701;r[FinalEnd]=r[Entry]+900;r[FinalTokens]=1;
+        r[Valid]|=(1ULL<<ReadyBegin)|(1ULL<<ReadyEnd)|(1ULL<<FinalBegin)|(1ULL<<FinalEnd);
     }
 }
 extern "C" void ll_bench_entry_sync_do(void*,uint64_t) {}
@@ -166,12 +191,12 @@ PYBIND11_MODULE(_ll_py_debug,m) {
         spec.loader.exec_module(module)
         return module
     modules=[]
-    for index in range(4):
+    for index in range(5):
         path=tmp_path/f"variant{index}.pyd"
         subprocess.run([zig,"c++","-std=c++17","-shared","-O0","-DMS_WIN64",
                         f"-DTEST_VARIANT={index}", f"-DDEEPEP_LL_COMBINE_READY={20 if index else 12}",
-                        f"-DDEEPEP_BENCH_PROFILE={int(index==2)}", "-DDEEPEP_LL_PHYSICAL_RANKS_PER_HOST=4",
-                        f"-DDEEPEP_LL_OPS_BASE={int(index==3)}",
+                        f"-DDEEPEP_BENCH_PROFILE={int(index in (2,4))}", "-DDEEPEP_LL_PHYSICAL_RANKS_PER_HOST=4",
+                        f"-DDEEPEP_LL_OPS_BASE={int(index in (3,4))}",
                         "-I",str(tmp_path),"-I",str(HERE),"-I",str(HERE.parents[1]/"csrc"),
                         "-I",str(HERE.parent/"ll_cpp_bench"),
                         "-I",pybind11.get_include(),"-I",sysconfig.get_path("include"),
@@ -179,7 +204,7 @@ PYBIND11_MODULE(_ll_py_debug,m) {
                         str(Path(sys.base_prefix)/"libs"/f"python{sys.version_info.major}{sys.version_info.minor}.lib"),
                         "-o",str(path)],check=True,timeout=180,capture_output=True,text=True)
         modules.append((load(path,f"variant{index}._ll_py_combine"),load(path,f"variant{index}._ll_py_debug")))
-    (base,bdebug),(opt,odebug),(profile,pdebug),(ops,opsdebug)=modules
+    (base,bdebug),(opt,odebug),(profile,pdebug),(ops,opsdebug),(ops_profile,opdebug)=modules
     owner=base.Bench(0,8,0,["--profile","2"],123,"tcp://a:1")
     assert bdebug.counts()[:2]==(1,0)
     owner.prepare(32); owner.sample(lambda:None,False); owner.release_case()
@@ -251,11 +276,34 @@ PYBIND11_MODULE(_ll_py_debug,m) {
     worker.write_timing_artifacts(tmp_path/"ops-shmem-base",result)
     report=subprocess.run([str(reporter),"--suite",str(tmp_path)],capture_output=True,text=True,check=True).stdout
     assert "upstream=test-upstream" in report and "no internal profile" in report
+    owner.reset_workspace()
+    upstream_profile=ops_profile.Bench(owner.share())
+    upstream_profile.prepare(32)
+    ops_profile_identity=upstream_profile.identity()
+    assert ops_profile_identity["profile_build"]
+    upstream_profile.sample(lambda:None,True)
+    upstream_profile.begin_profile(str(tmp_path/"ops-profile-records"),"hccl")
+    for _ in range(3): upstream_profile.sample(lambda:None,True)
+    upstream_profile.finish_profile([30,10,20],opdebug.gather)
+    upstream_profile.close()
+    ops_rows=list(csv.DictReader((tmp_path/"ops-profile-records/diagnostic.csv").open()))
+    assert {int(r["ops_role"]) for r in ops_rows} == {1,2,3}
+    ops_trace=json.loads(next((tmp_path/"ops-profile-records/perfetto").glob("*p50*.json")).read_text())
+    assert any(e["name"]=="ops all-core barrier" for e in ops_trace["traceEvents"])
+    assert not any(e["name"]=="group ready wait" for e in ops_trace["traceEvents"])
+    result=worker.summarize([[30,10,20]]*8)
+    result.update(tokens=32,kind="profile",sync="hccl",identity=ops_profile_identity,
+                  config=dict(world=8,hidden=3584,topk=8,experts=384,dtype="bf16",route="random",seed=0,
+                              capacity=256,warmup=10,profile=2))
+    worker.write_timing_artifacts(tmp_path/"ops-profile-records",result)
+    report=subprocess.run([str(reporter),"--suite",str(tmp_path)],capture_output=True,text=True,check=True).stdout
+    assert " O r/c=" in report and "role=gather" in report and "role=rdma" in report
+    assert "instrumented diagnostics" in report
     # Reference-only selection must also own and close a session normally.
     standalone=ops.Bench(0,8,0,[],123,"tcp://a:1")
     standalone.prepare(32); standalone.sample(lambda:None,True); standalone.release_case(); standalone.close()
     assert opsdebug.counts()==(1,1,0,0,0,2)
     owner.reset_workspace(); owner.close()
-    assert bdebug.counts()==(1,1,4,0,0,1)
+    assert bdebug.counts()==(1,1,5,0,0,1)
     with pytest.raises(RuntimeError,match="closed"): borrowed.prepare(32)
     with pytest.raises(RuntimeError,match="closed"): owner.share()

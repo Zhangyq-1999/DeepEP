@@ -8,8 +8,8 @@ import subprocess
 import pytest
 
 HERE = Path(__file__).resolve().parent
-PROFILES = ('ref-profile', 'input6-l2-route-only-profile', 'input6-l2-tiny-profile')
-CLEAN = ('base', 'ops-shmem-base', 'input6-l2-route-only', 'input6-l2-tiny')
+PROFILES = ('ops-shmem-base-profile', 'input6-l2-route-only-profile')
+CLEAN = ('base', 'ops-shmem-base', 'input6-l2-route-only')
 
 
 @pytest.fixture
@@ -76,7 +76,7 @@ def test_build_all_isolated_matrix_and_failure_stop(harness):
     assert len(calls) == len(CLEAN) + len(PROFILES)
     for name, call in zip((*CLEAN, *PROFILES), calls):
         assert call["--build-dir"].endswith("/build/ll-cpp-" + name)
-        assert call["--variant"] == (name if name in ("base", "ops-shmem-base") else "opt")
+        assert call["--variant"] == (name.removesuffix("-profile") if name.removesuffix("-profile") in ("base", "ops-shmem-base") else "opt")
         assert call["--profile"] == ("ON" if name.endswith("-profile") else "OFF")
         assert call["--small-batch"] == ("ON" if name == "opt-profile" else "OFF")
         assert call["--recv-cores"] == ("32" if name.startswith(("ready-r32", "input6-r32")) else "36" if name.startswith("ready-r36") else "0")
@@ -98,7 +98,7 @@ def test_build_all_isolated_matrix_and_failure_stop(harness):
         assert call["--coalesce"] == ("1" if name.startswith("card-") else "2" if name.startswith("server-") else "0")
         assert call["--coalesce-rows"] == ("1" if "-row" in name else "0")
         assert call["--shmem-root"].endswith("/third-party/shmem/install/shmem")
-    env["FAIL_BUILD"] = "ref-profile"
+    env["FAIL_BUILD"] = PROFILES[0]
     result = run("build_all.sh", ok=False)
     assert result.returncode == 17 and len(call_options(result.stdout)) == len(CLEAN)+1
     assert "CALL" not in run("build_all.sh", "--variants", "base,typo", ok=False).stdout
@@ -214,7 +214,7 @@ def test_four_host_commands_and_detection(harness):
     run, env = harness
     builds = call_options(run("build_all.sh", "--ranks-per-host", "16").stdout)
     assert len(builds) == len(CLEAN)+len(PROFILES) and all(call["--ranks-per-host"] == "16" for call in builds)
-    assert [call["--ready"] for call in builds] == ["0", "0", "28", "33", "0", "28", "33"]
+    assert [call["--ready"] for call in builds] == ["0", "0", "28", "0", "28"]
     hosts = "90.90.93.84,90.90.93.184,90.90.93.85,90.90.93.185"
     result = run("run_all.sh", "--ep", "64", "--ranks-per-host", "16", "--hosts", hosts,
                  "--tokens", "32,72,128,256", "--master-port", "30071")

@@ -16,11 +16,14 @@ class ProfileSamples {
     std::vector<uint64_t> full_;
 public:
     static constexpr uint32_t kSelections = 9;
-    void capture(const std::vector<uint64_t>& data, uint32_t cores, uint32_t recv, bool trace = true)
+    void capture(std::vector<uint64_t> data, uint32_t cores, uint32_t recv, bool trace = true)
     {
         using namespace CombineProfile;
         if (!recv || recv >= cores || data.size() != size_t(cores) * kWords)
             throw std::runtime_error("Invalid profile sample dimensions");
+        const auto active = profile_active_cores(data, cores);
+        for (uint32_t c = 0; c < cores; ++c)
+            std::copy(active.begin(), active.end(), data.begin() + c * kWords + ActiveStageCores);
         if (trace) full_.insert(full_.end(), data.begin(), data.end());
         uint32_t selected[kSelections] = {CombineDedup::kCombineInterleavedCores ? 1U : 0U,
                                CombineDedup::kCombineInterleavedCores ? 0U : cores - recv, 0, 0};
@@ -41,6 +44,15 @@ public:
         }
         if (!data[selected[3]*kWords+CoalesceWorker]) selected[3]=selected[0];
         auto score = [](const uint64_t* row, uint32_t selection) -> uint64_t {
+            if (row[OpsRole]) {
+                switch (selection) {
+                    case 4: return row[StageRows] ? profile_interval(row, Entry, StageEnd) : 0;
+                    case 5: return row[OpsRole] == 2 ? profile_interval(row, Entry, PartialEnd) : 0;
+                    case 6: return profile_interval(row, Entry, DirectEnd);
+                    case 7: return row[FinalTokens] ? profile_interval(row, Entry, FinalEnd) : 0;
+                    default: return row[ReadyPlanTicks];
+                }
+            }
             switch (selection) {
                 case 4: return profile_interval(row, Entry, StageEnd);
                 case 5: return profile_interval(row, Entry, StageDrained);

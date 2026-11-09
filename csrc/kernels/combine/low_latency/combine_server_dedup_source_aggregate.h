@@ -358,7 +358,7 @@ private:
                                          uint32_t selectedMask = 0U, bool tokenReady = true)
     {
 #ifdef DEEPEP_LL_COMBINE_PROFILE
-        if (!profile_.DetailClock()) return;
+        if (!profile_.InspectTail(token, ready)) return;
         const uint64_t begin = profile_.DetailClock();
         uint32_t mask = 0U, first = 0xffffffffU, count = 0U;
         if (!ready) {

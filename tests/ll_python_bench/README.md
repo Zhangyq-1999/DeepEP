@@ -7,7 +7,7 @@
 | 参数 | 默认值 |
 | --- | --- |
 | 主机 | `90.90.93.84,90.90.93.184` |
-| 算子 | `base,ops-shmem-base,input6-l2-route-only,input6-l2-tiny`；除参考仓版外，各有独立打点版 |
+| 算子 | `base,ops-shmem-base,input6-l2-route-only`；后两者有独立打点版 |
 | BS | `1,2,4,8,16,24` |
 | Hidden / TopK / Experts | `3584 / 8 / 384` |
 | 数据和路由 | BF16、random、seed 0 |
@@ -17,7 +17,7 @@
 
 Python 流程复用 C++ 用例的输入、路由、精度检查和原始 Combine kernel。Dispatch 只负责准备 Combine 的输入，放在计时外。每个 worker 只初始化一次 NPU、SHMEM；使用 HCCL 时也只创建一次 HCCL 通信组，依次完成所有版本的全部 BS。
 
-`ops-shmem-base` 直接编译参考仓 `ubx_reserve` 提交 `d1bad1c` 的 Combine，保留上游分核、轮询、分层归约、批次边界和全核最终规约。只把通信接到 SHMEM；与原仓 Hcomm 的批量发布/完成机制有差异，不能称为原 ACLNN 路径的完全复刻。其输入由相同路由在计时外构造，clean Event 与其他版本使用相同同步和统计口径。参考版没有插入 DeepEP 打点，也不生成虚构的内部分段 Perfetto；回显 `REF` 行、安装目录的 `ops-baseline.txt` 和 CSV 标明来源。详见 [参考基线说明](../ll_cpp_bench/ops_shmem/README.md)。
+`ops-shmem-base` 直接编译参考仓 `ubx_reserve` 提交 `d1bad1c` 的 Combine，保留上游分核、轮询、分层归约、批次边界和全核最终规约。只把通信接到 SHMEM；与原仓 Hcomm 的批量发布/完成机制有差异，不能称为原 ACLNN 路径的完全复刻。其输入由相同路由在计时外构造，clean Event 与其他版本使用相同同步和统计口径。新增独立 `ops-shmem-base-profile`，输出实际 scatter/gather/RDMA/全核同步/最终规约流水；干净参考版保持原算法。回显 `REF` 行、安装目录的 `ops-baseline.txt` 和 CSV 标明来源。详见 [参考基线说明](../ll_cpp_bench/ops_shmem/README.md)。
 
 ## 两台机器分别编译安装
 
@@ -31,7 +31,7 @@ bash tests/ll_python_bench/build_all.sh
 
 脚本自动激活 `py311_zyq`，用该环境的 Python 编译并安装测试扩展。扩展、对应 kernel 库和构建记录安装在 `py311_zyq/lib/python3.11/site-packages/deepep_ll_bench/base/`。运行脚本自动切换到同一环境，并加载这里的安装产物。
 
-默认编译四个干净版本及三个独立打点版本，复用已有 Dispatch 编译产物。参考版首次编译自动下载固定的上游源码；已有干净 checkout 可设置 `OPS_SOURCE_DIR`。`--variants base` 缩减为 base/ref-profile；`--variants ops-shmem-base` 只编译参考版；编译和运行同时传 `--profile 0` 则只测干净版。脚本保留环境中的 Torch 和 torch-npu 版本，只在缺少构建工具时安装 pybind11 或 CMake。测试扩展独立安装，环境中原有的 `deep_ep` 包保持不变。
+默认编译三个干净版本及两个独立打点版本，复用已有 Dispatch 编译产物。参考版首次编译自动下载固定的上游源码；已有干净 checkout 可设置 `OPS_SOURCE_DIR`。`--variants base` 缩减为 base/ref-profile；`--variants ops-shmem-base` 编译参考版及其打点版；编译和运行同时传 `--profile 0` 则只测干净版。脚本保留环境中的 Torch 和 torch-npu 版本，只在缺少构建工具时安装 pybind11 或 CMake。测试扩展独立安装，环境中原有的 `deep_ep` 包保持不变。
 
 编译和运行都会打印 `ENV=py311_zyq PYTHON=...`，安装完成后打印 `INSTALLED=...`。即使当前终端激活了 `base` 或其他环境，脚本也会切换到 `py311_zyq`；激活失败则退出。若 Conda 不在常见路径，可先设置 `CONDA_EXE=/实际路径/bin/conda`。
 
@@ -116,7 +116,7 @@ bash tests/ll_python_bench/run_all.sh \
 
 ## 参数和其他实验
 
-默认一次测试四个干净版本和三个打点版本，BS 为 `1,2,4,8,16,24`。其他 BS 通过 `--tokens` 显式指定；tiny-setup/tiny-probe 保留为可选版本。只测原版可用 `--variant base`；要测聚合实验，两台机器都编译同一版本，然后在第一台启动，第二台粘贴输出的命令：
+默认一次测试三个干净版本和两个打点版本，BS 为 `1,2,4,8,16,24`。其他 BS 通过 `--tokens` 显式指定；tiny/tiny-setup/tiny-probe 和 ref-profile 保留为可选版本。只测原版可用 `--variant base`；要测聚合实验，两台机器都编译同一版本，然后在第一台启动，第二台粘贴输出的命令：
 
 ```bash
 bash tests/ll_python_bench/build_all.sh --variants card-all
@@ -171,13 +171,13 @@ build_all.sh 自动安装到 py311_zyq，两台都需重编；run_all.sh 自动�
 
 schema 21 的 CSV/Perfetto 新增 `data_l2_policy`，每核仍为 272 words。P50 代表记录固定打印 `cache=mask m3=input/store_issue/drain g=load/check/calls m5=input_issue/input_wait/compute/store`，配合原有 `m4`、`rdma`、first/last Put、最晚 flag 的来源分析。`g` 把 ready 读取及其同步与 Vector 判断拆开；它们是累计 ticks，包含流水等待，不是硬件 cache miss/hit 计数。不能把不同核最大值相加，或将不同卡的 core-entry 时间直接相减当作网络单程时延。完整字段继续写入 Perfetto `profiled body` 参数。
 
-默认比较 route-only→tiny-setup、route-only→tiny-probe 和组合 tiny，保留 base。重点看 BS1/2/4/8/16/24，BS32/48/64/72/256 检查回退；保留mean/min/max/P50/P99和所有样本。缓存命中仍需硬件计数器确认。必要时反转clean版本顺序复测，排除运行顺序影响。
+tiny-setup、tiny-probe 和组合 tiny 改为可选，不默认编译。重点看 BS1/2/4/8/16/24，BS32/48/64/72/256 检查回退；保留mean/min/max/P50/P99和所有样本。缓存命中仍需硬件计数器确认。必要时反转clean版本顺序复测，排除运行顺序影响。
 
 `input6-l2-pipe` 的改动只在 M4 已选中至少两条可运行任务、且输出槽超过一个时生效：先把上一包放入独立 GM 槽并准备私有 WQE，执行下一条的读取/规约，然后等待上一包 MTE3 完成并发布，之后才打包当前结果。单任务、单槽、末条任务仍立即发送；不会带着未提交包去轮询 group flag 或进入 M5。CQ 仍保护 GM 复用，归约次序、Notify、SHMEM SDK、wire 均保持。相比旧的 eager-first 流水，它覆盖仅两条任务的小 BS；代价是首包可能稍晚下发，必须看 clean 总时延，不能只看 stage_wait 下降。
 
 现有 `rdma=包数/延后包数/延后间隔/stage_issue/stage_wait/put/quiet`、`q` 的 pipeline_issue、first/last Put 和 Tfreq 保留。schema 22 新增 `small=output_init_lanes/setup_ticks/meta_wait_ticks/single_task` 和 `direct_meta=cached/reloaded/active_lanes`，CSV/Perfetto 同步保存，仍为每核 272 words。lean 的 setup 包含在 ready_plan 内，meta_wait 仅表示重叠后剩余等待；累计计数不可相加当作独立流水。route 是否命中取决于本 rank 的接收行数，而非原始 BS，需看 cached/reloaded。schema 23 再追加 `route_plan=preload_rows/wait_ticks/gather_rows`，每核仍为 272 words；wait 仅为预取后剩余等待，gather_rows 是实际提取 rank 的行数。profile-only 的 `tail_inspect` 开销仍需单列，不能当作干净算子的瓶颈。测试详情与这轮 EP8/EP32 数据见 [发送流水实验](../ll_cpp_bench/TRANSFER_AB.md)。
 
-当前schema24为每核288 words，需重编所有选中库。二级打点新增 `txwait=prefix_remaining/copy_remaining/calls`：在当前payload DMA前记event6，原payload完成event7不变，两者都在原等待位置退休。它拆开WQE准备后前序MTE3工作/依赖与当前拷贝的剩余等待；不是完整DMA耗时或RDMA单程时延，前序也可能包含Vector→MTE3依赖。仅profile2增加该事件，clean和profile0/1不变。`priority=local_rows_deferred/extra_scan_ticks`记录本机后置行数及额外筛选成本。CSV及Perfetto的 `profiled body` 参数保存全部新增字段；不把累计ticks伪装成独立流水片段。profile事件和读时钟会扰动流水，验收仍看clean Event。
+当前 schema26 为每核304 words，需重编所有选中库。二级打点新增 `txwait=prefix_remaining/copy_remaining/calls`：在当前payload DMA前记event6，原payload完成event7不变，两者都在原等待位置退休。它拆开WQE准备后前序MTE3工作/依赖与当前拷贝的剩余等待；不是完整DMA耗时或RDMA单程时延，前序也可能包含Vector→MTE3依赖。仅profile2增加该事件，clean和profile0/1不变。`priority=local_rows_deferred/extra_scan_ticks`记录本机后置行数及额外筛选成本。CSV及Perfetto的 `profiled body` 参数保存全部新增字段；不把累计ticks伪装成独立流水片段。profile事件和读时钟会扰动流水，验收仍看clean Event。
 
 EP32 两台分别编译：
 
@@ -191,7 +191,7 @@ bash tests/ll_python_bench/build_all.sh --ranks-per-host 16
 bash tests/ll_python_bench/run_all.sh --ranks-per-host 16 --sync hccl
 ```
 
-一条命令连续跑全部干净版和打点版，在第二台粘贴打印的命令即可。整个测试共用一个新 RUN_ID。省略 `--ranks-per-host 16` 就是双机各 12–15 卡的 EP8。省略 `--sync hccl` 则统一用默认 SHMEM device 同步，不混用两种同步结果判断算子收益。默认 BS 为 `1,2,4,8,16,24,32,48,64,72,256`，可用 `--tokens` 修改。
+一条命令连续跑全部干净版和打点版，在第二台粘贴打印的命令即可。整个测试共用一个新 RUN_ID。省略 `--ranks-per-host 16` 就是双机各 12–15 卡的 EP8。省略 `--sync hccl` 则统一用默认 SHMEM device 同步，不混用两种同步结果判断算子收益。默认 BS 为 `1,2,4,8,16,24`，可用 `--tokens` 修改。
 
 IP、端口、设备和 case 参数都可修改：
 

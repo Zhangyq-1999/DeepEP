@@ -340,7 +340,8 @@ def test_default_suite_uses_bounded_pastes_and_keeps_each_case(reporter, tmp_pat
         profiles[-1] = "input-stream-profile"
     variants = clean + profiles
     first_profile = len(clean)
-    defaults = (1, 2, 4, 8, 16, 24, 32, 48, 64, 72, 256)
+    defaults = (1, 2, 4, 8, 16, 24)
+    cases = (*defaults, 32, 48, 64, 72, 96, 128, 256) if extended else defaults
     for phase, variant in enumerate(variants):
         directory = tmp_path / f"{phase}-{variant}"
         directory.mkdir()
@@ -348,7 +349,7 @@ def test_default_suite_uses_bounded_pastes_and_keeps_each_case(reporter, tmp_pat
         samples = 10 if profile else 100
         configs, events, records, producers = [], [], [], []
         # Extra BS must not silently disappear when the report exceeds one paste.
-        for bs in (*defaults, 96, 128):
+        for bs in cases:
             configs.append(dict(ep=8, tokens=bs, hidden=3584, topk=8, experts=384, dtype="bf16",
                                 route="random", seed=0, warmup=10, samples=samples,
                                 entry_sync="device", profile_build=int(profile)))
@@ -362,7 +363,7 @@ def test_default_suite_uses_bounded_pastes_and_keeps_each_case(reporter, tmp_pat
                         row = {name: 123456 for name in names}
                         row.update(iteration=i, device=12 + rank % 4, role=role, profile_build=1,
                                    rank=rank, core=core, tokens=bs, world=8, complete=1, schema=20,
-                                   entry_tick=1 << 60, flush_done=250000 + core, coalesce_worker=0,
+                                   entry_tick=1 << 60, flush_done=250000 + core, coalesce_worker=0, ops_role=0,
                                    stage_rows=14, direct_rows=37, partial_rows=10, final_tokens=10,
                                    contributions=47, rdma_packets=10, rdma_deferred_packets=9,
                                    partial_local_contrib=10, partial_get_contrib=31,
@@ -383,18 +384,20 @@ def test_default_suite_uses_bounded_pastes_and_keeps_each_case(reporter, tmp_pat
                                    route_load_bytes=32768 if phase > first_profile else 131072, route_select_passes=4 if phase > first_profile else 16,
                                    route_snapshot_bytes=41728 if phase > first_profile else 0,
                                    route_snapshot_capacity=181888 if phase > first_profile else 0, route_snapshot_fallbacks=0,
-                                   route_first_hop_rows=256, route_filter_rows=1024 if phase == first_profile + 2 else 8192,
-                                   route_compact_ticks=123456 if phase == first_profile + 2 else 0,
+                                   route_first_hop_rows=256, route_filter_rows=1024 if phase == first_profile + 1 else 8192,
+                                   route_compact_ticks=123456 if phase == first_profile + 1 else 0,
                                    wqe_prepare_ticks=12345 if phase == first_profile + 1 else 0,
                                    wqe_prepared_packets=15 if phase == first_profile + 1 else 0,
                                    wqe_fallback_packets=1 if phase == first_profile + 1 else 0,
-                                   mte_pack_packets=16 if phase == first_profile + 2 else 0,
+                                   mte_pack_packets=16 if phase == first_profile + 1 else 0,
                                    partial_input_lanes=6 if variant.startswith("input") else 3,
                                    ready_input_issued=16 if variant.startswith("input-ready") else 0,
                                    ready_input_used=12 if variant.startswith("input-ready") else 0,
                                    partial_pair_groups=0, partial_stream_steps=56 if variant.startswith("input-stream") else 0,
                                    partial_front_loads=48 if variant.startswith("input-front") else 0,
                                    partial_vector_barriers=136 if variant.startswith("input-stream") else 192)
+                        if variant.startswith("ops-shmem"):
+                            row["ops_role"] = 1 if core == 2 else 3 if core == 48 else 2
                         records.append(row)
             if profile:
                 for source in range(8):
@@ -408,14 +411,17 @@ def test_default_suite_uses_bounded_pastes_and_keeps_each_case(reporter, tmp_pat
             write_csv(directory / "producers.csv", list(producers[0]), producers)
     out = subprocess.check_output([str(reporter), "--suite", str(tmp_path)], text=True)
     parts = re.findall(r"LL_COMBINE PASTE_BEGIN part=(\d+)/(\d+)\n(.*?)LL_COMBINE PASTE_END part=\1/\2\n", out, re.S)
-    assert len(parts) > 1
+    if extended:
+        assert len(parts) > 1
+    else:
+        assert len(out.encode("utf-8")) <= 64 * 1024
     for i, (part, total, payload) in enumerate(parts, 1):
         assert int(part) == i and int(total) == len(parts)
         framed = f"LL_COMBINE PASTE_BEGIN part={part}/{total}\n{payload}LL_COMBINE PASTE_END part={part}/{total}\n"
         assert len(framed.encode("utf-8")) <= 62 * 1024
         assert payload.startswith("LL_COMBINE compact=v3")
     blocks = re.findall(r"\nBS=(\d+) .*?END BS=\1\n", out, flags=re.S)
-    assert list(map(int, blocks)) == sorted((*defaults, 96, 128))
+    assert list(map(int, blocks)) == sorted(cases)
     for bs in defaults:
         block = re.search(rf"\nBS={bs} .*?END BS={bs}\n", out, flags=re.S)[0]
         assert block.index("variant ") < block.index(f"D {first_profile} p50")
@@ -425,10 +431,11 @@ def test_default_suite_uses_bounded_pastes_and_keeps_each_case(reporter, tmp_pat
                 assert f"D {phase} p50 i=4 event_r=4" in block
                 assert f"D {phase} worst i=9 event_r=1" in block
                 assert f"IQR {phase} n=1" in block
-        assert " G 4/30 W=" in block and " G 4/30 O=" in block
-    assert "LL_COMBINE END cases=13" in out
+        assert " O r/c=" in block and " G 4/30 O=" in block
+    assert f"LL_COMBINE END cases={len(cases)}" in out
     assert "  e=" in out and "'-'=absent" in out
-    assert "input=6/0/0 vec=0/192 arith=0/0" in out
+    if not extended:
+        assert "input=6/0/0 vec=0/192 arith=0/0" in out
     if extended:
         assert "input=6/0/0 vec=0/136 arith=56/0" in out
     assert "  cache=" in out and " m3=" in out and " m5=" in out

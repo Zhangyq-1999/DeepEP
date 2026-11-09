@@ -45,5 +45,8 @@ string(REPLACE "#include \"adv_api/hcomm/hcomm.h\"" "#include \"transport.hpp\""
 string(REPLACE "Hcomm<CommProtocol::COMM_PROTOCOL_ROCE>" "opsbench::Transport" _text "${_text}")
 string(REPLACE "BatchHandle<ChannelHandle>" "opsbench::Batch" _text "${_text}")
 string(REPLACE "const ChannelHandle channel" "const uint64_t channel" _text "${_text}")
+if(DEEPEP_LL_COMBINE_PROFILE)
+    include("${CMAKE_CURRENT_LIST_DIR}/profile.cmake")
+endif()
 file(WRITE "${_kernel}" "${_text}")
 message(STATUS "ops-shmem-base: ${LL_OPS_REV}; SHMEM transport adaptation, no ACLNN/HCCL initialization")

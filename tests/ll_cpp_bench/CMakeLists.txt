@@ -95,12 +95,12 @@ set(DEEPEP_LL_REFERENCE_PROFILE OFF)
 set(DEEPEP_LL_STAGE_TIMER OFF)
 set(DEEPEP_LL_COUNT_HISTOGRAM OFF)
 if(DEEPEP_LL_OPS_BASE)
-    if(DEEPEP_LL_COMBINE_ORIGINAL OR DEEPEP_LL_COMBINE_PROFILE OR DEEPEP_LL_COMBINE_SMALL_BATCH OR
+    if(DEEPEP_LL_COMBINE_ORIGINAL OR DEEPEP_LL_COMBINE_SMALL_BATCH OR
        DEEPEP_LL_COMBINE_EARLY_REDUCE OR DEEPEP_LL_COMBINE_REMOTE_FIRST OR DEEPEP_LL_COMBINE_DEFER_RETURN OR
        DEEPEP_LL_COMBINE_EARLY_ISSUE OR DEEPEP_LL_COMBINE_PROGRESS_PROBE OR
        DEEPEP_LL_COMBINE_SIMT_META OR DEEPEP_LL_COMBINE_SIMT_FLAG OR DEEPEP_LL_COMBINE_PREFETCH_RETURN OR
        DEEPEP_LL_COMBINE_LOCAL_FIRST OR DEEPEP_LL_COMBINE_POLL_NOP OR NOT DEEPEP_LL_COMBINE_RECV_CORES STREQUAL "0")
-        message(FATAL_ERROR "ops-shmem-base has no DeepEP experiment flags or instrumentation")
+        message(FATAL_ERROR "ops-shmem-base has no DeepEP experiment flags")
     endif()
     include("${CMAKE_CURRENT_LIST_DIR}/ops_shmem/source.cmake")
 elseif(DEEPEP_LL_COMBINE_ORIGINAL)
@@ -195,7 +195,8 @@ file(GLOB_RECURSE _identity_files CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_LIST_DIR}/*.h" "${CMAKE_CURRENT_LIST_DIR}/*.hpp" "${CMAKE_CURRENT_LIST_DIR}/*.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/../ll_python_bench/*.hpp")
 list(SORT _identity_files)
-list(APPEND _identity_files "${CMAKE_CURRENT_LIST_DIR}/ops_shmem/source.cmake")
+list(APPEND _identity_files "${CMAKE_CURRENT_LIST_DIR}/ops_shmem/source.cmake"
+                            "${CMAKE_CURRENT_LIST_DIR}/ops_shmem/profile.cmake")
 # All suite phases must share one source identity; the pinned upstream is
 # hashed through source.cmake, including for phases that do not build it.
 set(_source_hashes "")

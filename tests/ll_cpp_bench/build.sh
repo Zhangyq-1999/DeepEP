@@ -84,7 +84,7 @@ if [[ $variant == auto ]]; then
 fi
 original=OFF ops_base=OFF
 if [[ $variant == ops-shmem-base ]]; then
-    [[ $profile == OFF && $small == OFF && $early == OFF && $recv == 0 && $remote_first == OFF && $defer_return == OFF && $issue == OFF && $probe == OFF && $simt_meta == OFF && $simt_flag == OFF && $prefetch_return == OFF && $local_first == OFF && $poll_nop == 0 && $notify == 0 && $ready == 0 ]] || { echo 'ops-shmem-base is a clean independent kernel' >&2; exit 2; }
+    [[ $small == OFF && $early == OFF && $recv == 0 && $remote_first == OFF && $defer_return == OFF && $issue == OFF && $probe == OFF && $simt_meta == OFF && $simt_flag == OFF && $prefetch_return == OFF && $local_first == OFF && $poll_nop == 0 && $notify == 0 && $ready == 0 ]] || { echo 'ops-shmem-base is an independent kernel' >&2; exit 2; }
     ops_base=ON
     if [[ $build == "$root/build/ll-cpp-base" ]]; then build="$root/build/ll-cpp-ops-shmem-base"; fi
 fi

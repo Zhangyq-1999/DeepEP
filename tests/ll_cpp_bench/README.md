@@ -26,7 +26,7 @@ git pull --ff-only https://github.com/Zhangyq-1999/DeepEP.git perf/ll-combine-sm
 bash tests/ll_cpp_bench/build_all.sh
 ```
 
-`build_all.sh` 默认更新以下 7 个构建目录（四个干净版、三个打点版），每个构建使用 4 个编译任务。Dispatch 用于准备 DeepEP Combine 的输入和路由，同一配置只编译一次，各版本复用它的目标文件；参考仓版在 Host 构造等价输入。每个版本再单独编译 Combine，并链接成独立的 kernel 库。
+`build_all.sh` 默认更新以下 5 个构建目录（三个干净版、两个打点版），每个构建使用 4 个编译任务。Dispatch 用于准备 DeepEP Combine 的输入和路由，同一配置只编译一次，各版本复用它的目标文件；参考仓版在 Host 构造等价输入。每个版本再单独编译 Combine，并链接成独立的 kernel 库。
 
 已有目录继续用于增量编译。只修改 Combine 时，Dispatch 无需重编；修改 Dispatch 或它依赖的头文件时，构建系统自动重编受影响的部分。共享目标文件保存在 `build/ll-cpp-dispatch`，不同编译器、SDK 和每机 rank 数使用独立目录。更新代码后，两台机器都执行一次 `build_all.sh`，更新所有选中的版本。
 
@@ -35,23 +35,22 @@ bash tests/ll_cpp_bench/build_all.sh
 | `base` | 冻结的上游原版 | 关闭 |
 | `ops-shmem-base` | ops-transformer d1bad1c 原算法，SHMEM 传输适配 | 关闭 |
 | `input6-l2-route-only` | all + DIRECT 路由复用，移除 lean 改动 | 关闭 |
-| `input6-l2-tiny` | route-only + 小任务初始化与记忆式轮询 | 关闭 |
-| `ref-profile` | base 对应打点版 | 开启 |
-| `input6*-profile` | 与对应干净版相同策略 | 开启 |
+| `ops-shmem-base-profile` | 参考仓算法的内部诊断 | 开启 |
+| `input6-l2-route-only-profile` | route-only 对应打点版 | 开启 |
 
-默认只测 **BS1、2、4、8、16、24**。其他 BS 使用 `--tokens` 指定；tiny-setup、tiny-probe 改为可选，组合版 tiny 在 BS>24 时走 route-only 原路径。参考仓的算法保留范围和通信差异见 [参考基线](ops_shmem/README.md)，此前小 BS 实验见 [小 BS 对照](TINY_BS_AB.md)。ready-r32、ready-r36、stage-stream、plan-compact 等历史实验仍可显式选择。
+默认只测 **BS1、2、4、8、16、24**。其他 BS 使用 `--tokens` 指定；tiny、tiny-setup、tiny-probe 和 ref-profile 改为可选，组合版 tiny 在 BS>24 时走 route-only 原路径。参考仓的算法保留范围和通信差异见 [参考基线](ops_shmem/README.md)，此前小 BS 实验见 [小 BS 对照](TINY_BS_AB.md)。ready-r32、ready-r36、stage-stream、plan-compact 等历史实验仍可显式选择。
 
 EP32 收尾修复后的实测中，`wqe-prep` 在 BS48/64 的均值比 snapshot 低约 2.20%/2.84%，BS32 基本持平，尚需重复验证。它在独立 128 B UB 提前构造 WQE，payload 完成后才发布 SQ/doorbell。新增 `wqe-prefetch` 在下一条任务已经就绪时，先发起其输入 MTE2，再等上一包 MTE3 并提交 WQE；不会等待下一条完整规约。末条任务和单输出 lane 仍立即提交，M5 前排空待提交包，最终 quiet 保留。新方案尚待 CANN/NPU 验证。`mte-pack` 收益不稳定，保留为可选项，不再默认编译。完整数据、生命周期与打点说明见 [TRANSFER_AB.md](TRANSFER_AB.md)。
 
 此前 9b3d243 的 EP32/HCCL 实测 `input6` 的 BS32/48/64 均值为 57.28/65.49/74.26 μs，仍是小 BS 对照；`input-pair` 分别慢 1.41/0.69/0.43 μs，改为可选项。保留 `input-pipe`：它在 BS256 的均值为 174.94 μs，比同轮 input6 快 8.85 μs，但 BS32–64 尚无稳定收益。
 
-此前 EP32/HCCL 的 BS32 clean mean：base=60.74、all=56.46、route-only=55.75 μs；route-only P50=55.32、min–max=53.17–68.49、P95=58.21 μs。当前保留 base、route-only、tiny，加入 ops-shmem-base 参考基线；只有 DeepEP 三个版本附带打点版。all、route、route-plan、route-priority、route-tx-bypass 等仍可用 `--variants` 选择。BS48/64 上 route-plan 的 mean 为63.10/71.98 μs，保留这一方案供后续形状选择，不宣称已经对所有 BS 选出最佳实现。
+此前 EP32/HCCL 的 BS32 clean mean：base=60.74、all=56.46、route-only=55.75 μs；route-only P50=55.32、min–max=53.17–68.49、P95=58.21 μs。当前默认保留 base、route-only、ops-shmem-base 参考基线；后两者附带独立打点版。all、route、route-plan、route-priority、route-tx-bypass 等仍可用 `--variants` 选择。BS48/64 上 route-plan 的 mean 为63.10/71.98 μs，保留这一方案供后续形状选择，不宣称已经对所有 BS 选出最佳实现。
 
 route-only 恢复 all 的 M4 初始化及多/单任务筛选，只加入 DIRECT 的整表路由复用。route-priority 在此基础上推迟 DIRECT 本机发送，保留每条任务原来的核、QP和远端 server 次序；代价是有本机任务的核多筛选一次本机行。它不改变已有的 M4 跨机就绪任务优先策略。route-tx-bypass 则仅把 data_l2 从7改为5，保留控制区、M3和M5的缓存策略，用于隔离 RDMA 发送暂存区的缓存影响。两项实验分别对比 route-only，不叠加。28/28分核、6个M4输入槽、所有输出槽初始化、规约及完成协议保持。支持每机4/16 rank及四机EP64；逻辑组不等于物理主机或单机时不调整 DIRECT 次序。详细数据/生命周期见 [TRANSFER_AB.md](TRANSFER_AB.md)。
 
 每版预热前均执行 `-x,-x,+x,+x` 四代正确性检查，复用两个 bank 且不逐轮强制清 flag，然后恢复原输入；检查不计入性能采样。原始 base 保持冻结，SDK 和 CQ 保护源槽的规则不变。
 
-当前 schema 25 每核仍为288 words，需两台重编。新增 `tiny=policy/probes/confirmed_slots/skipped_flags`，policy 的1位表示小任务初始化，2位表示记忆式轮询实际生效；其余发送诊断沿用 schema24。新增 `txwait=prefix_remaining/copy_remaining/calls`：仅二级打点在当前 payload DMA 前放置 MTE3→Scalar event6，并在原 event7 等待位置依次退休两个事件，拆分 WQE 准备后前序队列/依赖的剩余等待和当前拷贝的剩余等待。前者也可能包含 Vector→MTE3 依赖，不是纯粹的前一个包时间；后者不是完整 DMA 耗时，二者都不是网络单程时延。原 `stage_wait` 保留。profile增加的事件与读时钟可能扰动流水，性能以 clean Event 为准，clean/一级打点不增加此事件。
+当前 schema 26 每核为304 words，需两台重编。新增 `tiny=policy/probes/confirmed_slots/skipped_flags`，policy 的1位表示小任务初始化，2位表示记忆式轮询实际生效；其余发送诊断沿用 schema24。新增 `txwait=prefix_remaining/copy_remaining/calls`：仅二级打点在当前 payload DMA 前放置 MTE3→Scalar event6，并在原 event7 等待位置依次退休两个事件，拆分 WQE 准备后前序队列/依赖的剩余等待和当前拷贝的剩余等待。前者也可能包含 Vector→MTE3 依赖，不是纯粹的前一个包时间；后者不是完整 DMA 耗时，二者都不是网络单程时延。原 `stage_wait` 保留。profile增加的事件与读时钟可能扰动流水，性能以 clean Event 为准，clean/一级打点不增加此事件。
 
 `priority=local_rows_deferred/extra_scan_ticks` 记录本机后置任务数及额外筛选成本。新增计数进入 CSV 和 Perfetto 的 `profiled body` 参数，不伪造独立时间片。schema22/23的 `small`、`direct_meta`、`route_plan` 仍保留，旧CSV仍可读取。现有 M3、group-ready、M4、RDMA/CQ、M5 和拖尾计数不删减。这些是软件打点，不是硬件L2命中计数；新实验尚待NPU正确性及性能验证。
 

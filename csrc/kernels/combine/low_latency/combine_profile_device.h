@@ -132,6 +132,25 @@ public:
         ++values_[TailObservations];
 #endif
     }
+    // Diagnostic snapshot only. Functional readiness polling is never skipped.
+    // Record the first miss of a token and then one in eight repeated misses;
+    // always retain successful completion observations.
+    __aicore__ inline bool InspectTail(uint32_t token, bool ready)
+    {
+#ifdef DEEPEP_LL_COMBINE_PROFILE
+        if (level_ < 2U) return false;
+        values_[TailSampleStride] = 8U;
+        if (token != inspectToken_) { inspectToken_ = token; inspectMisses_ = 0U; }
+        if (!ready && (inspectMisses_++ % 8U)) {
+            ++values_[TailInspectSkipped];
+            return false;
+        }
+        ++values_[TailInspectCalls];
+        return true;
+#else
+        return false;
+#endif
+    }
     __aicore__ inline void Add(Word word, uint64_t value = 1U)
     {
 #ifdef DEEPEP_LL_COMBINE_PROFILE
@@ -166,6 +185,7 @@ private:
 #ifdef DEEPEP_LL_COMBINE_PROFILE
     __gm__ uint64_t* record_ = nullptr;
     uint32_t level_ = 0U;
+    uint32_t inspectToken_ = 0xffffffffU, inspectMisses_ = 0U;
     uint64_t values_[kWords];
 #endif
 };
@@ -173,6 +193,13 @@ private:
 // Optional shared view for helpers also exercised independently by CPU models.
 class View {
 public:
+    __aicore__ inline bool InspectTail(uint32_t token, bool ready)
+    {
+#ifdef DEEPEP_LL_COMBINE_PROFILE
+        if (profile_) return profile_->InspectTail(token, ready);
+#endif
+        return false;
+    }
     __aicore__ inline void MaxElapsed(Word word, uint64_t begin)
     {
 #ifdef DEEPEP_LL_COMBINE_PROFILE

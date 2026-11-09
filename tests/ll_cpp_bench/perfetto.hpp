@@ -132,7 +132,9 @@ inline void write_perfetto(const std::filesystem::path& path, const std::vector<
                 metadata("process_name", pid, 0, "Rank " + std::to_string(v[Rank]) + " / device " +
                          std::to_string(r.device) + " / independent core origins");
             const bool worker = v[CoalesceWorker] || r.present[CoalesceSendBegin];
-            const auto role = worker ? "COALESCE" : (r.receive ? "RECEIVE" : "SEND");
+            const auto role = v[OpsRole] ? (v[OpsRole] == 1 ? "OPS SCATTER" :
+                             v[OpsRole] == 2 ? "OPS GATHER" : "OPS RDMA") :
+                             worker ? "COALESCE" : (r.receive ? "RECEIVE" : "SEND");
             const auto label = "AIV " + std::to_string(v[Core]) + " " + role;
             metadata("thread_name", pid, tid, label + " / stages (own entry = 0)");
             auto event = [&](const std::string& name, uint64_t begin, uint64_t end, uint64_t track, bool instant) {
@@ -153,7 +155,16 @@ inline void write_perfetto(const std::filesystem::path& path, const std::vector<
                 if (v[b] < start) throw std::runtime_error("Non-monotonic Perfetto stage: " + name);
                 if (v[b] > start) slices.push_back({name, start, v[b]});
             };
-            for (auto s : spans) {
+            if (v[OpsRole]) {
+                add("profile setup", Entry, ProfileInitEnd);
+                add("ops initialization", ProfileInitEnd, InitEnd);
+                add("ops local scatter", StageBegin, StageEnd);
+                add("ops local gather and reduction", PartialBegin, PartialEnd);
+                add("ops RDMA sender (includes readiness and quiet)", DirectBegin, DirectEnd);
+                add("ops all-core barrier", ReadyBegin, ReadyEnd);
+                add("ops final combine", FinalBegin, FinalEnd);
+                add("ops final setup", FinalBegin, FinalInitEnd);
+            } else for (auto s : spans) {
                 // Task readiness is interleaved with useful partial work. Do
                 // not render that entire observation interval as blocking wait.
                 if(v[ReadyTaskRounds] && s.begin==ReadyBegin) {
@@ -197,7 +208,8 @@ inline void write_perfetto(const std::filesystem::path& path, const std::vector<
                     if (w == TailReady && !v[w]) continue;
                     if (v[w] > v[FlushDone]) throw std::runtime_error("Tail observation outside profile body");
                     event(fields[w], v[w], v[w], tid + 63, true);
-                    for (auto detail : {TailToken, TailSlot, TailBlock, TailMissingMask, TailMissingBlocks, TailObservations})
+                    for (auto detail : {TailToken, TailSlot, TailBlock, TailMissingMask, TailMissingBlocks, TailObservations,
+                                        TailSampleStride, TailInspectCalls, TailInspectSkipped})
                         out << ',' << trace_quote(fields[detail]) << ':' << v[detail];
                     out << "}}";
                 }

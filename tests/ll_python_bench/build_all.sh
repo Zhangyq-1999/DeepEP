@@ -9,8 +9,8 @@ args=()
 while (($#)); do
     case "$1" in
         --help|-h)
-            echo 'build_all.sh [--variants base,ops-shmem-base,input6-l2-route-only,input6-l2-tiny] [--profile 0|1|2] [build.sh environment options]'
-            echo 'Defaults: four clean + three diagnostic variants in py311_zyq; Dispatch is shared.'
+            echo 'build_all.sh [--variants base,ops-shmem-base,input6-l2-route-only] [--profile 0|1|2] [build.sh environment options]'
+            echo 'Defaults: three clean + two diagnostic variants in py311_zyq; Dispatch is shared.'
             exit 0;;
         --variants)
             (($#>=2)) || { echo 'Missing --variants value' >&2; exit 2; }
@@ -36,7 +36,7 @@ done
 if ((profile)); then
     profiles=()
     for name in "${names[@]}"; do
-        [[ $name != ops-shmem-base ]] || continue
+        [[ $variants != "$ll_bench_clean_variants" || $name != base ]] || continue
         if [[ $name == base ]]; then profiles+=(ref-profile); else profiles+=("$name-profile"); fi
     done
     names+=("${profiles[@]}")

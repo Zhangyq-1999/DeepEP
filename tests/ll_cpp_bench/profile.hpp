@@ -3,6 +3,7 @@
 #include <ostream>
 #include <stdexcept>
 #include <vector>
+#include <array>
 #include "../../csrc/kernels/combine/low_latency/combine_profile_layout.h"
 #include "../../csrc/kernels/combine/low_latency/combine_core_layout.h"
 
@@ -292,6 +293,15 @@ inline void profile_header(std::ostream& out)
         "final_sparse_probe_calls",
         "final_sparse_skipped_flags",
         "final_sparse_confirmed_slots",
+        "ops_role",
+        "rdma_bytes",
+        "tail_inspect_calls",
+        "tail_inspect_skipped",
+        "tail_sample_stride",
+        "active_stage_cores",
+        "active_gather_cores",
+        "active_rdma_cores",
+        "active_final_cores",
     };
     static_assert(sizeof(names) / sizeof(names[0]) == CombineProfile::Count, "profile CSV fields");
     for (uint32_t w = 0; w < CombineProfile::Count; ++w) out << (w ? "," : "") << names[w];
@@ -306,6 +316,21 @@ inline uint64_t profile_interval(const uint64_t* row, CombineProfile::Word begin
     return row[end] - row[begin];
 }
 
+// Derived on Host after Event completion, not additional device work.
+inline std::array<uint64_t, 4> profile_active_cores(const std::vector<uint64_t>& data, uint32_t cores)
+{
+    using namespace CombineProfile;
+    std::array<uint64_t, 4> counts{};
+    for (uint32_t c = 0; c < cores; ++c) {
+        const auto* r = data.data() + c * kWords;
+        counts[0] += r[StageRows] != 0;
+        counts[1] += r[PartialRows] != 0;
+        counts[2] += bool(r[Valid] & (uint64_t(1) << RdmaFirstPut));
+        counts[3] += r[FinalTokens] != 0;
+    }
+    return counts;
+}
+
 inline void profile_rows(std::ostream& out, const std::vector<uint64_t>& data, uint32_t cores, uint32_t recv,
                          uint32_t rank, uint32_t world, uint32_t bs, uint32_t device, uint32_t level,
                          uint32_t iteration, std::vector<uint32_t> selection = {})
@@ -313,7 +338,9 @@ inline void profile_rows(std::ostream& out, const std::vector<uint64_t>& data, u
     using namespace CombineProfile;
     if (data.size() != size_t(cores) * kWords || recv > cores)
         throw std::runtime_error("Invalid Combine profile dimensions");
-    if (selection.empty())
+    const bool full = selection.empty();
+    const auto active = full ? profile_active_cores(data, cores) : std::array<uint64_t, 4>{};
+    if (full)
         for (uint32_t core = 0; core < cores; ++core) selection.push_back(core);
     for (uint32_t core : selection) {
         if (core >= cores) throw std::runtime_error("Invalid selected profile core");
@@ -329,6 +356,8 @@ inline void profile_rows(std::ostream& out, const std::vector<uint64_t>& data, u
             if (w < StageRows) {
                 if (row[Valid] & (uint64_t(1) << w))
                     out << (w == Entry ? row[w] : profile_interval(row, Entry, Word(w)));
+            } else if (full && w >= ActiveStageCores && w <= ActiveFinalCores) {
+                out << active[w - ActiveStageCores];
             } else if (level >= 2 || !IsDetailWord(w)) {
                 out << row[w];
             }

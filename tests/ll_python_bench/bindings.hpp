@@ -128,7 +128,7 @@ public:
         d["upstream_revision"] = LL_OPS_REV;
         d["transport"] = "SHMEM per-core QP Put + quiet at upstream batch boundary";
         d["original"] = false;
-        d["profile_build"] = false;
+        d["profile_build"] = bool(DEEPEP_BENCH_PROFILE);
         // Upstream has scatter/gather/send roles, followed by all-core final
         // combine. A fixed receive-core count would misdescribe that schedule.
         d["recv_cores"] = 0;
@@ -191,8 +191,13 @@ public:
 #if DEEPEP_BENCH_PROFILE
         profileData_.assign(size_t(runtime_.cores) * CombineProfile::kWords, 0U);
         profileBuffer_ = std::make_unique<Buffer>(profileData_.size() * sizeof(uint64_t));
+#if DEEPEP_LL_OPS_BASE
+        case_->args.stageTimer = profileBuffer_->p;
+        case_->args.timerMode = o_.profile;
+#else
         case_->combine.stageTimer = profileBuffer_->p;
         case_->combine.timerMode = o_.profile;
+#endif
 #endif
     }
     void dispatch() {
@@ -245,7 +250,11 @@ public:
 #if DEEPEP_BENCH_PROFILE
         if (collecting_) {
             profileBuffer_->download(profileData_.data(), profileBuffer_->bytes);
+#if DEEPEP_LL_OPS_BASE
+            const auto recv = runtime_.cores / 2U;
+#else
             const auto recv = CombineDedup::EpCombineRecvCoreCount(runtime_.cores);
+#endif
             llbench::profile_rows(profileCsv_, profileData_, runtime_.cores, recv, o_.rank, o_.world,
                                   case_->bs, o_.device, o_.profile, profileIteration_++);
             profiles_.capture(profileData_, runtime_.cores, recv, o_.profileFrequencyHz != 0);
@@ -286,8 +295,15 @@ public:
                 return {result.begin(), result.end()};
             }
         } peers{gather, o_.world};
+
+#if DEEPEP_LL_OPS_BASE
+        const auto recv = runtime_.cores / 2U;
+#else
         const auto recv = CombineDedup::EpCombineRecvCoreCount(runtime_.cores);
+#endif
+#if !DEEPEP_LL_OPS_BASE
         case_->exportProducers(o_, peers, runtime_.cores, recv, deepep_ll_combine_return_options());
+#endif
         profiles_.write(peers, o_, case_->bs, runtime_.cores, recv, rankMax, DEEPEP_BENCH_SOURCE_ID);
         profiles_ = llbench::ProfileSamples{};
         collecting_ = false;

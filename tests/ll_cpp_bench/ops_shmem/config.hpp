@@ -24,6 +24,8 @@ struct Config {
 struct Args {
     uint8_t *context, *expanded, *experts, *assist, *counts, *weights, *expandedWeights, *output, *config;
     uint32_t cores, bf16;
+    uint8_t* stageTimer = nullptr;
+    uint32_t timerMode = 0;
 };
 }  // namespace opsbench
 extern "C" void ops_shmem_combine_do(void* stream, const opsbench::Args* args);

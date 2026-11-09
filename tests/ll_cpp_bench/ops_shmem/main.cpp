@@ -1,5 +1,6 @@
 #include "fixture.hpp"
 #include "../sample_report.hpp"
+#include "../profile_samples.hpp"
 #ifndef LL_BENCH_PYTHON
 #include "../mpi_coordinator.hpp"
 #endif
@@ -37,6 +38,10 @@ struct Buffer {
     {
         if (n) check(aclrtMemcpy(p, bytes, data, n, ACL_MEMCPY_HOST_TO_DEVICE), "upload");
     }
+    void download(void* data, size_t n)
+    {
+        if (n) check(aclrtMemcpy(data, n, p, n, ACL_MEMCPY_DEVICE_TO_HOST), "download");
+    }
 };
 struct Event {
     aclrtEvent value = nullptr;
@@ -54,6 +59,7 @@ struct Event {
     }
 };
 struct DeviceCase {
+    uint32_t bs;
     opsbench::Fixture data;
     opsbench::Args args{};
     std::vector<std::unique_ptr<Buffer>> buffers;
@@ -69,7 +75,7 @@ struct DeviceCase {
         b.upload(v.data(), v.size() * sizeof(T));
         return b.p;
     }
-    DeviceCase(const llbench::Options& o, uint32_t bs, uint32_t cores, uint64_t ub, uint8_t* context) : data(o, bs)
+    DeviceCase(const llbench::Options& o, uint32_t bs, uint32_t cores, uint64_t ub, uint8_t* context) : bs(bs), data(o, bs)
     {
         args.context = context;
         args.cores = cores;
@@ -149,7 +155,9 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
     auto o = shared->options;
     const auto stream = shared->stream;
     const auto cores = shared->cores;
-    o.profile = 0;
+    if (!DEEPEP_BENCH_PROFILE) o.profile = 0;
+    if (o.profile) o.iterations = o.profileIterations;
+    const auto recv = cores / 2U;
     if ((o.hidden != 3584 && o.hidden != 7168) || o.topk != 8 || o.experts != 384)
         throw std::runtime_error("Initial ops-shmem baseline supports H3584/H7168, TopK8, E384");
     uint64_t ub = 0;
@@ -161,14 +169,19 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
     const auto directory = std::filesystem::path(o.output);
     const auto rankPath = directory / ("rank-" + std::to_string(o.rank) + ".csv");
     if (std::filesystem::exists(rankPath)) throw std::runtime_error("Result exists; choose a fresh run-id");
-    std::ofstream samples(rankPath), summary;
+    std::ofstream samples(rankPath), summary, profileCsv;
     if (!samples) throw std::runtime_error("Cannot open samples");
-    samples << "tokens,iteration,combine_event_us,implementation,entry_sync\n";
+    samples << "tokens,iteration,combine_event_us,implementation,entry_sync,profile_build,profile_level\n";
+    if (o.profile) {
+        profileCsv.open(directory / ("rank-" + std::to_string(o.rank) + "-profile.csv"));
+        if (!profileCsv) throw std::runtime_error("Cannot open profile CSV");
+        llbench::profile_header(profileCsv);
+    }
     if (o.rank == 0) {
         summary.open(directory / "summary.csv");
         if (!summary) throw std::runtime_error("Cannot open summary");
         summary << "ep,tokens,hidden,topk,experts,dtype,route,seed,capacity,warmup,samples,active_aiv,implementation,"
-                   "source_id,upstream_revision,entry_sync,rank_max_mean_us,rank_max_min_us,rank_max_max_us,p50_us,p99_"
+                   "source_id,upstream_revision,entry_sync,profile_build,profile_level,rank_max_mean_us,rank_max_min_us,rank_max_max_us,p50_us,p99_"
                    "us\n";
     }
     auto c = context_for(session);
@@ -201,12 +214,25 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
             peers.barrier();
         }
         Event start, end;
+        std::vector<uint64_t> profileData;
+        std::unique_ptr<Buffer> profileBuffer;
+        llbench::ProfileSamples profiles;
+        if (o.profile) {
+            profileData.resize(size_t(cores) * CombineProfile::kWords);
+            profileBuffer = std::make_unique<Buffer>(profileData.size() * sizeof(uint64_t));
+            item.args.stageTimer = profileBuffer->p;
+            item.args.timerMode = o.profile;
+        }
         std::vector<float> times;
         for (uint32_t i = 0; i < o.warmup + o.iterations; ++i) {
             const bool sampling = i >= o.warmup;
             const auto iteration = sampling ? i - o.warmup : i;
             if (iteration % 10U == 0)
                 session.report(sampling ? "sampling" : "warmup", bs, iteration, sampling ? o.iterations : o.warmup);
+            if (o.profile) {
+                std::fill(profileData.begin(), profileData.end(), 0U);
+                profileBuffer->upload(profileData.data(), profileBuffer->bytes);
+            }
             entry.enqueue([&] {
                 if (sampling) start.record(stream);
                 launch();
@@ -219,7 +245,13 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
                 if (!std::isfinite(ms) || ms <= 0) throw std::runtime_error("Invalid Event duration");
                 times.push_back(ms * 1000);
                 samples << bs << ',' << i - o.warmup << ',' << times.back() << ",ops-shmem-base," << o.entrySync
-                        << '\n';
+                        << ',' << DEEPEP_BENCH_PROFILE << ',' << o.profile << '\n';
+                if (o.profile) {
+                    profileBuffer->download(profileData.data(), profileBuffer->bytes);
+                    llbench::profile_rows(profileCsv, profileData, cores, recv, o.rank, o.world, bs, o.device,
+                                          o.profile, iteration);
+                    profiles.capture(profileData, cores, recv, o.profileFrequencyHz != 0);
+                }
             }
         }
         session.report("precision check and result gather", bs, o.iterations, o.iterations);
@@ -227,12 +259,17 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
         samples.flush();
         auto gathered = peers.gather(times.data(), times.size() * sizeof(float));
         const auto rankMax = llbench::rank_max_samples(gathered, o, bs);
+        if (o.profile) {
+            profileCsv.flush();
+            profiles.write(peers, o, bs, cores, recv, rankMax, DEEPEP_BENCH_SOURCE_ID);
+        }
         if (!o.rank) {
             auto s = llbench::stats(rankMax);
             summary << o.world << ',' << bs << ',' << o.hidden << ',' << o.topk << ',' << o.experts << ',' << o.dtype
                     << ',' << o.route << ',' << o.seed << ',' << o.capacity << ',' << o.warmup << ',' << o.iterations
                     << ',' << cores << ",ops-shmem-base," << DEEPEP_BENCH_SOURCE_ID << ',' << LL_OPS_REV << ','
-                    << o.entrySync << ',' << s.mean << ',' << s.min << ',' << s.max << ',' << s.p50 << ',' << s.p99
+                    << o.entrySync << ',' << DEEPEP_BENCH_PROFILE << ',' << o.profile
+                    << ',' << s.mean << ',' << s.min << ',' << s.max << ',' << s.p50 << ',' << s.p99
                     << '\n';
             summary.flush();
             std::cout << "BS=" << bs << " rank-MAX Event us: mean=" << s.mean << " range=[" << s.min << ',' << s.max

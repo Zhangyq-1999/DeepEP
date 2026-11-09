@@ -82,6 +82,11 @@ int main() {
             view.Elapsed(DirectRoutePreloadWaitTicks, view.DetailClock());
             view.Elapsed(ReadyMetadataWaitTicks, view.DetailClock());
             view.Mark(StageEnd);
+            // Diagnostic sampling never disables the actual readiness probe.
+            for (uint32_t probe = 0; probe < 17; ++probe)
+                assert(view.InspectTail(1, false) == (bool(view.DetailClock()) && probe % 8 == 0));
+            assert(view.InspectTail(1, true) == bool(view.DetailClock()));
+            assert(view.InspectTail(2, false) == bool(view.DetailClock()));
             view.MarkOnce(DirectFirstSubmit);
             view.MarkOnce(DirectFirstSubmit);
             const auto submit = view.DetailClock();
@@ -95,6 +100,9 @@ int main() {
             if (level) {
                 assert(row[Schema] == kSchema && row[Core] == core && row[StageRows] == 7);
                 assert(row[DataL2Policy] == 7);
+                assert(row[TailInspectCalls] == (level == 2 ? 5U : 0U));
+                assert(row[TailInspectSkipped] == (level == 2 ? 14U : 0U));
+                assert(row[TailSampleStride] == (level == 2 ? 8U : 0U));
                 assert(row[ProbeTicks] == (level == 2 ? 17U : 0U));
                 assert(row[ProbeCalls] == (level == 2 ? 3U : 0U));
                 assert(row[PartialPairGroups] == (level == 2 ? 4U : 0U));
