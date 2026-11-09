@@ -1,5 +1,7 @@
 #pragma once
 #include "kernel_operator.h"
+// SHMEM's RDMA backends require cache helpers from the public header first.
+#include "shmem.h"
 #include "device/gm2gm/engine/shmem_device_rdma.h"
 
 namespace opsbench {

@@ -23,9 +23,24 @@ def test_ops_shmem_transport(tmp_path):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
     if not zig:
         pytest.skip("Set DEEPEP_TEST_ZIG")
+    # Model the SDK's header dependency as well as its transfer contract:
+    # the RDMA backend consumes helpers supplied by the shmem.h include chain.
+    # Compile the real adapter in isolation so a transitive include cannot hide
+    # a missing prerequisite (the Device compiler reported dcci_cachelines).
+    stubs = HERE.parent / "ll_rdma/stubs"
+    sdk = tmp_path / "sdk"
+    backend = sdk / "device/gm2gm/engine/shmem_device_rdma.h"
+    backend.parent.mkdir(parents=True)
+    (sdk / "shmem.h").write_text(
+        "#pragma once\n#include <cstdint>\n"
+        "inline void dcci_cachelines(uint8_t*, uint64_t) {}\n")
+    backend.write_text(
+        "#pragma once\n"
+        "inline void rdma_cache_dependency(uint8_t* p) { dcci_cachelines(p, 8); }\n"
+        f'#include "{(stubs / "device/gm2gm/engine/shmem_device_rdma.h").as_posix()}"\n')
     exe = tmp_path / ("transport.exe" if os.name == "nt" else "transport")
     subprocess.run([zig, "c++", "-std=c++17", "-O1", "-UNDEBUG",
-                    "-I", str(HERE.parent / "ll_rdma/stubs"),
+                    "-I", str(sdk), "-I", str(stubs),
                     str(HERE / "ops_shmem/transport_test.cpp"), "-o", str(exe)], check=True, timeout=180)
     subprocess.run([str(exe)], check=True, timeout=30)
 
