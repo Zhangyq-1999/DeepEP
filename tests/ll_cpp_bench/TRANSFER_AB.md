@@ -1,5 +1,8 @@
 # M4 transfer experiments
 
+历史正向结果与提交对应关系见 [优化收益记录](OPTIMIZATION_HISTORY.md)，
+包含同轮 mean/P50/min/max 对照及可复算的原始回显索引。
+
 Target: EP8/EP32 BS32/48/64, with BS72 and BS256 retained. Experiments use
 `ready-snapshot`'s route planning, dependency scheduler and 28/28 core split.
 The frozen `base` and existing Dispatch sources are unchanged.
