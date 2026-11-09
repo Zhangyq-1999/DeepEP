@@ -22,8 +22,10 @@ Admission uses min(SQ depth, CQ depth) and the SDK's ten-entry margin. A full
 queue cannot poll CQ while the payload event is live; that packet falls back
 to the unchanged SDK put after the payload wait. No queue reservation crosses
 another submit, dependency wait, kernel or core. This adapter targets the
-locked HNS-1825 implementation (`4c671684e1698aec199619850a3120bfdf85c95e`),
-not XSCALE aggregate APIs. The SHMEM submodule and installed SDK are not edited.
+locked HNS-1825 implementation (now `3bbe2a74738805a6a716df3f2a05f8ef47265ebe`,
+IPv6 PR1000; previously `4c671684e1698aec199619850a3120bfdf85c95e`). Its encoder
+calls follow the new internal signatures. It does not enable aggregate CQE
+compression. The pinned SHMEM source and installed SDK are not patched.
 
 The private UB is included in M4 workspace accounting and cannot overlap
 inputs, outputs or the reduced `low_` buffer. Planning may borrow idle payload

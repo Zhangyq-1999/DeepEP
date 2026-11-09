@@ -37,10 +37,12 @@ public:
         auto ub32 = scratch.ReinterpretCast<uint32_t>();
         wqe_ = aclshmemi_hns_1825_make_wqe_ub(ub32, 64U);
         db_ = scratch[64U].ReinterpretCast<uint64_t>();
-        auto* task = aclshmemi_roce_hns_1825_fill_wqe_ctrl_seg(wqe_, head_, sq_->depth);
+        auto* task = aclshmemi_roce_hns_1825_fill_wqe_ctrl_seg(
+            reinterpret_cast<__ubuf__ uint8_t*>(wqe_.GetPhyAddr()), head_, sq_->depth, true);
         auto* data = aclshmemi_roce_hns_1825_fill_wqe_task_seg(
-            task, wr, aclshmemi_hns_1825_msg_type_t::ACLSHMEMI_HNS_1825_MSG_OPCODE_RDMA_WRITE);
-        aclshmemi_roce_hns_1825_fill_wqe_data_seg(data, wr);
+            task, wr.rkey, wr.remote_addr, wr.lkey, bytes,
+            aclshmemi_hns_1825_msg_type_t::ACLSHMEMI_HNS_1825_MSG_OPCODE_RDMA_WRITE, true);
+        aclshmemi_roce_hns_1825_fill_wqe_data_seg(data, wr.lkey, wr.local_addr, bytes);
         return true;
     }
     __aicore__ inline void Publish()
@@ -48,7 +50,7 @@ public:
         // Same one-core/one-QP ownership, next-owner invalidation, SQ copy,
         // cache flush and PI/doorbell helper as the pinned SHMEM implementation.
         auto* dst = aclshmemi_roce_hns_1825_get_send_wqe(sq_, head_ & (sq_->depth - 1U));
-        aclshmemi_roce_hns_1825_write_invalid_wqebb(sq_, head_ + 1U);
+        aclshmemi_roce_hns_1825_write_invalid_wqebb(sq_->buf_addr, sq_->depth, head_ + 1U);
         aclshmemi_roce_write_ub_to_gm_with_sync(reinterpret_cast<uint64_t>(dst), wqe_, 64U, 7U);
         dcci_cachelines(dst, 64U);
         aclshmemi_roce_ring_sq_doorbell<aclshmemi_rdma_backend_t::HNS_1825>(sq_, head_ + 1U, db_, wqe_, 7U);

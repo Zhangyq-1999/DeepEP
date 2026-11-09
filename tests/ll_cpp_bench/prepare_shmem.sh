@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Build the pinned SDK with Shell/CMake. No DeepEP Python package is installed.
 set -euo pipefail
+rebuild=0
+if [[ ${1:-} == --rebuild ]];then rebuild=1;shift;fi
+[[ $# == 0 ]] || { echo 'Usage: prepare_shmem.sh [--rebuild]' >&2;exit 2; }
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 mpi=${MPI_HOME:-/usr/local/mpich-3.2.1}
 : "${ASCEND_HOME_PATH:?Load the CANN environment first}"
@@ -16,13 +19,15 @@ done
 cmake "-DPROJECT_ROOT=$root" "-DSHMEM_SOURCE=$src" -DMODE=source \
     -P "$root/tests/ll_cpp_bench/sdk_identity.cmake"
 sdk="$src/install/shmem"
-if [[ -f "$sdk/deepep-sdk.json" ]];then
+if [[ -f "$sdk/deepep-sdk.json" && $rebuild == 0 ]];then
     cmake "-DPROJECT_ROOT=$root" "-DSDK=$sdk" -DMODE=check \
         -P "$root/tests/ll_cpp_bench/sdk_identity.cmake"
 else
-    [[ ! -e "$src/build" && ! -e "$src/install" ]] || {
-        echo 'Unidentified SDK build/install exists. Select an existing SDK or use a fresh checkout.' >&2;exit 2;
+    [[ $rebuild == 1 || ( ! -e "$src/build" && ! -e "$src/install" ) ]] || {
+        echo 'SDK build/install exists. Use --rebuild after updating the pinned dependency.' >&2;exit 2;
     }
+    # A failed rebuild must not leave an old identity certifying a mixed SDK.
+    rm -f -- "$sdk/deepep-sdk.json"
     (cd "$src" && bash -e scripts/build.sh -soc_type Ascend950 -enable_rdma -rdma_backend HNS_1825)
     cmake "-DPROJECT_ROOT=$root" "-DSHMEM_SOURCE=$src" -DMODE=source \
         -P "$root/tests/ll_cpp_bench/sdk_identity.cmake"

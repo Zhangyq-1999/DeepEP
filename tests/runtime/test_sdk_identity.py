@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import shutil
 import subprocess
+import os
 import sys
 import pytest
 from scripts.shmem_sdk_identity import compiled_hns_1825_pi_on_chip, recorded_hns_1825_pi_on_chip, validate_build_identity
@@ -119,11 +120,14 @@ def test_probe_mode_reader_uses_attested_sdk_identity(tmp_path, mode):
 def recording_inputs(tmp_path):
     root = Path(__file__).resolve().parents[2]
     lock = json.loads((root / "dependencies.lock.json").read_text())["shmem"]
+    source = Path(os.environ.get("DEEPEP_TEST_SHMEM_SOURCE", root / "third-party/shmem"))
+    if not (source / "include").is_dir():
+        pytest.skip("Initialize SHMEM or set DEEPEP_TEST_SHMEM_SOURCE")
     sdk = tmp_path / "installed SDK with spaces"
     for relative in lock["header_sha256_lf"]:
         destination = sdk / "include" / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(root / "third-party/shmem/include" / relative, destination)
+        shutil.copyfile(source / "include" / relative, destination)
     (sdk / "lib").mkdir()
     (sdk / "lib/libshmem.so").write_bytes(b"CPU identity fixture, not a CANN library")
     build_root = tmp_path / "SDK build with spaces"

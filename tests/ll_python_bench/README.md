@@ -131,7 +131,7 @@ bash tests/ll_python_bench/run_all.sh --variant card-all
 bash tests/ll_python_bench/build_all.sh
 ```
 
-默认共7个构建：原始 base、较优对照 input6-l2-route-only、参考版 ops-shmem-base，以及新实验 ops-shmem-retire、ops-shmem-overlap 和这两个实验的独立打点库。新实验仅在 BS≤24、EP≤64 生效；较大形状回退到参考版原调度。retire 减少批次 quiet，overlap 在此基础上提前最终规约，将 quiet 和全核同步放到退出前。依据、生命周期和打点说明见 [小 BS 传输实验](../ll_cpp_bench/ops_shmem/SMALL_BS_AB.md)。旧打点版、tiny 及其他历史实验仍可用 --variants 显式选择，不删除已有构建。
+默认共7个构建：原始 base、较优对照 input6-l2-route-only、上一轮 ops-shmem-overlap，以及 ops-shmem-cq、ops-shmem-batch 和这两个实验的独立打点库。新实验仅在 BS≤24、EP≤64 生效；较大形状回退到参考版原调度。cq 在overlap调度上换用设备CQ读取；batch进一步缓存QP/MR、在UB批量构建WQE后按批提交SQ/DB，并将fence对齐Hcomm默认值。退出前quiet和全核同步仍在Event内。依据、生命周期和打点说明见 [小 BS 传输实验](../ll_cpp_bench/ops_shmem/SMALL_BS_AB.md)。旧打点版、tiny 及其他历史实验仍可用 --variants 显式选择，不删除已有构建。
 
 route-only 保持 all 的28/28半区分工、6个M4输入槽及累加顺序，只复用DIRECT已经加载到UB的路由表，减少逐包12 B GM读取和同步；接收行数超过512时回退，不额外分配UB。旧lean/setup/single/route-plan仍为可选对照。
 
@@ -177,7 +177,7 @@ tiny-setup、tiny-probe 和组合 tiny 改为可选，不默认编译。重点�
 
 现有 `rdma=包数/延后包数/延后间隔/stage_issue/stage_wait/put/quiet`、`q` 的 pipeline_issue、first/last Put 和 Tfreq 保留。schema 22 新增 `small=output_init_lanes/setup_ticks/meta_wait_ticks/single_task` 和 `direct_meta=cached/reloaded/active_lanes`，CSV/Perfetto 同步保存，仍为每核 272 words。lean 的 setup 包含在 ready_plan 内，meta_wait 仅表示重叠后剩余等待；累计计数不可相加当作独立流水。route 是否命中取决于本 rank 的接收行数，而非原始 BS，需看 cached/reloaded。schema 23 再追加 `route_plan=preload_rows/wait_ticks/gather_rows`，每核仍为 272 words；wait 仅为预取后剩余等待，gather_rows 是实际提取 rank 的行数。profile-only 的 `tail_inspect` 开销仍需单列，不能当作干净算子的瓶颈。测试详情与这轮 EP8/EP32 数据见 [发送流水实验](../ll_cpp_bench/TRANSFER_AB.md)。
 
-当前 schema27 为每核304 words，需重编所有选中库。二级打点新增 `txwait=prefix_remaining/copy_remaining/calls`：在当前payload DMA前记event6，原payload完成event7不变，两者都在原等待位置退休。它拆开WQE准备后前序MTE3工作/依赖与当前拷贝的剩余等待；不是完整DMA耗时或RDMA单程时延，前序也可能包含Vector→MTE3依赖。仅profile2增加该事件，clean和profile0/1不变。`priority=local_rows_deferred/extra_scan_ticks`记录本机后置行数及额外筛选成本。CSV及Perfetto的 `profiled body` 参数保存全部新增字段；不把累计ticks伪装成独立流水片段。profile事件和读时钟会扰动流水，验收仍看clean Event。
+当前 schema28 为每核320 words，需重编所有选中库。二级打点新增 `txwait=prefix_remaining/copy_remaining/calls`：在当前payload DMA前记event6，原payload完成event7不变，两者都在原等待位置退休。它拆开WQE准备后前序MTE3工作/依赖与当前拷贝的剩余等待；不是完整DMA耗时或RDMA单程时延，前序也可能包含Vector→MTE3依赖。仅profile2增加该事件，clean和profile0/1不变。`priority=local_rows_deferred/extra_scan_ticks`记录本机后置行数及额外筛选成本。CSV及Perfetto的 `profiled body` 参数保存全部新增字段；不把累计ticks伪装成独立流水片段。profile事件和读时钟会扰动流水，验收仍看clean Event。
 
 EP32 两台分别编译：
 
@@ -204,7 +204,11 @@ bash tests/ll_python_bench/run_all.sh \
 
 PyTorch 默认使用端口 30011，SHMEM 使用下一端口 30012。`--shmem-ip-port tcp://IP:PORT` 可单独指定 SHMEM 入口。
 
-跨机启动时，Gloo 默认按 `--hosts` 中**本节点 IP** 查找本机已启用的网卡（使用 `ip -j -4 address show`），在启动 torchrun 前设置 `GLOO_SOCKET_IFNAME`。每台各自选择，不要求四台的网卡名称相同；回显和 `node-N/console.log` 开头记录 `Network: ... GLOO_SOCKET_IFNAME=... source=...`。IP 不属于本机或存在歧义时提前报错，不回退到 loopback。单机保留 PyTorch 默认选择。
+跨机启动时，Gloo 默认按 `--hosts` 中**本节点 IP** 查找本机已启用的网卡（使用 `ip -j address show`，支持IPv4/IPv6），在启动 torchrun 前设置 `GLOO_SOCKET_IFNAME`。每台各自选择，不要求四台的网卡名称相同；回显和 `node-N/console.log` 开头记录 `Network: ... GLOO_SOCKET_IFNAME=... source=...`。IP 不属于本机或存在歧义时提前报错，不回退到 loopback。单机保留 PyTorch 默认选择。
+
+SHMEM现固定到 [IPv6 PR1000](https://gitcode.com/cann/shmem/pull/1000) head `3bbe2a74738805a6a716df3f2a05f8ef47265ebe`。每台先加载CANN，执行 `bash tests/ll_cpp_bench/prepare_shmem.sh --rebuild`，再执行 `bash tests/ll_python_bench/build_all.sh`，默认安装到py311_zyq。EP32/64在编译命令追加 `--ranks-per-host 16`；不可复用旧SHMEM或旧算子扩展。
+
+仅RDMA网络改为IPv6时，管理网 `--hosts` 可以继续使用原IPv4地址。若Python管理网也改成IPv6，`--hosts '2001:db8::84,2001:db8::184'` 接受IPv6字面量，默认SHMEM bootstrap地址自动生成为 `tcp6://[2001:db8::84]:30012`；主机名仅解析到IPv6时可显式指定 `--shmem-ip-port 'tcp6://[实际地址]:30012'`。示例地址需要替换。该格式已做Host测试，Torch/Gloo/HCCL及RDMA实际IPv6连通性需目标环境验收。
 
 优先级为 `--ifname` > 已设置的 `GLOO_SOCKET_IFNAME` > 本节点 IP 自动选择。`--ifname eth0` 同时指定 Gloo/HCCL；仅需覆盖 Gloo 时可在各台分别 `export GLOO_SOCKET_IFNAME=本机网卡`。自动选择只设置 Gloo，HCCL 仍使用自身设置。多接口配置需各进程使用相同接口数量，见 [PyTorch 网络接口说明](https://docs.pytorch.org/docs/2.11/distributed.html#choosing-the-network-interface-to-use)。
 

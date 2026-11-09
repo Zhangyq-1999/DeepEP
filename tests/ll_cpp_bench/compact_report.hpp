@@ -126,6 +126,13 @@ void compact_record(const Record& r, bool brief = false)
                       << " final_poll=" << r[ProbeMisses] << '/' << r[ProbeCalls] << '/' << r[ProbeTicks]
                       << " reduce_store=" << r[PartialComputeIssueTicks] << '/' << r[PartialPackTicks]
                       << '/' << r[FinalComputeIssueTicks] << '/' << r[FinalStoreIssueTicks];
+        // Queue operations only execute on the RDMA workers. Keep the complete
+        // fields in CSV/Perfetto, without repeating empty queue rows for gather.
+        if (r[Level] >= 2 && r[OpsPolicy] >= 3 && r[OpsRole] == 3)
+            std::cout << "\n  oq batch=n/max/copies:" << r[OpsBatchCommits] << '/' << r[OpsBatchMax]
+                      << '/' << r[OpsSqCopies] << " build=" << r[WqePrepareTicks]
+                      << " cq=calls/loads/entries/ticks/capacity:" << r[OpsCqPollCalls] << '/' << r[OpsCqLoads]
+                      << '/' << r[OpsCqEntries] << '/' << r[OpsCqTicks] << '/' << r[OpsCapacityPolls];
         std::cout << '\n';
         return;
     }

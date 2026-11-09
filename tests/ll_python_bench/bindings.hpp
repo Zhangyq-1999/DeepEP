@@ -134,7 +134,7 @@ public:
         // Upstream has scatter/gather/send roles, followed by all-core final
         // combine. A fixed receive-core count would misdescribe that schedule.
         d["recv_cores"] = 0;
-        d["core_layout"] = opsbench::policy == 2 ? "tiny-overlap-final-then-exit-barrier" : "upstream-scatter-gather-send-then-all-core-final";
+        d["core_layout"] = opsbench::policy >= 2 ? "tiny-overlap-final-then-exit-barrier" : "upstream-scatter-gather-send-then-all-core-final";
         d["return_options"] = 0;
 #else
         d["original"] = bool(DEEPEP_LL_COMBINE_ORIGINAL);

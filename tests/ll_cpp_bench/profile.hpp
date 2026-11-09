@@ -305,6 +305,14 @@ inline void profile_header(std::ostream& out)
         "ops_policy",
         "ops_deferred_commits",
         "ops_retired_peers",
+        "ops_batch_commits",
+        "ops_batch_max",
+        "ops_sq_copies",
+        "ops_cq_poll_calls",
+        "ops_cq_loads",
+        "ops_cq_entries",
+        "ops_cq_ticks",
+        "ops_capacity_polls",
     };
     static_assert(sizeof(names) / sizeof(names[0]) == CombineProfile::Count, "profile CSV fields");
     for (uint32_t w = 0; w < CombineProfile::Count; ++w) out << (w ? "," : "") << names[w];

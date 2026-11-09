@@ -97,7 +97,7 @@ def test_pinned_ops_adaptation_changes_only_transport(tmp_path, profile):
 
 
 @pytest.mark.parametrize("profile", [False, True])
-@pytest.mark.parametrize("policy", [0, 1, 2])
+@pytest.mark.parametrize("policy", [0, 1, 2, 3, 4])
 def test_ops_device_profile_macro_reaches_real_translation_unit(tmp_path, profile, policy):
     zig, cmake = os.environ.get("DEEPEP_TEST_ZIG"), shutil.which("cmake")
     if not zig or not cmake or not shutil.which("ninja"):
@@ -129,7 +129,7 @@ def test_ops_device_profile_macro_reaches_real_translation_unit(tmp_path, profil
     assert f"DEEPEP_LL_OPS_POLICY={policy}" in plain[0]["command"]
 
 
-@pytest.mark.parametrize("policy", [1, 2])
+@pytest.mark.parametrize("policy", [1, 2, 3, 4])
 @pytest.mark.parametrize("profile", [False, True])
 def test_ops_experiment_preserves_payload_and_executes_real_schedule(tmp_path, policy, profile):
     """Compile the generated Process body; verify both roles, fallback and timing boundaries."""

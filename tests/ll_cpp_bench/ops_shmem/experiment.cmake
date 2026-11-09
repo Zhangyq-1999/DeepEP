@@ -47,7 +47,7 @@ if(DEEPEP_LL_COMBINE_PROFILE)
 endif()
 if(DEEPEP_LL_OPS_POLICY STREQUAL "1")
     ops_experiment_replace("${_barrier}" "        RetireTransport();\n${_barrier}")
-elseif(DEEPEP_LL_OPS_POLICY STREQUAL "2")
+elseif(DEEPEP_LL_OPS_POLICY GREATER_EQUAL 2)
     # Per-packet generation/flag checks already guard every final input, including
     # local-server results. Producers drain their own DMA before TPipe reuse.
     ops_experiment_replace("${_barrier}" "        if (!smallExperiment_) {\n${_barrier}\n        }")

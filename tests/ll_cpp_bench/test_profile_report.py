@@ -398,7 +398,8 @@ def test_default_suite_uses_bounded_pastes_and_keeps_each_case(reporter, tmp_pat
                                    partial_vector_barriers=136 if variant.startswith("input-stream") else 192)
                         if variant.startswith("ops-shmem"):
                             row["ops_role"] = 1 if core == 2 else 3 if core == 48 else 2
-                            row["ops_policy"] = 2 if "overlap" in variant else 1 if "retire" in variant else 0
+                            row["ops_policy"] = (4 if "batch" in variant else 3 if "-cq" in variant else
+                                                 2 if "overlap" in variant else 1 if "retire" in variant else 0)
                         records.append(row)
             if profile:
                 for source in range(8):
@@ -436,6 +437,7 @@ def test_default_suite_uses_bounded_pastes_and_keeps_each_case(reporter, tmp_pat
     assert f"LL_COMBINE END cases={len(cases)}" in out
     assert "  oe=" in out and "'-'=absent" in out
     assert "reduce_store=" in out and "deferred/peers=" in out and "retire=" in out
+    assert "oq batch=n/max/copies:" in out and "cq=calls/loads/entries/ticks/capacity:" in out
     if extended:
         assert " G 4/30 O=" in out and "input=6/0/0 vec=0/136 arith=56/0" in out
         assert "  cache=" in out and " m3=" in out and " m5=" in out

@@ -12,7 +12,7 @@ while (($#)); do
             cat <<'USAGE'
 build_all.sh [--variants NAME[,NAME...]] [--ranks-per-host 4|16] [--jobs N] [--dry-run]
              [--cann-home DIR] [--mpi-home DIR] [--shmem-root DIR]
-Defaults: base/ops-shmem-base/route-only + ops-shmem-retire/overlap; only new experiments profiled (seven builds).
+Defaults: base/route-only/ops-overlap + ops-shmem-cq/batch; only new experiments profiled (seven builds).
 Default BS1/2/4/8/16/24; use --tokens at runtime for other shapes.
 base is the frozen original; ready-snapshot remains opt-in.
 wqe-prep prepares a private UB WQE while M4 payload staging runs, then publishes it.
@@ -96,7 +96,7 @@ for name in "${names[@]}"; do
     case "$name" in
         input6-l2-tiny-setup|input6-l2-tiny-setup-profile|input6-l2-tiny-probe|input6-l2-tiny-probe-profile|input6-l2-tiny|input6-l2-tiny-profile|input6-l2-route-priority|input6-l2-route-priority-profile|input6-l2-route-tx-bypass|input6-l2-route-tx-bypass-profile|input6-l2-route-only|input6-l2-route-only-profile|input6-l2-route-plan|input6-l2-route-plan-profile|input6-l2-setup|input6-l2-setup-profile|input6-l2-single|input6-l2-single-profile|input6-l2-lean|input6-l2-lean-profile|input6-l2-route|input6-l2-route-profile|input6-l2-stage|input6-l2-stage-profile|input6-l2-tx|input6-l2-tx-profile|input6-l2-rx|input6-l2-rx-profile|input6-l2-pipe|input6-l2-pipe-profile|input6-l2-all|input6-l2-all-profile|input6-l2|input6-l2-profile|input6-l2-remote|input6-l2-remote-profile|input6-r32|input6-r32-profile|input6-remote|input6-remote-profile|input6-fused|input6-fused-profile|input6-rpipe|input6-rpipe-profile|input6-rfull|input6-rfull-profile) ;;
         input-l2|input-l2-profile|input-interleave|input-interleave-profile|input-stream|input-stream-profile|input-front|input-front-profile|input-pair|input-pair-profile|input-pipe|input-pipe-profile|input6|input6-profile|input-ready|input-ready-profile|wqe-prep|wqe-prep-profile|wqe-prefetch|wqe-prefetch-profile|mte-pack|mte-pack-profile|plan-compact|plan-compact-profile|ready-r32|ready-r32-profile|ready-r36|ready-r36-profile) ;;
-        stage-stream|stage-stream-profile|stage-prefetch|stage-prefetch-profile|stage-pair|stage-pair-profile|ready-snapshot|ready-snapshot-profile|ready-fast|ready-pipeline|ready-fast-profile|ready-pipeline-profile|ready-task|ready-shared|ready-task-profile|ready-shared-profile|notify-simt|notify-core|notify-simt-profile|notify-core-profile|card-all|card-row|server-all|server-row|card-all-profile|card-row-profile|server-all-profile|server-row-profile|batch|batch-profile|batch-pipeline|batch-pipeline-profile|local-first|local-first-profile|poll800|poll800-profile|meta|meta-profile|prefetch|prefetch-profile|prepare|flag|prepare-flag|prepare-profile|flag-profile|prepare-flag-profile|issue|probe|issue-probe|issue-profile|probe-profile|issue-probe-profile|base|remote|pipeline|return|ops-shmem-base|ops-shmem-base-profile|ops-shmem-retire|ops-shmem-retire-profile|ops-shmem-overlap|ops-shmem-overlap-profile|ref-profile|opt-profile|r36-profile|early-profile|remote-profile|pipeline-profile|return-profile) ;;
+        stage-stream|stage-stream-profile|stage-prefetch|stage-prefetch-profile|stage-pair|stage-pair-profile|ready-snapshot|ready-snapshot-profile|ready-fast|ready-pipeline|ready-fast-profile|ready-pipeline-profile|ready-task|ready-shared|ready-task-profile|ready-shared-profile|notify-simt|notify-core|notify-simt-profile|notify-core-profile|card-all|card-row|server-all|server-row|card-all-profile|card-row-profile|server-all-profile|server-row-profile|batch|batch-profile|batch-pipeline|batch-pipeline-profile|local-first|local-first-profile|poll800|poll800-profile|meta|meta-profile|prefetch|prefetch-profile|prepare|flag|prepare-flag|prepare-profile|flag-profile|prepare-flag-profile|issue|probe|issue-probe|issue-profile|probe-profile|issue-probe-profile|base|remote|pipeline|return|ops-shmem-base|ops-shmem-base-profile|ops-shmem-retire|ops-shmem-retire-profile|ops-shmem-overlap|ops-shmem-overlap-profile|ops-shmem-cq|ops-shmem-cq-profile|ops-shmem-batch|ops-shmem-batch-profile|ref-profile|opt-profile|r36-profile|early-profile|remote-profile|pipeline-profile|return-profile) ;;
         *) fail "Unknown experiment: $name (see --help)";;
     esac
 done
@@ -167,7 +167,7 @@ for name in "${names[@]}"; do
         flag|flag-profile) simt_flag=ON;;
         prepare-flag|prepare-flag-profile) simt_meta=ON; simt_flag=ON; prefetch_return=ON;;
         base) variant=base; profile=OFF;;
-        ops-shmem-base|ops-shmem-base-profile|ops-shmem-retire|ops-shmem-retire-profile|ops-shmem-overlap|ops-shmem-overlap-profile) variant=${name%-profile};;
+        ops-shmem-base|ops-shmem-base-profile|ops-shmem-retire|ops-shmem-retire-profile|ops-shmem-overlap|ops-shmem-overlap-profile|ops-shmem-cq|ops-shmem-cq-profile|ops-shmem-batch|ops-shmem-batch-profile) variant=${name%-profile};;
         opt-profile) small=ON;;
         r36-profile) recv=36;;
         early-profile) early=ON;;

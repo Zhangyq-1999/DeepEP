@@ -13,15 +13,15 @@ import sys
 import sysconfig
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_VARIANTS = "base,ops-shmem-base,input6-l2-route-only,ops-shmem-retire,ops-shmem-overlap"
-CLEAN_VARIANTS = ("base", "ops-shmem-base", "ops-shmem-retire", "ops-shmem-overlap", "ready-snapshot", "wqe-prep", "wqe-prefetch", "input6", "input-ready", "input-pair", "input-pipe", "input-stream", "input-front", "input-interleave", "input-l2", "input6-l2", "input6-r32", "input6-remote", "input6-fused", "input6-rpipe", "input6-rfull", "mte-pack",
+DEFAULT_VARIANTS = "base,input6-l2-route-only,ops-shmem-overlap,ops-shmem-cq,ops-shmem-batch"
+CLEAN_VARIANTS = ("base", "ops-shmem-base", "ops-shmem-retire", "ops-shmem-overlap", "ops-shmem-cq", "ops-shmem-batch", "ready-snapshot", "wqe-prep", "wqe-prefetch", "input6", "input-ready", "input-pair", "input-pipe", "input-stream", "input-front", "input-interleave", "input-l2", "input6-l2", "input6-r32", "input6-remote", "input6-fused", "input6-rpipe", "input6-rfull", "mte-pack",
                   "card-all", "card-row", "server-all", "server-row", "input6-l2-remote", "input6-l2-stage", "input6-l2-tx", "input6-l2-rx", "input6-l2-all", "input6-l2-pipe", "input6-l2-setup", "input6-l2-single", "input6-l2-lean", "input6-l2-route", "input6-l2-route-only", "input6-l2-route-plan", "input6-l2-route-priority", "input6-l2-route-tx-bypass", "input6-l2-tiny-setup", "input6-l2-tiny-probe", "input6-l2-tiny")
 
 
 def phase_names(a):
     clean = a.variants.split(",")
     return clean + (["ref-profile" if name=="base" else name+"-profile" for name in clean
-                     if a.variants != DEFAULT_VARIANTS or name in ("ops-shmem-retire", "ops-shmem-overlap")]
+                     if a.variants != DEFAULT_VARIANTS or name in ("ops-shmem-cq", "ops-shmem-batch")]
                     if a.profile and not a.check_hccl else [])
 
 
@@ -31,7 +31,7 @@ def parser():
     p.add_argument("--hosts", default="90.90.93.84,90.90.93.184")
     p.add_argument("--node-rank", type=int)
     p.add_argument("--master-port", type=int, default=30011)
-    p.add_argument("--shmem-ip-port", help="SHMEM TCP endpoint; default tcp://HOST0:30012")
+    p.add_argument("--shmem-ip-port", help="SHMEM endpoint; default tcp://HOST0:30012 or tcp6://[IPv6]:30012")
     p.add_argument("--devices", help="Default: 12..15 for four ranks, 0..15 for sixteen ranks")
     p.add_argument("--ranks-per-host", type=int, choices=(4, 16), default=4)
     selection = p.add_mutually_exclusive_group()
@@ -55,20 +55,36 @@ def parser():
     return p
 
 
+def canonical_host(host):
+    host = host.strip()
+    if host.startswith("[") and host.endswith("]"):
+        host = host[1:-1]
+    try:
+        return str(ipaddress.ip_address(host))
+    except ValueError:
+        return host
+
+
+def shmem_endpoint(host, port):
+    # SHMEM's bootstrap parser uses tcp6 (not tcp) for IPv6 literals.
+    return f"tcp6://[{host}]:{port}" if ":" in host else f"tcp://{host}:{port}"
+
+
 def local_node(hosts):
     names = {socket.gethostname(), socket.getfqdn()}
     try:
         names.update(subprocess.check_output(["hostname", "-I"], text=True).split())
     except (OSError, subprocess.SubprocessError):
         pass
-    matches = [i for i, host in enumerate(hosts) if host in names]
+    names = {canonical_host(name) for name in names}
+    matches = [i for i, host in enumerate(hosts) if canonical_host(host) in names]
     if len(matches) != 1:
         raise ValueError("Cannot detect node; pass --node-rank 0/1 (or 0..3 for four hosts)")
     return matches[0]
 
 
 def plan(a):
-    hosts = a.hosts.split(",")
+    hosts = [canonical_host(host) for host in a.hosts.split(",")]
     a.variants = a.variant or a.variants or DEFAULT_VARIANTS
     names = a.variants.split(",")
     if len(names)!=len(set(names)) or any(v not in CLEAN_VARIANTS for v in names):
@@ -77,7 +93,7 @@ def plan(a):
     if a.devices is None:
         a.devices = "12,13,14,15" if a.ranks_per_host == 4 else ",".join(map(str,range(16)))
     devices = [int(v) for v in a.devices.split(",")]
-    if len(hosts) not in (1,2,4) or len(set(hosts)) != len(hosts):
+    if len(hosts) not in (1,2,4) or len(set(hosts)) != len(hosts) or not all(hosts):
         raise ValueError("Use one, two or four distinct hosts")
     if len(devices) != a.ranks_per_host or len(set(devices)) != len(devices) or min(devices)<0:
         raise ValueError("List one distinct device per local rank")
@@ -96,7 +112,7 @@ def plan(a):
         run_id = f"ep{len(hosts)*len(devices)}-py-{datetime.datetime.now():%Y%m%d-%H%M%S}-{secrets.token_hex(4)}"
     if run_id in (".","..") or not run_id or any(c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-" for c in run_id):
         raise ValueError("Invalid RUN_ID")
-    endpoint = a.shmem_ip_port or f"tcp://{hosts[0]}:{a.master_port+1}"
+    endpoint = a.shmem_ip_port or shmem_endpoint(hosts[0], a.master_port+1)
     out = ROOT / "results/ll-python" / run_id
     build = Path(sysconfig.get_path("platlib")) / "deepep_ll_bench" / names[0]
     cmd = [sys.executable,"-u","-m","torch.distributed.run",f"--nnodes={len(hosts)}",
@@ -147,17 +163,17 @@ def configure_gloo_network(a, node, hosts, env):
     elif len(hosts) > 1:
         source = f"host:{hosts[node]}"
         try:
-            candidates = {entry[4][0] for entry in socket.getaddrinfo(hosts[node], None, socket.AF_INET, socket.SOCK_STREAM)}
+            candidates = {canonical_host(entry[4][0]) for entry in socket.getaddrinfo(hosts[node], None, socket.AF_UNSPEC, socket.SOCK_STREAM)}
             candidates = {ip for ip in candidates if not ipaddress.ip_address(ip).is_loopback
                           and not ipaddress.ip_address(ip).is_unspecified}
             if not candidates:
-                raise ValueError(f"--hosts entry {hosts[node]} has no non-loopback IPv4 address")
-            interfaces = json.loads(subprocess.check_output(["ip", "-j", "-4", "address", "show"], text=True, timeout=5))
+                raise ValueError(f"--hosts entry {hosts[node]} has no non-loopback IP address")
+            interfaces = json.loads(subprocess.check_output(["ip", "-j", "address", "show"], text=True, timeout=5))
         except (OSError, subprocess.SubprocessError, ValueError) as exc:
             raise ValueError(f"Cannot select Gloo interface for {hosts[node]}: {exc}; set --ifname to this node's network interface") from exc
         matches = {item["ifname"] for item in interfaces
                    if "UP" in item.get("flags", []) and "LOOPBACK" not in item.get("flags", [])
-                   and any(addr.get("local") in candidates for addr in item.get("addr_info", []))}
+                   and any(canonical_host(addr.get("local", "")) in candidates for addr in item.get("addr_info", []))}
         if len(matches) != 1:
             raise ValueError(f"Expected one UP local interface for --hosts[{node}]={hosts[node]}, found {sorted(matches)}; "
                              "check --node-rank/--hosts or set --ifname")

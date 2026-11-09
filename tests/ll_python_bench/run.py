@@ -77,7 +77,7 @@ def format_report(config, identity, results, run_id, status="RUNNING"):
                if i.get("upstream_revision") else
                f"ID {v} aiv={i['active_aiv']} recv={i['recv_cores']} qps={i['rdma_qps']} options={i['return_options']} layout={i.get('core_layout','halves')} control_l2={int(i.get('control_l2',False))} data_l2={i.get('data_l2',0)} ready={i.get('ready_mode',0)} remote_first={int(i.get('remote_first',False))}")
               for v,i in identity.items()]
-    lines += [f"REF {v} upstream={i['upstream_revision']} transport={i['transport']}; policy={i.get('ops_policy',0)} (0=reference,1=retire,2=overlap; BS<=24 EP<=64); profile={int(i.get('profile_build',False))}"
+    lines += [f"REF {v} upstream={i['upstream_revision']} transport={i['transport']}; policy={i.get('ops_policy',0)} (0=reference,1=retire,2=overlap,3=device-CQ,4=batch-SQ+CQ; BS<=24 EP<=64); profile={int(i.get('profile_build',False))}"
               for v,i in identity.items() if i.get("upstream_revision")]
     lines += [diagnostic_row(r) for r in results]
     for variant,bs in dict.fromkeys((r["variant"],r["tokens"]) for r in results):

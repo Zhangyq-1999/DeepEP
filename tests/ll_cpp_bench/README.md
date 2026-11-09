@@ -33,14 +33,14 @@ bash tests/ll_cpp_bench/build_all.sh
 | 构建名 | 实验 | 打点 |
 | --- | --- | --- |
 | `base` | 冻结的上游原版 | 关闭 |
-| `ops-shmem-base` | ops-transformer d1bad1c 原算法，SHMEM 传输适配 | 关闭 |
 | `input6-l2-route-only` | all + DIRECT 路由复用，移除 lean 改动 | 关闭 |
-| `ops-shmem-retire` | 小 BS 即时发包，每 peer 最后统一 quiet | 关闭 |
 | `ops-shmem-overlap` | retire + 最终规约提前，全核同步移到退出前 | 关闭 |
-| `ops-shmem-retire-profile` | retire 的内部诊断 | 开启 |
-| `ops-shmem-overlap-profile` | overlap 的内部诊断 | 开启 |
+| `ops-shmem-cq` | overlap + 轻量设备CQ读写 | 关闭 |
+| `ops-shmem-batch` | cq + 缓存QP/MR、UB批量WQE、每批一个DB，fence与Hcomm对齐 | 关闭 |
+| `ops-shmem-cq-profile` | cq 的内部诊断 | 开启 |
+| `ops-shmem-batch-profile` | batch 的内部诊断 | 开启 |
 
-两个新实验只在 BS≤24、EP≤64 生效，较大形状回退到参考版的原调度。三个干净对照保持不变；原参考版和 route-only 的打点版改为按需选择。依据、完成协议和验收指标见 [小 BS 传输实验](ops_shmem/SMALL_BS_AB.md)。
+两个新实验只在 BS≤24、EP≤64 生效，较大形状回退到参考版的原调度。保留原始base、route-only和上一轮overlap；原ops-shmem-base、retire及旧打点版改为按需选择。依据、完成协议和验收指标见 [小 BS 传输实验](ops_shmem/SMALL_BS_AB.md)。
 
 默认只测 **BS1、2、4、8、16、24**。其他 BS 使用 `--tokens` 指定；tiny、tiny-setup、tiny-probe 和 ref-profile 改为可选，组合版 tiny 在 BS>24 时走 route-only 原路径。参考仓的算法保留范围和通信差异见 [参考基线](ops_shmem/README.md)，此前小 BS 实验见 [小 BS 对照](TINY_BS_AB.md)。ready-r32、ready-r36、stage-stream、plan-compact 等历史实验仍可显式选择。
 
@@ -48,13 +48,13 @@ EP32 收尾修复后的实测中，`wqe-prep` 在 BS48/64 的均值比 snapshot 
 
 此前 9b3d243 的 EP32/HCCL 实测 `input6` 的 BS32/48/64 均值为 57.28/65.49/74.26 μs，仍是小 BS 对照；`input-pair` 分别慢 1.41/0.69/0.43 μs，改为可选项。保留 `input-pipe`：它在 BS256 的均值为 174.94 μs，比同轮 input6 快 8.85 μs，但 BS32–64 尚无稳定收益。
 
-此前 EP32/HCCL 的 BS32 clean mean：base=60.74、all=56.46、route-only=55.75 μs；route-only P50=55.32、min–max=53.17–68.49、P95=58.21 μs。当前默认保留 base、route-only、ops-shmem-base 参考基线。all、route、route-plan、route-priority、route-tx-bypass 等仍可用 `--variants` 选择。BS48/64 上 route-plan 的 mean 为63.10/71.98 μs，保留这一方案供后续形状选择，不宣称已经对所有 BS 选出最佳实现。
+此前 EP32/HCCL 的 BS32 clean mean：base=60.74、all=56.46、route-only=55.75 μs；route-only P50=55.32、min–max=53.17–68.49、P95=58.21 μs。当前默认保留 base、route-only、ops-shmem-overlap 干净对照。all、route、route-plan、route-priority、route-tx-bypass 等仍可用 `--variants` 选择。BS48/64 上 route-plan 的 mean 为63.10/71.98 μs，保留这一方案供后续形状选择，不宣称已经对所有 BS 选出最佳实现。
 
 route-only 恢复 all 的 M4 初始化及多/单任务筛选，只加入 DIRECT 的整表路由复用。route-priority 在此基础上推迟 DIRECT 本机发送，保留每条任务原来的核、QP和远端 server 次序；代价是有本机任务的核多筛选一次本机行。它不改变已有的 M4 跨机就绪任务优先策略。route-tx-bypass 则仅把 data_l2 从7改为5，保留控制区、M3和M5的缓存策略，用于隔离 RDMA 发送暂存区的缓存影响。两项实验分别对比 route-only，不叠加。28/28分核、6个M4输入槽、所有输出槽初始化、规约及完成协议保持。支持每机4/16 rank及四机EP64；逻辑组不等于物理主机或单机时不调整 DIRECT 次序。详细数据/生命周期见 [TRANSFER_AB.md](TRANSFER_AB.md)。
 
 每版预热前均执行 `-x,-x,+x,+x` 四代正确性检查，复用两个 bank 且不逐轮强制清 flag，然后恢复原输入；检查不计入性能采样。原始 base 保持冻结，SDK 和 CQ 保护源槽的规则不变。
 
-当前 schema 27 每核为304 words，需两台重编。新增 `tiny=policy/probes/confirmed_slots/skipped_flags`，policy 的1位表示小任务初始化，2位表示记忆式轮询实际生效；其余发送诊断沿用 schema24。新增 `txwait=prefix_remaining/copy_remaining/calls`：仅二级打点在当前 payload DMA 前放置 MTE3→Scalar event6，并在原 event7 等待位置依次退休两个事件，拆分 WQE 准备后前序队列/依赖的剩余等待和当前拷贝的剩余等待。前者也可能包含 Vector→MTE3 依赖，不是纯粹的前一个包时间；后者不是完整 DMA 耗时，二者都不是网络单程时延。原 `stage_wait` 保留。profile增加的事件与读时钟可能扰动流水，性能以 clean Event 为准，clean/一级打点不增加此事件。
+当前 schema 28 每核为320 words，需两台重编。新增 `tiny=policy/probes/confirmed_slots/skipped_flags`，policy 的1位表示小任务初始化，2位表示记忆式轮询实际生效；其余发送诊断沿用 schema24。新增 `txwait=prefix_remaining/copy_remaining/calls`：仅二级打点在当前 payload DMA 前放置 MTE3→Scalar event6，并在原 event7 等待位置依次退休两个事件，拆分 WQE 准备后前序队列/依赖的剩余等待和当前拷贝的剩余等待。前者也可能包含 Vector→MTE3 依赖，不是纯粹的前一个包时间；后者不是完整 DMA 耗时，二者都不是网络单程时延。原 `stage_wait` 保留。profile增加的事件与读时钟可能扰动流水，性能以 clean Event 为准，clean/一级打点不增加此事件。
 
 `priority=local_rows_deferred/extra_scan_ticks` 记录本机后置任务数及额外筛选成本。新增计数进入 CSV 和 Perfetto 的 `profiled body` 参数，不伪造独立时间片。schema22/23的 `small`、`direct_meta`、`route_plan` 仍保留，旧CSV仍可读取。现有 M3、group-ready、M4、RDMA/CQ、M5 和拖尾计数不删减。这些是软件打点，不是硬件L2命中计数；新实验尚待NPU正确性及性能验证。
 
@@ -204,7 +204,19 @@ bash tests/ll_cpp_bench/build.sh \
 
 CANN 的 Device 编译器与 Host C++ 编译器使用各自的构建目录。构建结果保存在 `build/ll-cpp-base`，其中 `bench-build.txt` 记录源码摘要和实验开关。
 
-如果已有其他目录下的配套 SDK，可以跳过 `prepare_shmem.sh`，直接设置实际的 `SHMEM_ROOT`。脚本会保留已有构建；如果子模块中存在尚未登记的 `build/install`，它会停止并提示使用现成 SDK 或新 checkout。
+如果已有其他目录下的配套 SDK，可以跳过 `prepare_shmem.sh`，直接设置实际的 `SHMEM_ROOT`。复用时校验锁定提交和SDK身份。
+
+SHMEM 当前固定到 [IPv6 PR1000](https://gitcode.com/cann/shmem/pull/1000) 的 `3bbe2a74738805a6a716df3f2a05f8ef47265ebe`，没有追踪移动分支。该PR支持RDMA-v2 IPv6地址发现/建链，其基线同时包含HNS批量接口和SQ/CQ游标改动。本仓内部WQE接口已适配新签名。升级时每台加载CANN后执行：
+
+```bash
+git pull --ff-only
+bash tests/ll_cpp_bench/prepare_shmem.sh --rebuild
+export SHMEM_ROOT="$PWD/third-party/shmem/install/shmem"
+export LD_LIBRARY_PATH="$SHMEM_ROOT/lib:${LD_LIBRARY_PATH:-}"
+bash tests/ll_cpp_bench/build_all.sh
+```
+
+EP32/64 编译在最后一条追加 `--ranks-per-host 16`。必须重编SDK和所有选中的算子库；旧安装身份不能与新头文件混用，失败的重编不会保留旧身份文件。外部 `SHMEM_ROOT` 也需要同提交构建。IPv4双机默认IP保持不变：SHMEM RDMA地址和MPI管理网地址是两层配置，该PR不等于验证了Hydra的纯IPv6启动。
 
 base 和 opt 使用各自的 Combine kernel 源码。base 从上游提交 `5b38bf2ea1f67f38c0c2d3662618ae1a0457bfc6` 提取原始 kernel 及其依赖头文件，保存在构建目录中。Combine 算法文件保持不变。每机 4 个 rank 的构建只替换 `ll_group_policy.h` 中的每机 rank 数常量；16-rank 构建的全部原始文件保持不变。实验开关和打点只进入 opt。`bench-build.txt` 记录实际源码路径、原版提交和编译选项。
 

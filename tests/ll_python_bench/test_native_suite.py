@@ -162,11 +162,13 @@ inline void ops_shmem_combine_do(void* stream,Combine* args) {
         r[FinalBegin]=r[Entry]+701;r[FinalEnd]=r[Entry]+900;r[FinalTokens]=1;
         r[Valid]|=(1ULL<<ReadyBegin)|(1ULL<<ReadyEnd)|(1ULL<<FinalBegin)|(1ULL<<FinalEnd);
         if (DEEPEP_LL_OPS_POLICY) {
-            r[ReadyRetireBegin]=r[Entry]+(DEEPEP_LL_OPS_POLICY==2?901:591);
+            r[ReadyRetireBegin]=r[Entry]+(DEEPEP_LL_OPS_POLICY>=2?901:591);
             r[ReadyRetireEnd]=r[ReadyRetireBegin]+5;
             r[Valid]|=(1ULL<<ReadyRetireBegin)|(1ULL<<ReadyRetireEnd);
         }
-        if (DEEPEP_LL_OPS_POLICY==2) {r[ReadyBegin]=r[Entry]+910;r[ReadyEnd]=r[Entry]+920;}
+        if (DEEPEP_LL_OPS_POLICY>=2) {r[ReadyBegin]=r[Entry]+910;r[ReadyEnd]=r[Entry]+920;}
+        if (DEEPEP_LL_OPS_POLICY>=3) {r[OpsCqLoads]=7;r[OpsCqEntries]=4;r[OpsCqTicks]=9;}
+        if (DEEPEP_LL_OPS_POLICY==4) {r[OpsBatchCommits]=2;r[OpsBatchMax]=3;r[OpsSqCopies]=2;}
     }
 }
 extern "C" void ll_bench_entry_sync_do(void*,uint64_t) {}
@@ -198,11 +200,11 @@ PYBIND11_MODULE(_ll_py_debug,m) {
         spec.loader.exec_module(module)
         return module
     modules=[]
-    for index in range(7):
+    for index in range(9):
         path=tmp_path/f"variant{index}.pyd"
         subprocess.run([zig,"c++","-std=c++17","-shared","-O0","-DMS_WIN64",
                         f"-DTEST_VARIANT={index}", f"-DDEEPEP_LL_COMBINE_READY={20 if index else 12}",
-                        f"-DDEEPEP_BENCH_PROFILE={int(index in (2,4,5,6))}", "-DDEEPEP_LL_PHYSICAL_RANKS_PER_HOST=4",
+                        f"-DDEEPEP_BENCH_PROFILE={int(index==2 or index>=4)}", "-DDEEPEP_LL_PHYSICAL_RANKS_PER_HOST=4",
                         f"-DDEEPEP_LL_OPS_BASE={int(index >= 3)}",
                         f"-DDEEPEP_LL_OPS_POLICY={max(0,index-4)}",
                         "-I",str(tmp_path),"-I",str(HERE),"-I",str(HERE.parents[1]/"csrc"),
@@ -312,7 +314,7 @@ PYBIND11_MODULE(_ll_py_debug,m) {
         bench=mod.Bench(owner.share())
         identity=bench.identity()
         assert identity["ops_policy"]==policy
-        assert identity["implementation"]==("ops-shmem-retire" if policy==1 else "ops-shmem-overlap")
+        assert identity["implementation"]==("ops-shmem-retire", "ops-shmem-overlap", "ops-shmem-cq", "ops-shmem-batch")[policy-1]
         bench.prepare(32)  # model fixture shape; generated Device schedule tests the BS guard
         directory=tmp_path/f"ops-experiment-{policy}"
         bench.begin_profile(str(directory),"hccl")
@@ -321,12 +323,18 @@ PYBIND11_MODULE(_ll_py_debug,m) {
         bench.close()
         trace=json.loads(next((directory/"perfetto").glob("*p50*.json")).read_text())
         assert any(e["name"]=="ops deferred transport retirement" for e in trace["traceEvents"])
-        assert any(e["name"]==("ops exit all-core barrier" if policy==2 else "ops all-core barrier") for e in trace["traceEvents"])
+        assert any(e["name"]==("ops exit all-core barrier" if policy>=2 else "ops all-core barrier") for e in trace["traceEvents"])
+        rows=list(csv.DictReader((directory/"diagnostic.csv").open()))
+        if policy>=3:
+            assert {int(r["ops_cq_loads"]) for r in rows}=={7}
+            assert any(e.get("args",{}).get("ops_cq_loads")==7 for e in trace["traceEvents"])
+        if policy==4:
+            assert {int(r["ops_batch_max"]) for r in rows}=={3}
     # Reference-only selection must also own and close a session normally.
     standalone=ops.Bench(0,8,0,[],123,"tcp://a:1")
     standalone.prepare(32); standalone.sample(lambda:None,True); standalone.release_case(); standalone.close()
     assert opsdebug.counts()==(1,1,0,0,0,2)
     owner.reset_workspace(); owner.close()
-    assert bdebug.counts()==(1,1,7,0,0,1)
+    assert bdebug.counts()==(1,1,9,0,0,1)
     with pytest.raises(RuntimeError,match="closed"): borrowed.prepare(32)
     with pytest.raises(RuntimeError,match="closed"): owner.share()

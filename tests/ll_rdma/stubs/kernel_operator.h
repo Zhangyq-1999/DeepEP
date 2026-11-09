@@ -13,6 +13,7 @@
 #define __ubuf__
 constexpr int PIPE_ALL=0;
 namespace AscendC {
+using TEventID = uint32_t;
 enum class HardEvent { S_MTE3, MTE3_S, MTE2_S, V_S, S_MTE2, MTE2_V, MTE3_V, V_MTE3, MTE3_MTE2, S_V, V_MTE2, MTE2_MTE3 };
 inline thread_local bool events[12][8]{};
 inline std::mutex memoryMutex;
@@ -85,7 +86,8 @@ template<class T> struct GlobalTensor {
     T* p=nullptr;
     GlobalTensor<T> operator[](uint64_t index) { return {p + index}; }
     T& operator()(uint32_t index) { return p[index]; }
-    void SetGlobalBuffer(T* q) { p=q; }
+    void SetGlobalBuffer(T* q, uint64_t = 0) { p=q; }
+    T* GetPhyAddr() { return p; }
     void SetL2CacheHint(CacheMode) {}
     T GetValue(uint32_t i) { std::lock_guard<std::mutex> guard(memoryMutex); return p[i]; }
     void SetValue(uint32_t i, T value) { std::lock_guard<std::mutex> guard(memoryMutex); p[i]=value; }

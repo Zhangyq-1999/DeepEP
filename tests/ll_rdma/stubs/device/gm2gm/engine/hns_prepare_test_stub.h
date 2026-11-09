@@ -1,4 +1,5 @@
 #pragma once
+#include <cassert>
 // HNS API contract model for Combine's adapter, not a hardware WQE encoder.
 // Production uses the SDK's encoder/doorbell helpers without redefining them.
 enum class aclshmemi_rdma_backend_t { HNS_1825 };
@@ -23,21 +24,24 @@ inline HnsState* aclshmemi_get_state(){return &HnsModel::state;}
 inline uint32_t aclshmemi_hns_1825_read_u32_gm(uint64_t p){return *reinterpret_cast<uint32_t*>(p);}
 inline uint8_t* aclshmemi_remote_mr_addr(uint8_t* p,uint8_t* base,uint8_t* remote){return remote+(p-base);}
 inline AscendC::LocalTensor<uint32_t> aclshmemi_hns_1825_make_wqe_ub(AscendC::LocalTensor<uint32_t> p,uint32_t){return p;}
-inline uint8_t* aclshmemi_roce_hns_1825_fill_wqe_ctrl_seg(AscendC::LocalTensor<uint32_t>& p,uint32_t head,uint32_t depth){
+inline uint8_t* aclshmemi_roce_hns_1825_fill_wqe_ctrl_seg(uint8_t* raw,uint32_t head,uint32_t depth,bool submit){
+    assert(submit); AscendC::LocalTensor<uint32_t> p{reinterpret_cast<uint32_t*>(raw)};
     if(HnsModel::beforePrepare)HnsModel::beforePrepare();
     ++HnsModel::builds;
     std::memset(p.GetPhyAddr(),0,64);p.SetValue(0,head);p.SetValue(1,depth);
     return reinterpret_cast<uint8_t*>(p.GetPhyAddr())+16;
 }
-inline uint8_t* aclshmemi_roce_hns_1825_fill_wqe_task_seg(uint8_t* p,aclshmemi_rdma_send_wr& wr,aclshmemi_hns_1825_msg_type_t){
+inline uint8_t* aclshmemi_roce_hns_1825_fill_wqe_task_seg(uint8_t* p,uint32_t rkey,uint8_t* remote,uint32_t lkey,uint32_t bytes,aclshmemi_hns_1825_msg_type_t,bool submit){
+    assert(submit); aclshmemi_rdma_send_wr wr{}; wr.rkey=rkey;wr.remote_addr=remote;wr.lkey=lkey;wr.message_len=bytes;
     std::memcpy(p,&wr.remote_addr,8);std::memcpy(p+8,&wr.message_len,8);
     std::memcpy(p+16,&wr.rkey,4);std::memcpy(p+20,&wr.lkey,4);return p+32;
 }
-inline uint8_t* aclshmemi_roce_hns_1825_fill_wqe_data_seg(uint8_t* p,aclshmemi_rdma_send_wr& wr){
+inline uint8_t* aclshmemi_roce_hns_1825_fill_wqe_data_seg(uint8_t* p,uint32_t lkey,uint8_t* local,uint32_t bytes){
+    aclshmemi_rdma_send_wr wr{};wr.lkey=lkey;wr.local_addr=local;wr.message_len=bytes;
     std::memcpy(p,&wr.local_addr,8);std::memcpy(p+8,&wr.message_len,8);return p+16;
 }
 inline uint8_t* aclshmemi_roce_hns_1825_get_send_wqe(aclshmemi_rdma_sq_ctx*& sq,uint32_t i){return reinterpret_cast<uint8_t*>(sq->buf_addr)+i*64;}
-inline void aclshmemi_roce_hns_1825_write_invalid_wqebb(aclshmemi_rdma_sq_ctx*&,uint32_t){
+inline void aclshmemi_roce_hns_1825_write_invalid_wqebb(uint64_t,uint32_t,uint32_t){
     if(HnsModel::beforePublish)HnsModel::beforePublish();
 }
 template<class T> void aclshmemi_roce_write_ub_to_gm_with_sync(uint64_t p,AscendC::LocalTensor<T>& ub,uint32_t bytes,uint32_t id){

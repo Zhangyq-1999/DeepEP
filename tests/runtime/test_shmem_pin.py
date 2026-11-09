@@ -1,6 +1,7 @@
 """Check the pinned source identity without importing an SDK or using a device."""
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -18,11 +19,11 @@ def test_submodule_gitlink_matches_dependency_lock():
                                     cwd=ROOT, text=True).strip().split()
     assert entry == ['160000', lock['revision'], '0', 'third-party/shmem']
     assert lock['repository'] == 'https://gitcode.com/cann/shmem'
-    assert lock['ref'] == 'refs/heads/master'
+    assert lock['ref'] == 'refs/merge-requests/1000/head'
 
 
 def test_initialized_shmem_source_and_public_headers_match_lock():
-    source = ROOT / 'third-party/shmem'
+    source = Path(os.environ.get('DEEPEP_TEST_SHMEM_SOURCE', ROOT / 'third-party/shmem'))
     if not (source / '.git').exists() or not shutil.which('git'):
         pytest.skip('Initialize only third-party/shmem to check source headers')
     lock = json.loads((ROOT / 'dependencies.lock.json').read_text(encoding='utf-8'))['shmem']

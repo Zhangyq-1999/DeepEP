@@ -31,7 +31,7 @@ def test_default_and_four_host_plan():
     assert cmd[cmd.index("--devices")+1]=="12,13,14,15"
     assert "--nproc_per_node=4" in cmd
     assert cmd[cmd.index("--sync")+1]=="device"
-    assert cmd[cmd.index("--variants")+1]=="base,ops-shmem-base,input6-l2-route-only,ops-shmem-retire,ops-shmem-overlap,ops-shmem-retire-profile,ops-shmem-overlap-profile"
+    assert cmd[cmd.index("--variants")+1]=="base,input6-l2-route-only,ops-shmem-overlap,ops-shmem-cq,ops-shmem-batch,ops-shmem-cq-profile,ops-shmem-batch-profile"
     assert launch.plan(args)[2]!=run_id
     other = launch.parser().parse_args([run_id,"--node-rank","1"])
     assert launch.plan(other)[3]==out
@@ -40,7 +40,7 @@ def test_default_and_four_host_plan():
                                       "--ranks-per-host","16","--devices",devices])
     cmd = launch.plan(args)[-1]
     assert "--nnodes=4" in cmd and "--nproc_per_node=16" in cmd
-    for variant in ("base", "input6", "input6-l2", "input6-r32", "input6-remote", "input6-l2-remote", "input6-rpipe", "input6-rfull", "input6-l2-pipe", "ops-shmem-retire", "ops-shmem-overlap"):
+    for variant in ("base", "input6", "input6-l2", "input6-r32", "input6-remote", "input6-l2-remote", "input6-rpipe", "input6-rfull", "input6-l2-pipe", "ops-shmem-retire", "ops-shmem-overlap", "ops-shmem-cq", "ops-shmem-batch"):
         for hosts in ("a,b", "a,b,c,d"):
             args = launch.parser().parse_args(["same-run", "--hosts", hosts, "--node-rank", "1",
                                               "--ranks-per-host", "16", "--variant", variant, "--sync", "hccl"])
@@ -50,7 +50,7 @@ def test_default_and_four_host_plan():
             assert cmd[cmd.index("--sync")+1] == "hccl"
     args = launch.parser().parse_args(["--node-rank","0","--profile","0"])
     cmd = launch.plan(args)[-1]
-    assert cmd[cmd.index("--variants")+1] == "base,ops-shmem-base,input6-l2-route-only,ops-shmem-retire,ops-shmem-overlap"
+    assert cmd[cmd.index("--variants")+1] == "base,input6-l2-route-only,ops-shmem-overlap,ops-shmem-cq,ops-shmem-batch"
 
 
 def test_ops_baseline_has_separate_profile_phase():
@@ -61,6 +61,39 @@ def test_ops_baseline_has_separate_profile_phase():
         command = launch.plan(args)[-1]
         assert launch.phase_names(args) == ["ops-shmem-base", "ops-shmem-base-profile"]
         assert command[command.index("--variants")+1] == "ops-shmem-base,ops-shmem-base-profile"
+
+
+def test_ipv6_launch_endpoint_and_local_address(monkeypatch):
+    launch = module("launch")
+    hosts = "[2001:db8::87],2001:0db8:0:0:0:0:0:86"
+    monkeypatch.setattr(launch.socket, "gethostname", lambda: "node1")
+    monkeypatch.setattr(launch.socket, "getfqdn", lambda: "node1")
+    monkeypatch.setattr(launch.subprocess, "check_output", lambda *a, **kw: "2001:db8::86\n")
+    args = launch.parser().parse_args(["ipv6-run", "--hosts", hosts])
+    node, normalized, _, _, _, cmd = launch.plan(args)
+    assert node == 1 and normalized == ["2001:db8::87", "2001:db8::86"]
+    assert "--master_addr=2001:db8::87" in cmd
+    assert cmd[cmd.index("--shmem-ip-port")+1] == "tcp6://[2001:db8::87]:30012"
+    args.shmem_ip_port = "tcp://10.0.0.87:30272"
+    cmd = launch.plan(args)[-1]
+    assert cmd[cmd.index("--shmem-ip-port")+1] == args.shmem_ip_port
+    args.hosts = "2001:db8::87,2001:0db8:0:0:0:0:0:87"
+    with pytest.raises(ValueError, match="distinct hosts"):
+        launch.plan(args)
+
+
+def test_gloo_ipv6_interface_selection(monkeypatch):
+    launch = module("launch")
+    def resolve(host, port, family, kind):
+        assert family == launch.socket.AF_UNSPEC
+        return [(0,0,0,"",("2001:0db8:0:0:0:0:0:86",0,0,0))]
+    monkeypatch.setattr(launch.socket, "getaddrinfo", resolve)
+    monkeypatch.setattr(launch.subprocess, "check_output", lambda *a, **kw: json.dumps([
+        dict(ifname="eth1",flags=["UP"],addr_info=[dict(local="2001:db8::86")]),
+        dict(ifname="eth0",flags=["UP"],addr_info=[dict(local="10.0.0.86")])]))
+    env = {}
+    launch.configure_gloo_network(launch.parser().parse_args([]), 1, ["2001:db8::87","2001:db8::86"], env)
+    assert env["GLOO_SOCKET_IFNAME"] == "eth1"
 
 
 def test_clean_build_suite_forwards_environment_and_stops(tmp_path):
@@ -81,7 +114,7 @@ if [[ "$2" == "${FAIL_VARIANT:-}" ]]; then exit 17; fi
     result = subprocess.run(cmd,capture_output=True,text=True,check=True)
     calls = result.stdout.splitlines()
     assert calls == [f"CALL --variant {v} --ranks-per-host 16 --conda-env py311_zyq"
-                     for v in ('base', 'ops-shmem-base', 'input6-l2-route-only', 'ops-shmem-retire', 'ops-shmem-overlap', 'ops-shmem-retire-profile', 'ops-shmem-overlap-profile')]
+                     for v in ('base', 'input6-l2-route-only', 'ops-shmem-overlap', 'ops-shmem-cq', 'ops-shmem-batch', 'ops-shmem-cq-profile', 'ops-shmem-batch-profile')]
     failed = subprocess.run(cmd,env=dict(os.environ,FAIL_VARIANT="input6-l2-route-only"),capture_output=True,text=True)
     assert failed.returncode == 17 and "input6-l2-tiny" not in failed.stdout
     invalid = subprocess.run(cmd+["--variants","base,typo"],capture_output=True,text=True)
@@ -89,7 +122,7 @@ if [[ "$2" == "${FAIL_VARIANT:-}" ]]; then exit 17; fi
     clean = subprocess.run(cmd+["--profile","0"],capture_output=True,text=True,check=True)
     assert clean.stdout.splitlines() == calls[:5]
     reference = subprocess.run(cmd+["--variants","ops-shmem-base"],capture_output=True,text=True,check=True)
-    assert reference.stdout.splitlines() == [calls[1], calls[1].replace("ops-shmem-base", "ops-shmem-base-profile")]
+    assert reference.stdout.splitlines() == [calls[0].replace("base", "ops-shmem-base"), calls[0].replace("base", "ops-shmem-base-profile")]
 
 
 @pytest.mark.parametrize("extra",[["--devices","12,12,14,15"],["--node-rank","2"],["--tokens","32","--iters","0"],
@@ -137,7 +170,7 @@ def test_gloo_auto_selects_each_hosts_entry(nodes,monkeypatch):
                     dict(ifname="wrong",flags=["UP"],addr_info=[dict(local="192.168.1.1")]),
                     dict(ifname=f"eth{node}",flags=["UP"],addr_info=[dict(local=host)])]
         def ip_command(cmd,**kwargs):
-            assert cmd==["ip","-j","-4","address","show"] and kwargs["timeout"]==5
+            assert cmd==["ip","-j","address","show"] and kwargs["timeout"]==5
             return json.dumps(interfaces)
         monkeypatch.setattr(launch.subprocess,"check_output",ip_command)
         env={"HCCL_SOCKET_IFNAME":"hccl-control"}

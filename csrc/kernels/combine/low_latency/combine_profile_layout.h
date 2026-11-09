@@ -297,10 +297,18 @@ enum Word : uint32_t {
     OpsPolicy,
     OpsDeferredCommits,
     OpsRetiredPeers,
+    OpsBatchCommits,
+    OpsBatchMax,
+    OpsSqCopies,
+    OpsCqPollCalls,
+    OpsCqLoads,
+    OpsCqEntries,
+    OpsCqTicks,
+    OpsCapacityPolls,
     Count
 };
-constexpr uint32_t kWords = 304U;
-constexpr uint64_t kSchema = 27U;
+constexpr uint32_t kWords = 320U;
+constexpr uint64_t kSchema = 28U;
 constexpr Word kDetailBegin = InitPrefixTicks;
 constexpr Word kDetailEnd = RouteCompactTicks;
 constexpr bool IsDetailWord(uint32_t word)
@@ -310,7 +318,7 @@ constexpr bool IsDetailWord(uint32_t word)
            (word >= PartialOutputInitLanes && word <= DirectPriorityScanTicks) ||
            (word >= FinalSparseProbeCalls && word <= FinalSparseConfirmedSlots) ||
            (word >= RdmaBytes && word <= TailInspectSkipped) ||
-           (word >= OpsDeferredCommits && word <= OpsRetiredPeers);
+           (word >= OpsDeferredCommits && word <= OpsCapacityPolls);
 }
 static_assert(Count <= kWords && StageRows <= 64U, "profile record bounds");
 }  // namespace CombineProfile

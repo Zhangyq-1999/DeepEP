@@ -4,6 +4,9 @@
 // SHMEM's RDMA backends require cache helpers from the public header first.
 #include "shmem.h"
 #include "device/gm2gm/engine/shmem_device_rdma.h"
+#if DEEPEP_LL_OPS_POLICY >= 3
+#include "roce_queue.hpp"
+#endif
 #ifdef DEEPEP_LL_COMBINE_PROFILE
 #include "../../../csrc/kernels/combine/low_latency/combine_profile_device.h"
 #endif
@@ -14,9 +17,15 @@ namespace opsbench {
 struct Batch {
     uint32_t peer;
     bool pending = false;
+#if DEEPEP_LL_OPS_POLICY == 4
+    QueueBatch queue;
+#endif
 };
 class Transport {
     AscendC::LocalTensor<uint8_t> scratch_;
+#if DEEPEP_LL_OPS_POLICY >= 3
+    RoceQueue queue_;
+#endif
 #if DEEPEP_LL_OPS_POLICY
     bool defer_ = false;
     uint64_t pendingPeers_ = 0;
@@ -46,29 +55,47 @@ public:
     }
 #endif
 #ifdef DEEPEP_LL_COMBINE_PROFILE
-    __aicore__ inline void SetProfile(CombineProfile::DeviceProfile* profile) { profile_.Bind(profile); }
+    __aicore__ inline void SetProfile(CombineProfile::DeviceProfile* profile) {
+        profile_.Bind(profile);
+#if DEEPEP_LL_OPS_POLICY >= 3
+        queue_.SetProfile(profile);
+#endif
+    }
 #endif
     __aicore__ inline void Init(AscendC::LocalTensor<uint8_t> scratch, uint32_t bytes)
     {
         if (bytes < 128U) AscendC::Trap();
         scratch_ = scratch;
     }
-    __aicore__ inline Batch MakeBatchHandle(uint64_t peer, AscendC::LocalTensor<uint8_t>, uint32_t, GM_ADDR, GM_ADDR)
+    __aicore__ inline Batch MakeBatchHandle(uint64_t peer, AscendC::LocalTensor<uint8_t> storage,
+                                          uint32_t bytes, GM_ADDR, GM_ADDR)
     {
-        return {static_cast<uint32_t>(peer), false};
+        Batch batch{static_cast<uint32_t>(peer), false};
+#if DEEPEP_LL_OPS_POLICY == 4
+        if (defer_) batch.queue = queue_.Make(batch.peer, storage, bytes);
+#endif
+        return batch;
     }
     __aicore__ inline void WriteNbi(Batch& batch, GM_ADDR dst, GM_ADDR src, uint32_t bytes)
     {
         // Both pointers are local symmetric addresses. SHMEM translates dst.
-#ifdef DEEPEP_LL_COMBINE_PROFILE
-        profile_.MarkOnce(CombineProfile::RdmaFirstPut);
-        const auto begin = profile_.DetailClock();
+#if DEEPEP_LL_OPS_POLICY == 4
+        if (defer_) queue_.Write(batch.queue, dst, src, bytes);
+        else
 #endif
-        aclshmemx_roce_qp_put_nbi(dst, src, (__ubuf__ uint8_t*)scratch_.GetPhyAddr(), bytes, batch.peer,
-                                  AscendC::GetBlockIdx(), 7U);
+        {
 #ifdef DEEPEP_LL_COMBINE_PROFILE
-        profile_.Elapsed(CombineProfile::RdmaPutTicks, begin);
-        profile_.Mark(CombineProfile::RdmaLastPut);
+            profile_.MarkOnce(CombineProfile::RdmaFirstPut);
+            const auto begin = profile_.DetailClock();
+#endif
+            aclshmemx_roce_qp_put_nbi(dst, src, (__ubuf__ uint8_t*)scratch_.GetPhyAddr(), bytes, batch.peer,
+                                    AscendC::GetBlockIdx(), 7U);
+#ifdef DEEPEP_LL_COMBINE_PROFILE
+            profile_.Elapsed(CombineProfile::RdmaPutTicks, begin);
+            profile_.Mark(CombineProfile::RdmaLastPut);
+#endif
+        }
+#ifdef DEEPEP_LL_COMBINE_PROFILE
         profile_.Add(CombineProfile::RdmaPackets);
         profile_.Add(CombineProfile::RdmaBytes, bytes);
 #endif
@@ -89,8 +116,19 @@ public:
         if (batch.pending) {
 #if DEEPEP_LL_OPS_POLICY
             if (defer_) {
-                // Put already publishes the WQE/DB. Nothing is held in a batch
-                // UB buffer, and each GM payload stays immutable until Retire.
+#if DEEPEP_LL_OPS_POLICY == 4
+#ifdef DEEPEP_LL_COMBINE_PROFILE
+                const auto begin = profile_.DetailClock();
+                profile_.MarkOnce(CombineProfile::RdmaFirstPut);
+#endif
+                queue_.Commit(batch.queue, scratch_);
+#ifdef DEEPEP_LL_COMBINE_PROFILE
+                profile_.Elapsed(CombineProfile::RdmaPutTicks, begin);
+                profile_.Mark(CombineProfile::RdmaLastPut);
+#endif
+#endif
+                // All WQEs are published by here. Source GM remains immutable
+                // until Retire, while the upstream can reset/reuse batch UB.
 #ifdef DEEPEP_LL_COMBINE_PROFILE
                 profile_.Add(CombineProfile::OpsDeferredCommits);
 #endif
@@ -108,7 +146,11 @@ private:
 #ifdef DEEPEP_LL_COMBINE_PROFILE
             const auto begin = profile_.DetailClock();
 #endif
-            aclshmemx_roce_qp_quiet(peer, AscendC::GetBlockIdx(), (__ubuf__ uint8_t*)scratch_.GetPhyAddr(), 7U);
+#if DEEPEP_LL_OPS_POLICY >= 3
+            if (defer_) queue_.Quiet(peer);
+            else
+#endif
+                aclshmemx_roce_qp_quiet(peer, AscendC::GetBlockIdx(), (__ubuf__ uint8_t*)scratch_.GetPhyAddr(), 7U);
 #ifdef DEEPEP_LL_COMBINE_PROFILE
             profile_.SampleMax(CombineProfile::RdmaQuietTicks, CombineProfile::RdmaQuietMaxTicks,
                               CombineProfile::RdmaQuietMaxPeer, CombineProfile::RdmaQuietMaxPeer,

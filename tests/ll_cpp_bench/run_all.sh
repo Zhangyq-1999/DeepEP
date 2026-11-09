@@ -29,7 +29,7 @@ Benchmark options (with or without a preceding --):
          --kernel-timeout SECONDS (default 10; bounded stream wait)
          --profile-frequency-hz HZ (default 1000000000; 0 disables Perfetto export)
 Defaults: EP8, four ranks/host, devices 12,13,14,15 on each host; hosts 90.90.93.84,90.90.93.184, port 29671.
-          base/ops-shmem-base/route-only + ops-shmem-retire/overlap (new candidates profiled); BS 1,2,4,8,16,24; H3584/K8/E384/BF16.
+          base/route-only/ops-overlap + ops-shmem-cq/batch (new candidates profiled); BS 1,2,4,8,16,24; H3584/K8/E384/BF16.
           Use --tokens to add BS32/48/64/72/256 or other shapes.
           Warmup 10; clean samples 100; diagnostic samples 10, level 2.
 Rebuild with the same --ranks-per-host value. Use 16 for EP16/32/64 on one/two/four hosts.
