@@ -8,6 +8,7 @@
 #include "combine_profile_device.h"
 #include "combine_poll.h"
 #include "combine_cache_policy.h"
+#include "combine_ready_layout.h"
 #ifdef DEEPEP_LL_COMBINE_SIMT_FLAG
 #include "combine_simt.h"
 #endif
@@ -97,7 +98,7 @@ public:
 #ifdef DEEPEP_LL_COMBINE_PROGRESS_PROBE
             const bool ready = ProbeProgress(token, task >> 16U, scan);
 #else
-            const bool ready = Probe(token, task >> 16U);
+            const bool ready = tinyProbe_ ? ProbeTiny(token) : Probe(token, task >> 16U);
 #endif
             if (!ready) {
                 PauseAfterFlagMiss(profile_);
@@ -143,6 +144,10 @@ private:
         const uint32_t base = bs / participants, extra = bs % participants;
         count_ = base + (participant < extra ? 1U : 0U);
         begin_ = participant * base + (participant < extra ? participant : extra);
+        // One token per core needs only a register-sized pending mask. No UB
+        // growth, accumulator reassociation, or cross-token scratch aliasing.
+        tinyProbe_ = kCombineTinyProbe && bs <= 24U && count_ == 1U && k <= 8U;
+        profile_.Set(CombineProfile::TinyPolicy, (kCombineTinySetup && bs <= 24U ? 1U : 0U) | (tinyProbe_ ? 2U : 0U));
         blocks_ = (h * 2U + 479U) / 480U;
         packetBytes_ = blocks_ * 512U;
         // The shared Host budget uses the largest contiguous Recv-core segment.
@@ -248,6 +253,10 @@ private:
             pending_.SetValue(p, (begin_ + p) | (expected << 16U));
 #endif
         }
+        if (tinyProbe_) {
+            tinyPendingMask_ = enableDedup_ ? masks_.GetValue(0U) : (1U << k_) - 1U;
+            tinyActiveSlots_ = uint32_t(GetBitCount<1>(uint64_t(tinyPendingMask_)));
+        }
         profile_.Elapsed(CombineProfile::FinalPendingBuildTicks, pendingStart);
     }
     template <class T>
@@ -262,6 +271,47 @@ private:
     {
         SetFlag<E>(7U);
         WaitFlag<E>(7U);
+    }
+    __aicore__ inline bool ProbeTiny(uint32_t token)
+    {
+        const uint64_t start = profile_.DetailClock();
+        const uint32_t pending = tinyPendingMask_;
+        const uint32_t slots = uint32_t(GetBitCount<1>(uint64_t(pending)));
+        // Coalesce adjacent pending slots into a single strided DMA. Retain
+        // their original snapshot positions for tail diagnostics. Every 512B
+        // flag (including the last block) remains part of the readiness test.
+        for (uint32_t slot = 0U; slot < k_;) {
+            if (((pending >> slot) & 1U) == 0U) { ++slot; continue; }
+            const uint32_t first = slot++;
+            while (slot < k_ && ((pending >> slot) & 1U)) ++slot;
+            auto src = resultFlags_[(uint64_t(token) * k_ + first) * packetBytes_ / 4U + 120U];
+            DataCopy(flags_[first * blocks_ * 8U], src, {uint16_t((slot - first) * blocks_), 1U, 15U, 0U});
+        }
+        Sync<HardEvent::MTE2_V>();
+        profile_.Elapsed(CombineProfile::ProbeLoadTicks, start);
+        const uint64_t check = profile_.DetailClock();
+        // Vector checks all blocks of each contribution. At most eight aligned
+        // sums fit in the existing >=256B work_ buffer. M4 has retired its
+        // compute reader; M5 has not loaded payloads, so cast_ is safe scratch.
+        for (uint32_t slot = 0U; slot < k_; ++slot) if ((pending >> slot) & 1U) {
+            ReduceSum(work_[slot * 8U], flags_[slot * blocks_ * 8U], cast_, 1U, blocks_, 1U);
+            PipeBarrier<PIPE_V>();
+        }
+        Sync<HardEvent::V_S>();
+        for (uint32_t slot = 0U; slot < k_; ++slot)
+            if (((pending >> slot) & 1U) && work_.GetValue(slot * 8U) == float(blocks_))
+                tinyPendingMask_ &= ~(1U << slot);
+        const bool ready = tinyPendingMask_ == 0U;
+        profile_.Elapsed(CombineProfile::ProbeCheckTicks, check);
+        profile_.Add(CombineProfile::FinalSparseProbeCalls);
+        profile_.Add(CombineProfile::FinalSparseSkippedFlags, (tinyActiveSlots_ - slots) * blocks_);
+        profile_.Add(CombineProfile::FinalSparseConfirmedSlots, slots - uint32_t(GetBitCount<1>(uint64_t(tinyPendingMask_))));
+        profile_.Probe(ready, token, 0xffffffffU, slots * blocks_, start);
+        InspectMissing(token, ready, 0U, k_);
+        // Retire Scalar reads before reusing the per-slot sums / snapshot.
+        Sync<HardEvent::S_V>();
+        Sync<HardEvent::S_MTE2>();
+        return ready;
     }
     __aicore__ inline bool Probe(uint32_t token, uint32_t expected)
     {
@@ -756,6 +806,8 @@ private:
     uint32_t rank_ = 0U, expertsPerRank_ = 0U, ranksPerHost_ = 0U;
     LocalTensor<uint32_t> localMasks_;
 #endif
+    bool tinyProbe_ = false;
+    uint32_t tinyPendingMask_ = 0U, tinyActiveSlots_ = 0U;
     bool enableDedup_ = false;
     bool uncached_ = false;
     LocalTensor<uint8_t> scratch_;

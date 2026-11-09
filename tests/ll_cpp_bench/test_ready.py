@@ -8,7 +8,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
-@pytest.mark.parametrize("mode", [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30])
+@pytest.mark.parametrize("mode", [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33])
 def test_ready_lifecycle_and_vector_selection(tmp_path, mode):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
     if not zig:
@@ -23,7 +23,7 @@ def test_ready_lifecycle_and_vector_selection(tmp_path, mode):
     subprocess.run([str(exe)], check=True, timeout=30)
 
 
-@pytest.mark.parametrize("mode,pipeline", [(1, False), (3, False), (3, True), (4, False), (5, False), (6, False), (7, False), (8, False), (9, False), (10, False), (11, False), (12, False), (13, False), (14, False), (15, False), (16, False), (17, False), (18, False), (19, False), (20, False), (21, False), (22, False), (23, False), (24, False), (25, False), (26, False), (27, False), (28, False), (29, False), (30, False)])
+@pytest.mark.parametrize("mode,pipeline", [(1, False), (3, False), (3, True), (4, False), (5, False), (6, False), (7, False), (8, False), (9, False), (10, False), (11, False), (12, False), (13, False), (14, False), (15, False), (16, False), (17, False), (18, False), (19, False), (20, False), (21, False), (22, False), (23, False), (24, False), (25, False), (26, False), (27, False), (28, False), (29, False), (30, False), (31, False), (32, False), (33, False)])
 def test_production_dependency_scheduler(tmp_path, mode, pipeline):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
     if not zig:
@@ -88,7 +88,7 @@ template<uint32_t Group> struct Scheduler {
     CombineProfile::View profile_;
     DispatchDedup::CommArgs args{};
     DispatchDedup::CommArgs* args_=&args;
-    uint32_t k_=8,localExperts_=1,outputLanes_=3,dtype_=0,loads=0,overlaps=0;
+    uint32_t bs_=32,k_=8,localExperts_=1,outputLanes_=3,dtype_=0,loads=0,overlaps=0;
     uint32_t aggregated=0,inputSequence_=0,earlyReads=0,usedReads=0;
     uint32_t prefetchTask_=0xffffffffU,prefetchMask_=0U;
     uint64_t returnOffset_=0U,window_=0U;
@@ -166,7 +166,7 @@ template<uint32_t Group> struct Scheduler {
 #if DEEPEP_LL_COMBINE_READY >= 4
         // The route snapshot aliases the output ring. Process must initialize
         // all data-with-flag tails AFTER planning, including untouched lanes.
-        for(uint32_t lane=0;lane<(kCombineLeanSetup?std::min<uint32_t>(input.size(),outputLanes_):outputLanes_);++lane)for(uint32_t block=0;block<blocks_;++block)
+        for(uint32_t lane=0;lane<(CombineLeanSetup(bs_)?std::min<uint32_t>(input.size(),outputLanes_):outputLanes_);++lane)for(uint32_t block=0;block<blocks_;++block)
             for(uint32_t j=0;j<8;++j)assert(outputs_[lane*packetBytes_+block*512U+480U].template ReinterpretCast<float>().GetValue(j)==1.f);
 #endif
         assert(source==input[row].source && members==table3Ub_.GetValue(0U)+1U);
@@ -283,15 +283,15 @@ void CacheAndPipeline() {
     assert(fallback.sent==snapshot.sent);
     NoLiveEvents();
 #endif
-    for(uint32_t k:{2U,3U,8U,32U}) for(uint32_t count:{1U,2U,3U,8U,12U,13U,65U}) for(uint32_t lanes:{1U,2U,8U}) {
+    for(uint32_t bs:{1U,24U,25U,32U}) for(uint32_t k:{2U,3U,8U,32U}) for(uint32_t count:{1U,2U,3U,8U,12U,13U,65U}) for(uint32_t lanes:{1U,2U,8U}) {
         std::vector<Scheduler<16>::Task> tasks;
         for(uint32_t i=0;i<count;++i) tasks.push_back({2U,((i%3U)+1U)*16U+15U});
-        Scheduler<16> t(tasks,64,0,k);t.outputLanes_=lanes;t.ready.delay=5;
+        Scheduler<16> t(tasks,64,0,k);t.bs_=bs;t.outputLanes_=lanes;t.ready.delay=5;
         const auto before=filterCalls;
         assert(t.Run(4,0)==count);
         assert(t.aggregated==count && !t.batch.pending && t.batch.posted==count);
 #if DEEPEP_LL_COMBINE_READY >= 3
-        assert(filterCalls-before==(kCombineSingleTask && count==1 ? 0U : 3U+(DEEPEP_LL_COMBINE_READY==13 && t.readyCached_ ? 1U:0U)));
+        assert(filterCalls-before==(CombineSingleTask(t.bs_) && count==1 ? 0U : 3U+(DEEPEP_LL_COMBINE_READY==13 && t.readyCached_ ? 1U:0U)));
         assert(t.loads==(count<=EpCombineReadyCacheCapacity(k)?0U:count*2U));
 #if defined(DEEPEP_LL_COMBINE_DEFER_RETURN) || DEEPEP_LL_COMBINE_READY == 6 || (DEEPEP_LL_COMBINE_READY == 11 || DEEPEP_LL_COMBINE_READY == 15 || DEEPEP_LL_COMBINE_READY == 23)
         assert(t.overlaps==(lanes>1U?count-1U:0U));

@@ -128,7 +128,8 @@ def test_dependency_work_is_not_rendered_as_blocking_wait(reporter, tmp_path):
                        ready_single_tasks=1, direct_metadata_cached_rows=2, direct_metadata_reloads=0, direct_active_lanes=2,
                        direct_route_preload_rows=32, direct_route_preload_wait_ticks=7, direct_route_gather_rows=17,
                        rdma_prefix_wait_ticks=31, rdma_copy_wait_ticks=12, rdma_wait_split_calls=2,
-                       direct_local_deferred_rows=3, direct_priority_scan_ticks=9)
+                       direct_local_deferred_rows=3, direct_priority_scan_ticks=9,
+                       tiny_policy=3, final_sparse_probe_calls=11, final_sparse_confirmed_slots=6, final_sparse_skipped_flags=105)
     write_csv(path, fields, rows)
     subprocess.run([str(reporter), '--perfetto', str(tmp_path)], check=True, capture_output=True)
     trace = read_trace(next((tmp_path/'perfetto-local').glob('*p50-*.json')))
@@ -154,6 +155,7 @@ def test_dependency_work_is_not_rendered_as_blocking_wait(reporter, tmp_path):
     assert (args['direct_route_preload_rows'], args['direct_route_preload_wait_ticks'], args['direct_route_gather_rows']) == (32, 7, 17)
     assert (args['rdma_prefix_wait_ticks'], args['rdma_copy_wait_ticks'], args['rdma_wait_split_calls']) == (31, 12, 2)
     assert (args['direct_local_deferred_rows'], args['direct_priority_scan_ticks']) == (3, 9)
+    assert [args[k] for k in ('tiny_policy','final_sparse_probe_calls','final_sparse_confirmed_slots','final_sparse_skipped_flags')] == [3, 11, 6, 105]
     assert spans['partial plan']['dur'] == pytest.approx(.002)
 
 

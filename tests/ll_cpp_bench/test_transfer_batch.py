@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.mark.parametrize("physical", [4, 16])
-@pytest.mark.parametrize("mode", [9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30])
+@pytest.mark.parametrize("mode", [9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33])
 @pytest.mark.parametrize("profile", [False, True])
 def test_transfer_lifetimes(tmp_path, physical, mode, profile, data_l2=0, level=2):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
@@ -133,7 +133,7 @@ int main(){
     subprocess.run([str(exe)],check=True,timeout=30)
 
 
-@pytest.mark.parametrize("mode", [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30])
+@pytest.mark.parametrize("mode", [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33])
 def test_wide_input_aggregate_order_and_ring_reuse(tmp_path, mode):
     """Execute production preload/weighted reduction with sparse early reads."""
     zig = os.environ.get("DEEPEP_TEST_ZIG")
@@ -242,7 +242,7 @@ int main() {
     subprocess.run([str(exe)], check=True, timeout=60)
 
 
-@pytest.mark.parametrize("mode", [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30])
+@pytest.mark.parametrize("mode", [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33])
 def test_wide_input_m5_retirement(tmp_path, mode):
     """Shifted M4 output lanes must retire before M5 reuses their UB."""
     zig = os.environ.get("DEEPEP_TEST_ZIG")
@@ -250,7 +250,7 @@ def test_wide_input_m5_retirement(tmp_path, mode):
     (tmp_path / "shmem.h").write_text("#pragma once\ninline void dcci_cachelines(uint8_t*, uint64_t) {}\n")
     exe = tmp_path / "m5.exe"
     subprocess.run([zig, "c++", "-std=c++17", "-O1", "-ffp-contract=off", "-UNDEBUG",
-                    f"-DDEEPEP_LL_COMBINE_READY={mode}",
+                    f"-DDEEPEP_LL_COMBINE_READY={mode}", "-DDEEPEP_LL_COMBINE_PROFILE=1",
                     "-I" + str(tmp_path), "-I" + str(ROOT / "tests/ll_rdma/metadata_stubs"),
                     "-I" + str(ROOT / "tests/ll_rdma/stubs"), "-I" + str(ROOT / "csrc"),
                     str(ROOT / "tests/ll_rdma/combine_early_reduce_test.cpp"), "-o", str(exe)],

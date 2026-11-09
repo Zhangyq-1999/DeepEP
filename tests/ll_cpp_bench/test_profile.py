@@ -74,6 +74,10 @@ int main() {
             view.Add(RdmaWaitSplitCalls, 2);
             view.Add(DirectLocalDeferredRows, 3);
             view.Add(DirectPriorityScanTicks, 47);
+            view.Set(TinyPolicy, 3);
+            view.Add(FinalSparseProbeCalls, 11);
+            view.Add(FinalSparseConfirmedSlots, 6);
+            view.Add(FinalSparseSkippedFlags, 105);
             view.Add(DirectRouteGatherRows, 17);
             view.Elapsed(DirectRoutePreloadWaitTicks, view.DetailClock());
             view.Elapsed(ReadyMetadataWaitTicks, view.DetailClock());
@@ -103,6 +107,10 @@ int main() {
                 assert(row[RdmaWaitSplitCalls] == (level == 2 ? 2U : 0U));
                 assert(row[DirectLocalDeferredRows] == (level == 2 ? 3U : 0U));
                 assert(row[DirectPriorityScanTicks] == (level == 2 ? 47U : 0U));
+                assert(row[TinyPolicy] == 3U);
+                assert(row[FinalSparseProbeCalls] == (level == 2 ? 11U : 0U));
+                assert(row[FinalSparseConfirmedSlots] == (level == 2 ? 6U : 0U));
+                assert(row[FinalSparseSkippedFlags] == (level == 2 ? 105U : 0U));
                 assert(row[DirectRoutePreloadRows] == (level == 2 ? 32U : 0U));
                 assert(row[DirectRouteGatherRows] == (level == 2 ? 17U : 0U));
                 assert(row[DirectRoutePreloadWaitTicks] == (level == 2 ? 17U : 0U));

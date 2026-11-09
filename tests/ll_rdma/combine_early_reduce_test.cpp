@@ -37,6 +37,8 @@ inline void ReduceSum(LocalTensor<float> d,LocalTensor<float> s,LocalTensor<floa
 inline uint8_t* packets=nullptr;
 inline uint32_t packetBytes=0,blocks=0,tick=0,earlyObserved=0;
 inline std::vector<uint32_t> arrival, reads;
+inline std::vector<bool> observedComplete;
+inline uint32_t flagBlocksRead=0;
 inline std::vector<bool> published;
 inline void PublishReady() {
     ++tick;assert(tick<100000);
@@ -51,7 +53,21 @@ inline void PublishReady() {
     if(contributions && std::find(published.begin(),published.end(),false)!=published.end())earlyObserved=1;
 }
 template<class T> void TestDataCopy(LocalTensor<T> dst,GlobalTensor<T> src,DataCopyParams params) {
-    if constexpr(std::is_same_v<T,float>) PublishReady();
+    if constexpr(std::is_same_v<T,float>) {
+        PublishReady();
+        flagBlocksRead+=params.blockCount;
+#if DEEPEP_LL_COMBINE_READY == 32 || DEEPEP_LL_COMBINE_READY == 33
+        if(!observedComplete.empty()) {
+            unsigned first=(reinterpret_cast<uint8_t*>(src.p)-packets)/packetBytes;
+            unsigned n=params.blockCount/blocks;
+            assert(params.blockCount%blocks==0);
+            for(unsigned slot=first;slot<first+n;++slot) {
+                assert(arrival[slot] && !observedComplete[slot]); // never re-fetch a confirmed contribution
+                observedComplete[slot]=published[slot];
+            }
+        }
+#endif
+    }
     else if(packets && reinterpret_cast<uint8_t*>(src.p)>=packets &&
             reinterpret_cast<uint8_t*>(src.p)<packets+arrival.size()*packetBytes){
         auto index=(reinterpret_cast<uint8_t*>(src.p)-packets)/packetBytes;
@@ -146,7 +162,9 @@ template<class T> void Check(uint32_t bs,uint32_t h,uint32_t k,uint32_t particip
     else op.InitDirectShared({scratch},packets,reinterpret_cast<GM_ADDR>(weights.data()),reinterpret_cast<GM_ADDR>(output.data()),
         bs,h,k,dtype,participant,recv,layout,true);
     tick=contributions=earlyObserved=nopCalls=0;
-    reads.clear();
+    reads.clear();flagBlocksRead=0;observedComplete.clear();
+    const uint32_t owned=bs/recv+(participant<bs%recv);
+    if(kCombineTinyProbe && bs<=24 && owned==1 && k<=8)observedComplete.assign(bs*k,false);
     uint32_t retired=op.Process();
     if(blockFront) assert(!reads.empty() && reads.front()/k>=2U);
     if(dedup){for(uint32_t lane=0;lane<layout.outputLanes;++lane)if(!((retired>>lane)&1U))WaitFlag<HardEvent::MTE3_V>(lane);}
@@ -186,6 +204,13 @@ template<class T> void Check(uint32_t bs,uint32_t h,uint32_t k,uint32_t particip
     assert(profileData[CombineProfile::ProbeConfirmedSlots] == expectedContributions);
 #endif
     assert(profileData[CombineProfile::ProbeCalls] >= count);
+    const bool tiny=kCombineTinyProbe && bs<=24 && count==1 && k<=8;
+    assert(profileData[CombineProfile::FinalSparseConfirmedSlots] == (tiny?expectedContributions:0U));
+    assert(profileData[CombineProfile::FinalSparseProbeCalls] == (tiny?profileData[CombineProfile::ProbeCalls]:0U));
+    assert(profileData[CombineProfile::ProbeFlagBlocks] == flagBlocksRead);
+    if(tiny) assert(profileData[CombineProfile::FinalSparseSkippedFlags] ==
+        expectedContributions*blocks*profileData[CombineProfile::ProbeCalls]-flagBlocksRead);
+    if(tiny && delay && bs==1 && k==8)assert(profileData[CombineProfile::FinalSparseSkippedFlags]>0);
     assert(profileData[CombineProfile::ProbeMisses] <= profileData[CombineProfile::ProbeCalls]);
 #if DEEPEP_LL_COMBINE_POLL_NOP > 0
     // Exactly one pause after each miss, none for first/ready checks.
@@ -237,6 +262,14 @@ int main(){
     for(uint32_t h:{3584,7168})for(uint32_t partial:{0,1,7,11}){
         Check<half>(72,h,8,0,true,1,partial);Check<bfloat16_t>(72,h,6,7,false,1,0);
     }
+#if DEEPEP_LL_COMBINE_READY >= 31
+    for(uint32_t bs:{1,2,4,8,16,24,25,32})for(uint32_t k:{2,8,9})
+        for(uint32_t recv:{8,28})for(uint32_t participant:{0U,recv-1})for(bool dedup:{false,true})
+            for(uint32_t delay:{0,1}) {
+                Check<bfloat16_t>(bs,3584,k,participant,dedup,delay,7,recv);
+                Check<half>(bs,7168,k,participant,dedup,delay,0,recv);
+            }
+#endif
     // Cover every final owner in receive-heavy splits, including empty
     // owners when BS=32 and receive=36. Deferred writes must stay in range.
     for(uint32_t recv:{32,36})for(uint32_t bs:{32,48,64,72})

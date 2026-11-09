@@ -288,6 +288,10 @@ inline void profile_header(std::ostream& out)
         "rdma_wait_split_calls",
         "direct_local_deferred_rows",
         "direct_priority_scan_ticks",
+        "tiny_policy",
+        "final_sparse_probe_calls",
+        "final_sparse_skipped_flags",
+        "final_sparse_confirmed_slots",
     };
     static_assert(sizeof(names) / sizeof(names[0]) == CombineProfile::Count, "profile CSV fields");
     for (uint32_t w = 0; w < CombineProfile::Count; ++w) out << (w ? "," : "") << names[w];

@@ -9,7 +9,7 @@ args=()
 while (($#)); do
     case "$1" in
         --help|-h)
-            echo 'build_all.sh [--variants base,input6-l2-all,input6-l2-route-only,input6-l2-route-priority,input6-l2-route-tx-bypass] [--profile 0|1|2] [build.sh environment options]'
+            echo 'build_all.sh [--variants base,input6-l2-route-only,input6-l2-tiny-setup,input6-l2-tiny-probe,input6-l2-tiny] [--profile 0|1|2] [build.sh environment options]'
             echo 'Defaults: five clean + five diagnostic variants in py311_zyq; Dispatch is shared.'
             exit 0;;
         --variants)
@@ -29,7 +29,7 @@ done
 IFS=, read -r -a names <<< "$variants"
 for name in "${names[@]}"; do
     case "$name" in
-        base|ready-snapshot|wqe-prep|wqe-prefetch|input6|input-ready|input-pair|input-pipe|input-stream|input-front|input-interleave|input-l2|input6-l2|input6-l2-stage|input6-l2-tx|input6-l2-rx|input6-l2-all|input6-l2-pipe|input6-l2-setup|input6-l2-single|input6-l2-lean|input6-l2-route|input6-l2-route-only|input6-l2-route-priority|input6-l2-route-tx-bypass|input6-l2-route-plan|input6-l2-remote|input6-r32|input6-remote|input6-fused|input6-rpipe|input6-rfull|mte-pack|card-all|card-row|server-all|server-row) ;;
+        base|ready-snapshot|wqe-prep|wqe-prefetch|input6|input-ready|input-pair|input-pipe|input-stream|input-front|input-interleave|input-l2|input6-l2|input6-l2-stage|input6-l2-tx|input6-l2-rx|input6-l2-all|input6-l2-pipe|input6-l2-setup|input6-l2-single|input6-l2-lean|input6-l2-route|input6-l2-route-only|input6-l2-tiny-setup|input6-l2-tiny-probe|input6-l2-tiny|input6-l2-route-priority|input6-l2-route-tx-bypass|input6-l2-route-plan|input6-l2-remote|input6-r32|input6-remote|input6-fused|input6-rpipe|input6-rfull|mte-pack|card-all|card-row|server-all|server-row) ;;
         *) echo "Unknown clean variant: $name" >&2; exit 2;;
     esac
 done

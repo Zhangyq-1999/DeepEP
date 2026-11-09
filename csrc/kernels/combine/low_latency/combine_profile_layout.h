@@ -281,17 +281,22 @@ enum Word : uint32_t {
     RdmaWaitSplitCalls,
     DirectLocalDeferredRows,
     DirectPriorityScanTicks,
+    TinyPolicy,
+    FinalSparseProbeCalls,
+    FinalSparseSkippedFlags,
+    FinalSparseConfirmedSlots,
     Count
 };
 constexpr uint32_t kWords = 288U;
-constexpr uint64_t kSchema = 24U;
+constexpr uint64_t kSchema = 25U;
 constexpr Word kDetailBegin = InitPrefixTicks;
 constexpr Word kDetailEnd = RouteCompactTicks;
 constexpr bool IsDetailWord(uint32_t word)
 {
     return (word >= kDetailBegin && word <= kDetailEnd) ||
            (word >= WqePrepareTicks && word <= PartialFrontLoads) ||
-           (word >= PartialOutputInitLanes && word <= DirectPriorityScanTicks);
+           (word >= PartialOutputInitLanes && word <= DirectPriorityScanTicks) ||
+           (word >= FinalSparseProbeCalls && word <= FinalSparseConfirmedSlots);
 }
 static_assert(Count <= kWords && StageRows <= 64U, "profile record bounds");
 }  // namespace CombineProfile

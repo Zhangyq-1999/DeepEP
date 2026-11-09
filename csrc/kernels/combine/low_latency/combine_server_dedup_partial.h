@@ -144,7 +144,7 @@ public:
 #endif
         if (LlTransport::Rdma(args_)) rdmaBatch_->Init(args_, packetBytes_);
         profile_.Set(CombineProfile::PartialInputLanes, inputLanes_);
-        if constexpr (!kCombineLeanSetup) {
+        if (!CombineLeanSetup(bs_)) {
             const uint64_t setupStart = profile_.DetailClock();
             for (uint32_t lane = 0; lane < inputLanes_; ++lane) SetFlag<HardEvent::V_MTE2>(lane);
             uint64_t flagMask[2] = {0xffU, 0U};
@@ -379,14 +379,14 @@ private:
                 DataCopyPad(readyTable3_[task * readyTable3Stride_], table3_[uint64_t(row) * k_ * 2U],
                             {1U, k_ * 8U, 0U, 0U, 0U}, {false, 0U, 0U, 0U});
             }
-            if constexpr (!kCombineLeanSetup) {
+            if (!CombineLeanSetup(bs_)) {
                 const uint64_t waitStart = profile_.DetailClock();
                 Sync<HardEvent::MTE2_S>();
                 profile_.Elapsed(CombineProfile::ReadyMetadataWaitTicks, waitStart);
             }
             profile_.Add(CombineProfile::ReadyCachedTasks, count);
         }
-        if constexpr (kCombineLeanSetup) {
+        if (CombineLeanSetup(bs_)) {
             // Metadata DMA targets the resident caches, disjoint from payload
             // lanes. Let it run while Vector initializes only used flag slots.
             // Keep the physical ring and ALL MTE3_V seeds unchanged for M5.
@@ -401,10 +401,10 @@ private:
             profile_.Set(CombineProfile::PartialOutputInitLanes, active);
             profile_.Elapsed(CombineProfile::PartialSetupTicks, setupStart);
         }
-        const bool single = kCombineSingleTask && count == 1U;
+        const bool single = CombineSingleTask(bs_) && count == 1U;
         if (!single) Duplicate(readyDeps_, int32_t(kReadyTaskDone), EpCombineAlign(count, 64U));
         Sync<HardEvent::V_S>();
-        if constexpr (kCombineLeanSetup) {
+        if (CombineLeanSetup(bs_)) {
             if (readyCached_) {
                 const uint64_t waitStart = profile_.DetailClock();
                 Sync<HardEvent::MTE2_S>();

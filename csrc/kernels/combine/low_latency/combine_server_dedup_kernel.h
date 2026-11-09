@@ -528,13 +528,17 @@ private:
         const uint32_t servers = uint32_t(args_->rankSize) / Group;
         const uint32_t ownServer = uint32_t(args_->rank) / Group;
         uint32_t owner = 0U, sendSequence = 0U;
-#if defined(DEEPEP_LL_COMBINE_SMALL_BATCH) || DEEPEP_LL_COMBINE_READY == 24 || DEEPEP_LL_COMBINE_READY == 26 || DEEPEP_LL_COMBINE_READY == 27
-        const uint32_t owned = uint32_t(selected_) / directCores + (core_ < uint32_t(selected_) % directCores ? 1U : 0U);
-        if (owned == 0U) return;
-        const uint32_t activeLanes = owned < lanes_ ? owned : lanes_;
+        uint32_t activeLanes = lanes_;
+#ifdef DEEPEP_LL_COMBINE_SMALL_BATCH
+        const bool lean = true;
 #else
-        const uint32_t activeLanes = lanes_;
+        const bool lean = CombineLeanSetup(bs_);
 #endif
+        if (lean) {
+            const uint32_t owned = uint32_t(selected_) / directCores + (core_ < uint32_t(selected_) % directCores ? 1U : 0U);
+            if (owned == 0U) return;
+            activeLanes = owned < lanes_ ? owned : lanes_;
+        }
         profile_.Set(CombineProfile::DirectActiveLanes, activeLanes);
         uint64_t flagMask[2] = {0xffU, 0U};
         for (uint32_t lane = 0; lane < activeLanes; ++lane) {

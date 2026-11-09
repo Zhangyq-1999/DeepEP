@@ -7,8 +7,8 @@
 | 参数 | 默认值 |
 | --- | --- |
 | 主机 | `90.90.93.84,90.90.93.184` |
-| 算子 | `base,input6-l2-all,input6-l2-route-only,input6-l2-route-priority,input6-l2-route-tx-bypass`，各有独立打点版 |
-| BS | `32,48,64,72,256` |
+| 算子 | `base,input6-l2-route-only,input6-l2-tiny-setup,input6-l2-tiny-probe,input6-l2-tiny`，各有独立打点版 |
+| BS | `1,2,4,8,16,24,32,48,64,72,256` |
 | Hidden / TopK / Experts | `3584 / 8 / 384` |
 | 数据和路由 | BF16、random、seed 0 |
 | Capacity | 256 |
@@ -129,11 +129,13 @@ bash tests/ll_python_bench/run_all.sh --variant card-all
 bash tests/ll_python_bench/build_all.sh
 ```
 
-默认共10个构建：原始 base、稳定对照 input6-l2-all、这轮BS32较优的 input6-l2-route-only，以及新实验 input6-l2-route-priority、input6-l2-route-tx-bypass，各有独立打点库。route、route-plan、lean、stage、pipe和所有旧实验仍可显式通过 `--variants` 构建运行，不删除已有构建。
+默认共10个构建：原始 base、较优对照 input6-l2-route-only，以及 input6-l2-tiny-setup、input6-l2-tiny-probe、input6-l2-tiny，各有独立打点库。三个 tiny 版只在 BS≤24 启用改动：按任务数初始化、记住已到齐贡献、两者组合。BS>24 保留 route-only 行为。细节见 [小 BS 对照](../ll_cpp_bench/TINY_BS_AB.md)。all、route-priority、route-tx-bypass 转可选。route、route-plan、lean、stage、pipe和所有旧实验仍可显式通过 `--variants` 构建运行，不删除已有构建。
 
 route-only 保持 all 的28/28半区分工、6个M4输入槽及累加顺序，只复用DIRECT已经加载到UB的路由表，减少逐包12 B GM读取和同步；接收行数超过512时回退，不额外分配UB。旧lean/setup/single/route-plan仍为可选对照。
 
 route-priority（ready30）仅把DIRECT本机发送后置：原次序中先统计本机任务以推进核间分工游标，跨机发送完成后重新筛选本机行并发送。因此每个包的核/QP、远端server顺序不变；有本机任务的核会多一次筛选。M4已有的跨机就绪任务优先调度保持。适用每机4/16rank与四机EP64；单机或逻辑组不等于物理主机时维持原序。route-tx-bypass（ready28、data_l2=5）独立比较RDMA发送暂存区旁路L2的效果，其余控制区/M3/M5缓存仍开启。这两项都需实测，不预设一定加速。
+
+schema25 新增 `tiny=policy/probes/confirmed_slots/skipped_flags`，同步进入 CSV/Perfetto；每核仍288 words。累计轮询时间使用原 `ProbeLoadTicks/ProbeCheckTicks/ProbeFlagBlocks`，不把计数伪造为时间片。回显按62KiB分块，新增小BS后可能需要分多次粘贴。
 
 下表保留完整缓存对照；pipe 仍为可选实验。
 
@@ -153,6 +155,9 @@ route-priority（ready30）仅把DIRECT本机发送后置：原次序中先统�
 | input6-l2-route-plan | 开启 | route-only + 提前读表、按选中行提取 rank | 7 |
 | input6-l2-route-priority | 开启 | route-only + DIRECT本机发送后置 | 7 |
 | input6-l2-route-tx-bypass | 开启 | route-only，仅RDMA发送暂存区旁路 | 5 |
+| input6-l2-tiny-setup | 开启 | route-only，BS≤24 精简初始化和单任务依赖判断 | 7 |
+| input6-l2-tiny-probe | 开启 | route-only，BS≤24 按未完成贡献轮询全部块 | 7 |
+| input6-l2-tiny | 开启 | 上述两项组合 | 7 |
 
 `NORMAL` 是 GlobalTensor 默认策略；不是 persistent，也不代表所有内存强制命中 L2。专家输入、路由表和最终 output 原本就使用默认策略。SDK 的 WQE/SQ/CQ 缓存策略保持不变。发送暂存仍先完成 MTE3 再敲 DB，CQ 完成后才复用源槽；接收仍检查原有全部 flag，没有省略发布、清零或完成协议。
 
@@ -164,7 +169,7 @@ build_all.sh 自动安装到 py311_zyq，两台都需重编；run_all.sh 自动�
 
 schema 21 的 CSV/Perfetto 新增 `data_l2_policy`，每核仍为 272 words。P50 代表记录固定打印 `cache=mask m3=input/store_issue/drain g=load/check/calls m5=input_issue/input_wait/compute/store`，配合原有 `m4`、`rdma`、first/last Put、最晚 flag 的来源分析。`g` 把 ready 读取及其同步与 Vector 判断拆开；它们是累计 ticks，包含流水等待，不是硬件 cache miss/hit 计数。不能把不同核最大值相加，或将不同卡的 core-entry 时间直接相减当作网络单程时延。完整字段继续写入 Perfetto `profiled body` 参数。
 
-默认比较all→route-only（仅路由复用）、route-only→route-priority（DIRECT本机后置）、route-only→route-tx-bypass（只隔离TX缓存），保留base与既有对照。重点看BS32/48/64，BS72/256检查回退；保留mean/min/max/P50/P99和所有样本。缓存命中仍需硬件计数器确认。必要时反转clean版本顺序复测，排除运行顺序影响。
+默认比较 route-only→tiny-setup、route-only→tiny-probe 和组合 tiny，保留 base。重点看 BS1/2/4/8/16/24，BS32/48/64/72/256 检查回退；保留mean/min/max/P50/P99和所有样本。缓存命中仍需硬件计数器确认。必要时反转clean版本顺序复测，排除运行顺序影响。
 
 `input6-l2-pipe` 的改动只在 M4 已选中至少两条可运行任务、且输出槽超过一个时生效：先把上一包放入独立 GM 槽并准备私有 WQE，执行下一条的读取/规约，然后等待上一包 MTE3 完成并发布，之后才打包当前结果。单任务、单槽、末条任务仍立即发送；不会带着未提交包去轮询 group flag 或进入 M5。CQ 仍保护 GM 复用，归约次序、Notify、SHMEM SDK、wire 均保持。相比旧的 eager-first 流水，它覆盖仅两条任务的小 BS；代价是首包可能稍晚下发，必须看 clean 总时延，不能只看 stage_wait 下降。
 
@@ -184,7 +189,7 @@ bash tests/ll_python_bench/build_all.sh --ranks-per-host 16
 bash tests/ll_python_bench/run_all.sh --ranks-per-host 16 --sync hccl
 ```
 
-一条命令连续跑全部干净版和打点版，在第二台粘贴打印的命令即可。整个测试共用一个新 RUN_ID。省略 `--ranks-per-host 16` 就是双机各 12–15 卡的 EP8。省略 `--sync hccl` 则统一用默认 SHMEM device 同步，不混用两种同步结果判断算子收益。默认 BS 为 `32,48,64,72,256`，可用 `--tokens` 修改。
+一条命令连续跑全部干净版和打点版，在第二台粘贴打印的命令即可。整个测试共用一个新 RUN_ID。省略 `--ranks-per-host 16` 就是双机各 12–15 卡的 EP8。省略 `--sync hccl` 则统一用默认 SHMEM device 同步，不混用两种同步结果判断算子收益。默认 BS 为 `1,2,4,8,16,24,32,48,64,72,256`，可用 `--tokens` 修改。
 
 IP、端口、设备和 case 参数都可修改：
 

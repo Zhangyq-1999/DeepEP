@@ -33,26 +33,26 @@ bash tests/ll_cpp_bench/build_all.sh
 | 构建名 | 实验 | 打点 |
 | --- | --- | --- |
 | `base` | 冻结的上游原版 | 关闭 |
-| `input6-l2-all` | 实测对照，控制区及三个数据区使用 NORMAL 策略 | 关闭 |
 | `input6-l2-route-only` | all + DIRECT 路由复用，移除 lean 改动 | 关闭 |
-| `input6-l2-route-priority` | route-only + 保留核/QP归属，DIRECT 本机发送后置 | 关闭 |
-| `input6-l2-route-tx-bypass` | route-only + 仅 RDMA 发送暂存区旁路 L2 | 关闭 |
+| `input6-l2-tiny-setup` | route-only + BS≤24 按实际任务初始化缓冲、单任务依赖快路径 | 关闭 |
+| `input6-l2-tiny-probe` | route-only + BS≤24 记住已到齐贡献、仅轮询未完成贡献 | 关闭 |
+| `input6-l2-tiny` | 上述两项组合 | 关闭 |
 | `ref-profile` | base 对应打点版 | 开启 |
 | `input6*-profile` | 与对应干净版相同策略 | 开启 |
 
-优化和验收以 **BS32、48、64** 为主，BS72 作邻近对照，BS256 只检查回退。上一轮 EP8 干净版 ready-snapshot 的三个 BS 的 P50 分别为 57.11、63.56、70.19 μs，增加接收核没有持续改善这三个场景。ready-r32、ready-r36、stage-stream、plan-compact 保留为可选实验，不再默认编译运行。
+本轮重点 **BS1、2、4、8、16、24**，默认同时保留 BS32、48、64、72、256 检查回退。三个 tiny 版本在 BS>24 时走 route-only 原路径。参考仓差异、生命周期及验收说明见 [小 BS 对照](TINY_BS_AB.md)。上一轮 EP8 干净版 ready-snapshot 的三个 BS 的 P50 分别为 57.11、63.56、70.19 μs，增加接收核没有持续改善这三个场景。ready-r32、ready-r36、stage-stream、plan-compact 保留为可选实验，不再默认编译运行。
 
 EP32 收尾修复后的实测中，`wqe-prep` 在 BS48/64 的均值比 snapshot 低约 2.20%/2.84%，BS32 基本持平，尚需重复验证。它在独立 128 B UB 提前构造 WQE，payload 完成后才发布 SQ/doorbell。新增 `wqe-prefetch` 在下一条任务已经就绪时，先发起其输入 MTE2，再等上一包 MTE3 并提交 WQE；不会等待下一条完整规约。末条任务和单输出 lane 仍立即提交，M5 前排空待提交包，最终 quiet 保留。新方案尚待 CANN/NPU 验证。`mte-pack` 收益不稳定，保留为可选项，不再默认编译。完整数据、生命周期与打点说明见 [TRANSFER_AB.md](TRANSFER_AB.md)。
 
 此前 9b3d243 的 EP32/HCCL 实测 `input6` 的 BS32/48/64 均值为 57.28/65.49/74.26 μs，仍是小 BS 对照；`input-pair` 分别慢 1.41/0.69/0.43 μs，改为可选项。保留 `input-pipe`：它在 BS256 的均值为 174.94 μs，比同轮 input6 快 8.85 μs，但 BS32–64 尚无稳定收益。
 
-最新 EP32/HCCL 这轮 BS32 clean mean：base=60.74、all=56.46、route-only=55.75 μs；route-only P50=55.32、min–max=53.17–68.49、P95=58.21 μs。当前默认保留这三个对照，加入 route-priority 和 route-tx-bypass，共五个干净版及五个打点版。route、route-plan 改为可选，所有旧实验仍可用 `--variants` 选择。BS48/64 上 route-plan 的 mean 为63.10/71.98 μs，保留这一方案供后续形状选择，不宣称已经对所有 BS 选出最佳实现。
+最新 EP32/HCCL 这轮 BS32 clean mean：base=60.74、all=56.46、route-only=55.75 μs；route-only P50=55.32、min–max=53.17–68.49、P95=58.21 μs。当前默认保留 base、route-only，加入 tiny-setup、tiny-probe、tiny，共五个干净版及五个打点版。all、route、route-plan、route-priority、route-tx-bypass 改为可选，所有旧实验仍可用 `--variants` 选择。BS48/64 上 route-plan 的 mean 为63.10/71.98 μs，保留这一方案供后续形状选择，不宣称已经对所有 BS 选出最佳实现。
 
 route-only 恢复 all 的 M4 初始化及多/单任务筛选，只加入 DIRECT 的整表路由复用。route-priority 在此基础上推迟 DIRECT 本机发送，保留每条任务原来的核、QP和远端 server 次序；代价是有本机任务的核多筛选一次本机行。它不改变已有的 M4 跨机就绪任务优先策略。route-tx-bypass 则仅把 data_l2 从7改为5，保留控制区、M3和M5的缓存策略，用于隔离 RDMA 发送暂存区的缓存影响。两项实验分别对比 route-only，不叠加。28/28分核、6个M4输入槽、所有输出槽初始化、规约及完成协议保持。支持每机4/16 rank及四机EP64；逻辑组不等于物理主机或单机时不调整 DIRECT 次序。详细数据/生命周期见 [TRANSFER_AB.md](TRANSFER_AB.md)。
 
 每版预热前均执行 `-x,-x,+x,+x` 四代正确性检查，复用两个 bank 且不逐轮强制清 flag，然后恢复原输入；检查不计入性能采样。原始 base 保持冻结，SDK 和 CQ 保护源槽的规则不变。
 
-当前 schema 24 每核288 words，需两台重编。新增 `txwait=prefix_remaining/copy_remaining/calls`：仅二级打点在当前 payload DMA 前放置 MTE3→Scalar event6，并在原 event7 等待位置依次退休两个事件，拆分 WQE 准备后前序队列/依赖的剩余等待和当前拷贝的剩余等待。前者也可能包含 Vector→MTE3 依赖，不是纯粹的前一个包时间；后者不是完整 DMA 耗时，二者都不是网络单程时延。原 `stage_wait` 保留。profile增加的事件与读时钟可能扰动流水，性能以 clean Event 为准，clean/一级打点不增加此事件。
+当前 schema 25 每核仍为288 words，需两台重编。新增 `tiny=policy/probes/confirmed_slots/skipped_flags`，policy 的1位表示小任务初始化，2位表示记忆式轮询实际生效；其余发送诊断沿用 schema24。新增 `txwait=prefix_remaining/copy_remaining/calls`：仅二级打点在当前 payload DMA 前放置 MTE3→Scalar event6，并在原 event7 等待位置依次退休两个事件，拆分 WQE 准备后前序队列/依赖的剩余等待和当前拷贝的剩余等待。前者也可能包含 Vector→MTE3 依赖，不是纯粹的前一个包时间；后者不是完整 DMA 耗时，二者都不是网络单程时延。原 `stage_wait` 保留。profile增加的事件与读时钟可能扰动流水，性能以 clean Event 为准，clean/一级打点不增加此事件。
 
 `priority=local_rows_deferred/extra_scan_ticks` 记录本机后置任务数及额外筛选成本。新增计数进入 CSV 和 Perfetto 的 `profiled body` 参数，不伪造独立时间片。schema22/23的 `small`、`direct_meta`、`route_plan` 仍保留，旧CSV仍可读取。现有 M3、group-ready、M4、RDMA/CQ、M5 和拖尾计数不删减。这些是软件打点，不是硬件L2命中计数；新实验尚待NPU正确性及性能验证。
 
@@ -533,7 +533,7 @@ bash tests/ll_cpp_bench/summarize.sh --perfetto \
 
 | 参数 | 默认值 | 含义 |
 | --- | --- | --- |
-| `--tokens` | 32,48,64,72,256 | 每卡 token 数，可给多个 BS，每项范围为 1～256 |
+| `--tokens` | 1,2,4,8,16,24,32,48,64,72,256 | 每卡 token 数，可给多个 BS，每项范围为 1～256 |
 | `--hidden` | 3584 | hidden 维度，可设为 7168 |
 | `--topk` / `--experts` | 8 / 384 | 每 token 专家数与全局专家数 |
 | `--capacity` | 256 | 原算子的每卡最大 token 参数，影响自动去重策略；至少覆盖所有 BS，上限为 256 |

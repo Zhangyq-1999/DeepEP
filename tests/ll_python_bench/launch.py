@@ -13,9 +13,9 @@ import sys
 import sysconfig
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_VARIANTS = "base,input6-l2-all,input6-l2-route-only,input6-l2-route-priority,input6-l2-route-tx-bypass"
+DEFAULT_VARIANTS = "base,input6-l2-route-only,input6-l2-tiny-setup,input6-l2-tiny-probe,input6-l2-tiny"
 CLEAN_VARIANTS = ("base", "ready-snapshot", "wqe-prep", "wqe-prefetch", "input6", "input-ready", "input-pair", "input-pipe", "input-stream", "input-front", "input-interleave", "input-l2", "input6-l2", "input6-r32", "input6-remote", "input6-fused", "input6-rpipe", "input6-rfull", "mte-pack",
-                  "card-all", "card-row", "server-all", "server-row", "input6-l2-remote", "input6-l2-stage", "input6-l2-tx", "input6-l2-rx", "input6-l2-all", "input6-l2-pipe", "input6-l2-setup", "input6-l2-single", "input6-l2-lean", "input6-l2-route", "input6-l2-route-only", "input6-l2-route-plan", "input6-l2-route-priority", "input6-l2-route-tx-bypass")
+                  "card-all", "card-row", "server-all", "server-row", "input6-l2-remote", "input6-l2-stage", "input6-l2-tx", "input6-l2-rx", "input6-l2-all", "input6-l2-pipe", "input6-l2-setup", "input6-l2-single", "input6-l2-lean", "input6-l2-route", "input6-l2-route-only", "input6-l2-route-plan", "input6-l2-route-priority", "input6-l2-route-tx-bypass", "input6-l2-tiny-setup", "input6-l2-tiny-probe", "input6-l2-tiny")
 
 
 def phase_names(a):
@@ -39,7 +39,7 @@ def parser():
     p.add_argument("--check-hccl", action="store_true", help="Test Torch/HCCL alone without native/SHMEM initialization")
     p.add_argument("--sync", choices=("device", "host", "both", "hccl"), default="device",
                    help="device=SHMEM barrier; both=Gloo vs SHMEM; hccl=explicit legacy HCCL comparison")
-    p.add_argument("--tokens", default="32,48,64,72,256")
+    p.add_argument("--tokens", default="1,2,4,8,16,24,32,48,64,72,256")
     p.add_argument("--profile", type=int, choices=(0,1,2), default=2, help="Append separate diagnostic phases; 0=clean only")
     p.add_argument("--profile-iters", type=int, default=10)
     p.add_argument("--profile-frequency-hz", type=int, default=1000000000, help="Device clock for Perfetto; 0=CSV only")

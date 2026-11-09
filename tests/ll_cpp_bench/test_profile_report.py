@@ -326,7 +326,7 @@ def test_local_first_fields_in_reports(reporter, tmp_path, batch_mode):
 
 @pytest.mark.parametrize("extended", [False, True])
 def test_default_suite_uses_bounded_pastes_and_keeps_each_case(reporter, tmp_path, extended):
-    # Five BS, actual default clean/profile variants; full and worst excerpts.
+    # Actual default BS and clean/profile variants; full and worst excerpts.
     # Exercise long counters and eight tail slots rather than mostly-zero rows.
     names = re.findall(r'"([a-z0-9_]+)"',
                        (HERE / "profile.hpp").read_text().split("names[] = {", 1)[1].split("};", 1)[0])
@@ -340,7 +340,7 @@ def test_default_suite_uses_bounded_pastes_and_keeps_each_case(reporter, tmp_pat
         profiles[-1] = "input-stream-profile"
     variants = clean + profiles
     first_profile = len(clean)
-    defaults = (32, 48, 64, 72, 256)
+    defaults = (1, 2, 4, 8, 16, 24, 32, 48, 64, 72, 256)
     for phase, variant in enumerate(variants):
         directory = tmp_path / f"{phase}-{variant}"
         directory.mkdir()
@@ -348,7 +348,7 @@ def test_default_suite_uses_bounded_pastes_and_keeps_each_case(reporter, tmp_pat
         samples = 10 if profile else 100
         configs, events, records, producers = [], [], [], []
         # Extra BS must not silently disappear when the report exceeds one paste.
-        for bs in (*defaults, 16, 96, 128):
+        for bs in (*defaults, 96, 128):
             configs.append(dict(ep=8, tokens=bs, hidden=3584, topk=8, experts=384, dtype="bf16",
                                 route="random", seed=0, warmup=10, samples=samples,
                                 entry_sync="device", profile_build=int(profile)))
@@ -415,7 +415,7 @@ def test_default_suite_uses_bounded_pastes_and_keeps_each_case(reporter, tmp_pat
         assert len(framed.encode("utf-8")) <= 62 * 1024
         assert payload.startswith("LL_COMBINE compact=v3")
     blocks = re.findall(r"\nBS=(\d+) .*?END BS=\1\n", out, flags=re.S)
-    assert list(map(int, blocks)) == sorted((*defaults, 16, 96, 128))
+    assert list(map(int, blocks)) == sorted((*defaults, 96, 128))
     for bs in defaults:
         block = re.search(rf"\nBS={bs} .*?END BS={bs}\n", out, flags=re.S)[0]
         assert block.index("variant ") < block.index(f"D {first_profile} p50")
@@ -426,14 +426,14 @@ def test_default_suite_uses_bounded_pastes_and_keeps_each_case(reporter, tmp_pat
                 assert f"D {phase} worst i=9 event_r=1" in block
                 assert f"IQR {phase} n=1" in block
         assert " G 4/30 W=" in block and " G 4/30 O=" in block
-    assert "LL_COMBINE END cases=8" in out
+    assert "LL_COMBINE END cases=13" in out
     assert "  e=" in out and "'-'=absent" in out
     assert "input=6/0/0 vec=0/192 arith=0/0" in out
     if extended:
         assert "input=6/0/0 vec=0/136 arith=56/0" in out
     assert "  cache=" in out and " m3=" in out and " m5=" in out
     assert "  small=" in out and "  direct_meta=" in out and " route_plan=" in out
-    assert "  txwait=" in out and " priority=" in out
+    assert "  txwait=" in out and " priority=" in out and " tiny=" in out
     assert "  q=" in out and "  rdma=" in out and " stage=" in out
     assert " stream=9/1/123456" in out
     assert " compact=256/1024/123456" in out

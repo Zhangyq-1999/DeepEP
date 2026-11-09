@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.mark.parametrize("physical", [4, 16])
-@pytest.mark.parametrize("mode", [20, 24, 25, 26, 27, 28, 29, 30])
+@pytest.mark.parametrize("mode", [20, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33])
 def test_direct_snapshot_lanes_and_fallback(tmp_path, mode, physical):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
     if not zig:
@@ -48,7 +48,7 @@ void SendReturnPacket(Batch& b,const DispatchDedup::CommArgs*,unsigned peer,uint
 template<unsigned Group> struct Direct {
     DispatchDedup::CommArgs a{},*args_=&a;
     bool enableDedup_=true,directRoutesCached_=false;
-    unsigned tokens_=0,core_=0,sendCores_=28,lanes_=8,blocks_=15,h_=3584,topK_=8;
+    unsigned bs_=32,tokens_=0,core_=0,sendCores_=28,lanes_=8,blocks_=15,h_=3584,topK_=8;
     unsigned laneBytes_=7200,resultStride_=7680;
     uint64_t selected_=0,window_=0;
     CombineProfile::View profile_;
@@ -126,6 +126,10 @@ int main() {
         Direct<16>(rows,hosts*16,rank,c,dedup,256).Check();
     for(unsigned h:{256U,3584U,7168U})for(unsigned rows:{32U,512U,513U})for(unsigned c:{0U,1U,27U})
         Direct<4>(rows,8,4,c,true,h).Check();
+    for(unsigned bs:{1U,24U,25U,32U})for(unsigned hosts:{2U,4U})
+    for(unsigned rows:{0U,1U,17U,128U,513U})for(unsigned c=0;c<28;++c) {
+        Direct<16> tiny(rows,hosts*16,hosts*16-1,c,true,3584);tiny.bs_=bs;tiny.Check();
+    }
     // Empty selections must retire speculative DMA before cache/arena reuse.
     for(unsigned rows:{17U,512U,513U}) {
         Direct<16> empty(rows,64,0,0,true,256);
