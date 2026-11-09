@@ -10,14 +10,15 @@ ROOT = Path(__file__).resolve().parents[2]
 
 @pytest.mark.parametrize("profile", [False, True])
 @pytest.mark.parametrize("batch", [False, True])
-def test_local_first_reduction(tmp_path, profile, batch):
+@pytest.mark.parametrize("index_bits", [32, 64])
+def test_local_first_reduction(tmp_path, profile, batch, index_bits):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
     if not zig:
         pytest.skip("Set DEEPEP_TEST_ZIG for CPU execution")
     exe = tmp_path / "local-first.exe"
     (tmp_path / "shmem.h").write_text(
         "#pragma once\ninline void dcci_cachelines(uint8_t*, uint64_t) {}\n")
-    flags = ["-DDEEPEP_LL_COMBINE_LOCAL_FIRST=1"]
+    flags = ["-DDEEPEP_LL_COMBINE_LOCAL_FIRST=1", f"-DDEEPEP_LL_COMBINE_SOURCE_INDEX_BITS={index_bits}"]
     if batch:
         flags.append("-DDEEPEP_LL_COMBINE_BATCH_FINAL=1")
     if profile:

@@ -5,6 +5,7 @@
 #include "runtime/session.hpp"
 #include "launch_gate.hpp"
 #include "../ll_cpp_bench/ops_shmem/policy.hpp"
+#include "kernels/combine/low_latency/combine_source_index.h"
 
 namespace py = pybind11;
 extern "C" void ll_bench_entry_sync_do(void* stream, uint64_t ffts);
@@ -147,6 +148,10 @@ public:
             throw std::runtime_error("Mismatched Host/device data L2 policy; rebuild variant");
         d["data_l2"] = dataL2;
         d["ready_mode"] = DEEPEP_LL_COMBINE_READY;
+        if (deepep_ll_combine_source_index_bits() != CombineDedup::kSourceIndexBits)
+            throw std::runtime_error("Mismatched Host/device source index width; rebuild variant");
+        d["source_index_bits"] = CombineDedup::kSourceIndexBits;
+        d["source_indices_read"] = CombineDedup::kSourceIndicesRead;
         d["remote_first"] = bool(deepep_ll_combine_return_options() & 1U);
         d["return_options"] = deepep_ll_combine_return_options();
 #endif

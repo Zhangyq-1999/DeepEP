@@ -274,3 +274,5 @@ Host 检查覆盖了启动参数、采样汇总、单次初始化和入队顺序
 最终缺失 flag 的 token/slot/block、producer 链路和重复拖尾频次仍保留。
 独立阶段最大值与累计计数不能相加当成一条跨 rank 流水；回显也不把 put 返回
 当作对端数据已到达。所有新增筛选发生在 Host 采样后，无新增 Device 热路径打点。
+
+索引位宽专项对照：参见 [SOURCE_INDEX_AB.md](../ll_cpp_bench/SOURCE_INDEX_AB.md)。可选 `input6-l2-route-only,input6-l2-route-i64` 测当前路径接入；`batch,batch-i64` 测实际源索引读取，两组都自动附加独立打点版本，不改变默认编译列表。

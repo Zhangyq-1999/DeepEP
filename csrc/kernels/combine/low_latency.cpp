@@ -53,6 +53,11 @@ extern "C" DEEPEP_EXPORT uint32_t deepep_ll_combine_data_l2()
     return CombineDedup::kCombineDataL2;
 }
 
+extern "C" DEEPEP_EXPORT uint32_t deepep_ll_combine_source_index_bits()
+{
+    return CombineDedup::kSourceIndexBits;
+}
+
 extern "C" DEEPEP_EXPORT uint32_t deepep_ll_combine_return_options()
 {
     uint32_t options = 0U;

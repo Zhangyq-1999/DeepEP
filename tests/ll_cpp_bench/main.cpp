@@ -193,6 +193,15 @@ struct Case {
         c.numMaxTokensPerRank = o.capacity;
         c.tilingKey = d.tilingKey;
         combine.tilingData = upload(c);
+#if DEEPEP_LL_COMBINE_SOURCE_INDEX_BITS == 64
+        // Dispatch still consumes int32. Supply the SAME routes as true int64
+        // GM storage to Combine, outside all warmup/sampling Events. No device
+        // conversion kernel, and no widening of Dispatch-produced metadata.
+        const std::vector<int64_t> wideIndices(indices.begin(), indices.end());
+        auto& wide = allocate(wideIndices.size() * sizeof(int64_t));
+        wide.upload(wideIndices.data(), wide.bytes);
+        combine.sourceIndices = wide.p;
+#endif
     }
     void flipExpertSign(const llbench::Options& o)
     {
@@ -299,6 +308,8 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
     const bool profileBuild = deepep_ll_combine_profile_enabled() != 0;
     const uint32_t returnOptions = deepep_ll_combine_return_options();
     const uint32_t dataL2 = deepep_ll_combine_data_l2();
+    if (deepep_ll_combine_source_index_bits() != CombineDedup::kSourceIndexBits)
+        throw std::runtime_error("Mismatched Host/device source index width; rebuild variant");
     if (dataL2 != CombineDedup::kCombineDataL2)
         throw std::runtime_error("Mismatched Host/device data L2 policy; rebuild variant");
     if (returnOptions != (DEEPEP_BENCH_REMOTE_FIRST | (DEEPEP_BENCH_DEFER_RETURN << 1) |
@@ -313,7 +324,7 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
     identity << o.signature() << '/' << cores << '/' << DEEPEP_BENCH_SOURCE_ID << '/'
              << deepep_ll_combine_small_batch_enabled() << '/' << deepep_ll_combine_recv_cores() << '/'
              << deepep_ll_combine_early_reduce_enabled() << '/' << profileBuild << '/' << DEEPEP_LL_COMBINE_ORIGINAL
-             << '/' << returnOptions << '/' << dataL2;
+             << '/' << returnOptions << '/' << dataL2 << '/' << CombineDedup::kSourceIndexBits;
     peers.verify(llbench::hash(identity.str()));
     session.synchronize("initial completion");
     peers.barrier();
@@ -347,10 +358,11 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
                    "aiv,recv_cores,small_batch,early_"
                    "reduce,remote_first,defer_return,early_issue,progress_probe,simt_meta,simt_flag,prefetch_return,local_first,batch_final,poll_nop,ranks_per_host,original,entry_sync,profile_build,profile_level,rank_max_mean_us,"
                    "rank_max_min_us,"
-                   "rank_max_max_us,p50_us,p99_us,coalesce,coalesce_rows,transport_cores,notify_mode,ready_mode,core_layout,control_l2,data_l2\n";
+                   "rank_max_max_us,p50_us,p99_us,coalesce,coalesce_rows,transport_cores,notify_mode,ready_mode,core_layout,control_l2,data_l2,source_index_bits,source_indices_read\n";
     }
     std::cout << "rank=" << o.rank << " EP=" << o.world << " AIV=" << cores << " receive=" << recv
               << " core_layout=" << (CombineDedup::kCombineInterleavedCores ? "odd-send-even-receive" : "halves")
+              << " source_index_bits=" << CombineDedup::kSourceIndexBits << " source_indices_read=" << CombineDedup::kSourceIndicesRead
               << " control_l2=" << CombineDedup::kCombineControlL2 << " data_l2=" << dataL2
               << " small_batch=" << deepep_ll_combine_small_batch_enabled()
               << " early_reduce=" << deepep_ll_combine_early_reduce_enabled()
@@ -480,7 +492,7 @@ LL_BENCH_EXPORT void ll_bench_run(const llbench::Runtime* shared)
                     << ',' << o.entrySync << ',' << profileBuild << ',' << o.profile << ',' << s.mean << ',' << s.min
                     << ',' << s.max << ',' << s.p50 << ',' << s.p99 << ',' << DEEPEP_BENCH_COALESCE << ','
                     << DEEPEP_BENCH_COALESCE_ROWS << ',' << (DEEPEP_BENCH_COALESCE?CombineCoalesce::kWorkers:0U) << ',' << DEEPEP_BENCH_NOTIFY << ',' << DEEPEP_BENCH_READY << ','
-                    << (CombineDedup::kCombineInterleavedCores ? "odd-send-even-receive" : "halves") << ',' << CombineDedup::kCombineControlL2 << ',' << dataL2 << '\n';
+                    << (CombineDedup::kCombineInterleavedCores ? "odd-send-even-receive" : "halves") << ',' << CombineDedup::kCombineControlL2 << ',' << dataL2 << ',' << CombineDedup::kSourceIndexBits << ',' << CombineDedup::kSourceIndicesRead << '\n';
             summary.flush();
             std::cout << "BS=" << bs << " rank-MAX Event us: mean=" << s.mean << " range=[" << s.min << ',' << s.max
                       << "] p99=" << s.p99 << " rank0_max_abs_error=" << error << std::endl;

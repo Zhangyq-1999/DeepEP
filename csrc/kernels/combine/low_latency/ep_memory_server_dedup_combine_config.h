@@ -10,6 +10,7 @@
 #include "combine_notify_layout.h"
 #include "combine_ready_layout.h"
 #include "combine_core_layout.h"
+#include "combine_source_index.h"
 #if DEEPEP_LL_COMBINE_READY > 0 && (DEEPEP_LL_COMBINE_NOTIFY > 0 || defined(DEEPEP_LL_COMBINE_SMALL_BATCH) || defined(DEEPEP_LL_COMBINE_SIMT_META))
 #error "Test ready modes separately from notify, small-batch and SIMT metadata"
 #endif
@@ -184,7 +185,7 @@ COMBINE_DEDUP_EP_COMBINE_CONSTEXPR uint32_t EpCombineM5SnapshotBytes(uint32_t h,
 {
     const uint32_t flags = EpCombineM5FlagBytes(h, k);
 #ifdef DEEPEP_LL_COMBINE_BATCH_FINAL
-    const uint32_t routes = EpCombineAlign(owned * k * 4U, 256U);
+    const uint32_t routes = EpCombineAlign(owned * k * kSourceIndexBytes, 256U);
     return flags > routes ? flags : routes;
 #else
     return flags;

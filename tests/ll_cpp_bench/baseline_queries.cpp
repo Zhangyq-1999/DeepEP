@@ -22,3 +22,4 @@ extern "C" uint32_t deepep_ll_combine_return_options()
 }
 
 extern "C" uint32_t deepep_ll_combine_data_l2() { return 0U; }
+extern "C" uint32_t deepep_ll_combine_source_index_bits() { return 32U; }

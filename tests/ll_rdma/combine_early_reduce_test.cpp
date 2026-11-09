@@ -93,7 +93,7 @@ template<class T> void TestDataCopyPad(GlobalTensor<T> d,LocalTensor<T> s,DataCo
 using namespace AscendC;
 using namespace CombineDedup;
 
-template<class T> void Check(uint32_t bs,uint32_t h,uint32_t k,uint32_t participant,bool dedup,uint32_t delay,uint32_t partialTasks,uint32_t recv=8, uint32_t sourceRank=0, uint32_t ranksPerHost=4, bool blockFront=false) {
+template<class T> void Check(uint32_t bs,uint32_t h,uint32_t k,uint32_t participant,bool dedup,uint32_t delay,uint32_t partialTasks,uint32_t recv=8, uint32_t sourceRank=0, uint32_t ranksPerHost=4, bool blockFront=false, bool wideSentinels=false) {
     auto layout=EpCombineM45Layout(100,bs,h,k,recv);
     assert(layout.inputLanes && layout.totalBytes<=kEpServerDedupCombineRecvUbBytes);
     const uint32_t usable=kEpServerDedupCombineRecvUbBytes-kEpServerDedupCombineResidentUbBytes;
@@ -101,7 +101,7 @@ template<class T> void Check(uint32_t bs,uint32_t h,uint32_t k,uint32_t particip
     auto scratch=reinterpret_cast<uint8_t*>(arena.data())+64;
     std::vector<uint32_t> masks(bs);
     std::vector<float> weights(bs*k);
-    std::vector<int32_t> routes(bs*k);
+    std::vector<SourceIndex> routes(bs*k);
     std::vector<uint32_t> localMasks(bs);
     blocks=(h*2+479)/480;packetBytes=blocks*512;
     std::vector<uint64_t> result(uint64_t(bs)*k*packetBytes/8,0);
@@ -115,6 +115,15 @@ template<class T> void Check(uint32_t bs,uint32_t h,uint32_t k,uint32_t particip
             const bool local = t%4==0 || (t%4>=2 && j%2==t%2);
             const uint32_t host = local ? sourceRank/ranksPerHost : (sourceRank/ranksPerHost+1U+j%3U)%4U;
             routes[t*k+j]=int32_t((host*ranksPerHost+j%ranksPerHost)*48+j%48);
+            // Test the actual reader, not just the storage size. A value whose
+            // low word looks local must stay nonlocal if its high word is set.
+            if constexpr(sizeof(SourceIndex)==8) {
+                if(wideSentinels && !local) {
+                    const int64_t alias=int64_t(sourceRank/ranksPerHost*ranksPerHost*48+j%48);
+                    routes[t*k+j]=(t+j)%3==0 ? (int64_t(1)<<32)+alias :
+                                  (t+j)%3==1 ? -(int64_t(1)<<32)+alias : -1;
+                }
+            }
             if(local)localMasks[t]|=1U<<j;
             bool active=!dedup || ((masks[t]>>j)&1U);
             arrival[t*k+j]=active?(delay?1+(j*37+t*19)%151:1):0;published[t*k+j]=!active;
@@ -290,6 +299,10 @@ int main(){
     // vector route masks cross byte and word boundaries, not just K=8/32.
     Check<bfloat16_t>(256,3584,8,0,true,1,7,28,32,16,true);
     for(uint32_t k=1;k<=32;++k)Check<bfloat16_t>(73,256,k,0,true,1,7,8,63,16);
+#endif
+#if DEEPEP_LL_COMBINE_SOURCE_INDEX_BITS == 64
+    for(uint32_t rank:{0,16,32,63})for(uint32_t bs:{1,2,4,8,16,24,32,64,256})
+        Check<bfloat16_t>(bs,3584,8,0,true,1,7,28,rank,16,false,true);
 #endif
     std::puts("PASS production M5: delayed arrivals, BF16/FP16 results, M4 retirement, masks, tails and guards");
 }

@@ -104,6 +104,20 @@ def test_build_all_isolated_matrix_and_failure_stop(harness):
     assert "CALL" not in run("build_all.sh", "--variants", "base,typo", ok=False).stdout
 
 
+def test_source_index_comparison_builds(harness):
+    run, _ = harness
+    names = ("input6-l2-route-only", "input6-l2-route-i64", "batch", "batch-i64")
+    names += tuple(name + "-profile" for name in names)
+    calls = call_options(run("build_all.sh", "--variants", ",".join(names)).stdout)
+    assert len(calls) == 8
+    for name, call in zip(names, calls):
+        assert call["--source-index-bits"] == ("64" if "i64" in name else "32")
+        assert call["--ready"] == ("0" if name.startswith("batch") else "28")
+        assert call["--data-l2"] == ("0" if name.startswith("batch") else "7")
+        assert call["--local-first"] == call["--batch-final"] == ("ON" if name.startswith("batch") else "OFF")
+        assert call["--profile"] == ("ON" if name.endswith("-profile") else "OFF")
+
+
 def test_build_sdk_and_selection_overrides(harness):
     run, env = harness
     env["SHMEM_ROOT"] = "/env/sdk"

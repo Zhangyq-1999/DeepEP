@@ -191,18 +191,20 @@ private:
         Sync<HardEvent::MTE2_S>();
 #ifdef DEEPEP_LL_COMBINE_LOCAL_FIRST
         if (sourceIndices_ == nullptr || expertsPerRank_ == 0U || ranksPerHost_ == 0U) { Trap(); return; }
-        GlobalTensor<int32_t> routes;
-        routes.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t*>(sourceIndices_));
+        GlobalTensor<SourceIndex> routes;
+        routes.SetGlobalBuffer(reinterpret_cast<__gm__ SourceIndex*>(sourceIndices_));
 #ifdef DEEPEP_LL_COMBINE_BATCH_FINAL
         // One route DMA and vector range test for all tokens owned by this core.
         // flags_ is idle until polling; its shared Host budget covers this view.
         const uint64_t routeStart = profile_.DetailClock();
-        auto ids = flags_.ReinterpretCast<int32_t>();
-        DataCopyPad(ids, routes[uint64_t(begin_) * k_], {1U, count_ * k_ * 4U, 0U, 0U, 0U}, {false, 0U, 0U, 0});
+        auto ids = flags_.ReinterpretCast<SourceIndex>();
+        DataCopyPad(ids, routes[uint64_t(begin_) * k_], {1U, count_ * k_ * kSourceIndexBytes, 0U, 0U, 0U}, {false, 0U, 0U, 0});
         Sync<HardEvent::MTE2_V>();
-        const int32_t lower = int32_t(rank_ / ranksPerHost_ * ranksPerHost_ * expertsPerRank_);
+        // Ascend950's count-based Compares supports int64 directly. Keep the
+        // full value through both vector comparisons; no truncation or Cast.
+        const SourceIndex lower = SourceIndex(rank_ / ranksPerHost_ * ranksPerHost_ * expertsPerRank_);
         Compares(routeMask_, ids, lower, CMPMODE::GE, count_ * k_);
-        Compares(routeUpper_, ids, lower + int32_t(ranksPerHost_ * expertsPerRank_), CMPMODE::LT, count_ * k_);
+        Compares(routeUpper_, ids, SourceIndex(lower + ranksPerHost_ * expertsPerRank_), CMPMODE::LT, count_ * k_);
         PipeBarrier<PIPE_V>();
         And(routeMask_.ReinterpretCast<uint16_t>(), routeMask_.ReinterpretCast<uint16_t>(),
             routeUpper_.ReinterpretCast<uint16_t>(), EpCombineM5CompareBytes(k_, count_) / 2U);
@@ -218,14 +220,14 @@ private:
 #else
         // Reuse probe scratch before its first Vector use. Each active return
         // keeps its original top-k slot, including a remote FIRST_HOP partial.
-        auto ids = work_.ReinterpretCast<int32_t>();
+        auto ids = work_.ReinterpretCast<SourceIndex>();
         for (uint32_t p = 0U; p < count_; ++p) {
-            DataCopyPad(ids, routes[uint64_t(begin_ + p) * k_], {1U, k_ * 4U, 0U, 0U, 0U}, {false, 0U, 0U, 0});
+            DataCopyPad(ids, routes[uint64_t(begin_ + p) * k_], {1U, k_ * kSourceIndexBytes, 0U, 0U, 0U}, {false, 0U, 0U, 0});
             Sync<HardEvent::MTE2_S>();
             uint32_t local = 0U;
             for (uint32_t slot = 0U; slot < k_; ++slot) {
-                const int32_t expert = ids.GetValue(slot);
-                if (expert >= 0 && uint32_t(expert) / expertsPerRank_ / ranksPerHost_ == rank_ / ranksPerHost_)
+                const SourceIndex expert = ids.GetValue(slot);
+                if (expert >= 0 && expert / SourceIndex(expertsPerRank_) / SourceIndex(ranksPerHost_) == SourceIndex(rank_ / ranksPerHost_))
                     local |= 1U << slot;
             }
             localMasks_.SetValue(p, local);

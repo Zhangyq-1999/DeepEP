@@ -82,6 +82,7 @@ namespace CombineDedup {inline unsigned EpCombineRecvCoreCount(unsigned n) {retu
 inline unsigned deepep_ll_combine_profile_enabled() {return DEEPEP_BENCH_PROFILE;}
 inline unsigned deepep_ll_combine_return_options() {return TEST_VARIANT;}
 inline unsigned deepep_ll_combine_data_l2() {return 0;}
+inline unsigned deepep_ll_combine_source_index_bits() {return 32;}
 inline uint64_t shmemx_get_ffts_config() {return 42;}
 struct Event {int value=0; void record(void*) {}}
 ;

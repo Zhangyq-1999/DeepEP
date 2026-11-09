@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 @pytest.mark.parametrize("mode", ["plain", "early", "local", "batch", "card-all", "card-row", "server-all", "server-row", "notify-simt", "notify-core", "ready-task", "ready-shared", "ready-fast", "ready-pipeline", "ready-snapshot", "stage-pair", "stage-prefetch", "stage-stream", "plan-compact", "ready-r32", "ready-r36", "wqe-prep", "mte-pack", "wqe-prefetch", "input6", "input-ready", "input-pair", "input-pipe", "input-stream", "input-front", "input-interleave", "input-l2", "input6-l2", "input6-l2-remote", "input6-r32", "input6-remote", "input6-fused", "input6-rpipe", "input6-rfull", "input6-l2-pipe", "input6-l2-setup", "input6-l2-single", "input6-l2-lean", "input6-l2-route", "input6-l2-route-only", "input6-l2-route-plan", "input6-l2-route-priority", "input6-l2-route-tx-bypass", "input6-l2-tiny-setup", "input6-l2-tiny-probe", "input6-l2-tiny"])
 @pytest.mark.parametrize("profile", [False, True])
-def test_benchmark_build_handshake(tmp_path, mode, profile, data_l2=0):
+def test_benchmark_build_handshake(tmp_path, mode, profile, data_l2=0, index_bits=32):
     zig = os.environ.get("DEEPEP_TEST_ZIG")
     if not zig:
         pytest.skip("Set DEEPEP_TEST_ZIG for CPU checks")
@@ -80,6 +80,7 @@ int main() {
         enabled = enabled or (name == "DEFER_RETURN" and mode == "ready-pipeline")
         enabled = enabled or (name == "REMOTE_FIRST" and mode in ("input6-remote", "input6-l2-remote", "input6-fused", "input6-rpipe", "input6-rfull"))
         flags.append(f"-DDEEPEP_BENCH_{name}={int(enabled)}")
+    flags.append(f"-DDEEPEP_LL_COMBINE_SOURCE_INDEX_BITS={index_bits}")
     exe = tmp_path / "handshake.exe"
     subprocess.run([zig, "c++", "-std=c++17", "-O1", "-UNDEBUG", *flags,
                     "-I" + str(ROOT / "csrc"), str(source), "-o", str(exe)], check=True, timeout=120)
@@ -90,3 +91,9 @@ int main() {
 @pytest.mark.parametrize("profile", [False,True])
 def test_data_l2_identity(tmp_path,data_l2,profile):
     test_benchmark_build_handshake(tmp_path,"input6-l2",profile,data_l2)
+
+
+@pytest.mark.parametrize("mode", ["input6-l2-route-only", "batch"])
+@pytest.mark.parametrize("profile", [False, True])
+def test_int64_index_identity(tmp_path, mode, profile):
+    test_benchmark_build_handshake(tmp_path, mode, profile, 7 if mode.startswith("input6") else 0, 64)

@@ -7,7 +7,7 @@ mpi=${MPI_HOME:-/usr/local/mpich-3.2.1} shmem=${SHMEM_ROOT:-$root/third-party/sh
 while (($#)); do
     case "$1" in
         --help|-h)
-            echo 'build.sh [--variant base|ops-shmem-base|ref-profile|input6-l2-route-only|input6-l2-tiny|NAME-profile]'
+            echo 'build.sh [--variant base|batch|batch-i64|input6-l2-route-i64|ops-shmem-base|ref-profile|input6-l2-route-only|input6-l2-tiny|NAME-profile]'
             echo '         [--conda-env py311_zyq]'
             echo '         [--ranks-per-host 4|16] [--jobs N] [--cann-home DIR] [--shmem-root DIR] [--mpi-home DIR]'
             exit 0;;
